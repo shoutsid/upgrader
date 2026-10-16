@@ -1,0 +1,440 @@
+# frozen_string_literal: true
+
+require "minitest/autorun"
+require "fileutils"
+require "json"
+require "open3"
+require "rbconfig"
+require "stringio"
+require "time"
+require "timeout"
+require "tmpdir"
+require "agents_fyi/upgrader"
+
+# The loop, driven without a repository.
+#
+# `serve` is the one mode whose failures are invisible from outside: a service that is
+# up and redoing work it already settled looks exactly like one that is working, and it
+# can look like that for hours. So what is tested here is the four things a container
+# cannot show about itself — that it walks the work it was given once per cycle, that a
+# restart does not redo what the ledger holds, that the heartbeat moves whatever the
+# cycle did, and that a stop request is answered between steps rather than slept
+# through.
+#
+# The step is a stand-in because the real one clones a repository and installs a Rails
+# bundle; nothing in this file claims to test a step, only what the loop does with one.
+class ServeTest < Minitest::Test
+  Serve = AgentsFyi::Upgrader::Serve
+  Ledger = AgentsFyi::Upgrader::Ledger
+  Source = AgentsFyi::Upgrader::Source
+  Corpus = AgentsFyi::Upgrader::Corpus
+
+  # What the loop reads out of a step's record, and every field here is one it decides
+  # from: the verdict and the release for its own line, and the worktree, repository and
+  # starting release because a step this loop *kept* the tree for has to be handed on in
+  # one of two states (committed when it passed, reset when it did not). A record's patch
+  # and command list are still none of this loop's business, which is why this is a Struct
+  # rather than the real thing.
+  Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version,
+    keyword_init: true) do
+    def passed? = verdict == AgentsFyi::Upgrader::Record::PASSED
+  end
+
+  # A step that never runs anything. It records every invocation — including whether the
+  # heartbeat existed when it was called, which is how "written every cycle" is a
+  # measurement instead of a reading of the source — and hands back whatever the test
+  # queued for it. An exception (or an exception *class*, which is how `raise` is called)
+  # in the queue is raised, so the loop's rescue paths can be driven too.
+  #
+  # It settles its move in the ledger the way the real step does, because the ledger is
+  # what the restart test is about and a stand-in that skipped it would leave that
+  # behaviour untestable.
+  class FakeStep
+    # Initialised here as well as in `setup`, and both are needed: a double whose class
+    # state is only created by a *teardown* means the first test to run in a given order
+    # reads `nil` where every later one reads an empty array — a failure that appears and
+    # disappears with the suite's random seed, which is what this was. The class-level
+    # values make `calls` always an array; `setup` is what keeps one test's calls out of
+    # the next one's assertions.
+    @calls = []
+    @results = []
+
+    class << self
+      attr_reader :calls, :results
+    end
+
+    def self.reset!(results: [])
+      @results = results
+      @calls = []
+    end
+
+    def self.next_result
+      @results.shift
+    end
+
+    def initialize(**kwargs)
+      @kwargs = kwargs
+      @worktree = self.class.tree(kwargs[:home])
+      self.class.calls << kwargs.merge(
+        heartbeat_seen: File.file?(File.join(kwargs[:home].to_s, "heartbeat"))
+      )
+    end
+
+    def run
+      result = self.class.next_result
+      raise result if result.is_a?(Exception) || (result.is_a?(Class) && result <= Exception)
+      return result if result.nil?
+
+      # What a real step leaves behind: a pin it rewrote and a file it added. The loop's
+      # own work on the tree is decided from exactly these, so a double that handed back a
+      # *clean* path would leave both halves untested while looking tested.
+      File.write(File.join(@worktree, "Gemfile"), %(gem "rails", "#{result.to_version}"\n))
+      File.write(File.join(@worktree, "app_update_added.rb"), "# what app:update wrote\n")
+      settle(result)
+
+      Result.new(verdict: result.verdict, to_version: result.to_version, worktree: @worktree,
+        repository: @kwargs[:repository], from_version: "4.2.11")
+    end
+
+    # A real git tree, because what the loop does with it — commit a passing step, reset
+    # one that did not pass — is `git` and nothing else. One per test, under the test's own
+    # home, so no test's commits are another's base.
+    def self.tree(home)
+      dir = File.join(home.to_s, "fake-tree")
+      return dir if File.directory?(File.join(dir, ".git"))
+
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "Gemfile"), %(gem "rails", "4.2.11"\n))
+      File.write(File.join(dir, ".gitignore"), "tmp/\nlog/\n")
+      git(dir, "init", "--quiet")
+      git(dir, "add", "--all")
+      git(dir, "-c", "user.email=t@example.com", "-c", "user.name=t",
+        "commit", "--quiet", "-m", "the application as it arrived")
+      dir
+    end
+
+    def self.git(dir, *argv)
+      system("git", "-C", dir, *argv, out: File::NULL, err: File::NULL)
+    end
+
+    private
+
+    def settle(result)
+      ledger = @kwargs[:ledger]
+      return if ledger.nil?
+
+      ledger.record(repo: @kwargs[:repository], commit: "9f2c1ab8", from_version: "4.2.11",
+        to_version: result.to_version, verdict: result.verdict)
+    end
+  end
+
+  # The service, as much of it as the loop touches: one method, and it records what it
+  # was asked for so a test can tell a queue read from a queue read that never happened.
+  class FakeCorpus
+    attr_reader :asked
+
+    def initialize(targets: [], raises: nil)
+      @targets = targets
+      @raises = raises
+      @asked = []
+    end
+
+    def targets(limit:)
+      @asked << limit
+      raise @raises if @raises
+
+      @targets
+    end
+  end
+
+  def setup
+    FakeStep.reset!(results: [])
+  end
+
+  def teardown
+    @dirs&.each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
+  end
+
+  def track(dir)
+    (@dirs ||= []) << dir
+    dir
+  end
+
+  def home
+    @home ||= track(Dir.mktmpdir)
+  end
+
+  def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
+            ledger: nil, out: nil)
+    Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
+      to: to, repos: repos, interval: interval, out: out || StringIO.new,
+      ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep)
+  end
+
+  # One repository in the queue, walked once per cycle. Two cycles is the acceptance
+  # criterion's shape: a repository walked on consecutive steps is two cycles, because a cycle
+  # is one step — the ladder answers what the next move is, and the tool's own job is to come
+  # back for it.
+  def test_two_cycles_walk_the_repository_the_queue_named
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0"),
+                              Result.new(verdict: "passed", to_version: "6.0.0")])
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    assert_equal 0, serve(corpus: corpus, cycles: 2, out: out).run
+
+    assert_equal 2, FakeStep.calls.size, "the queue named one repository, so one step per cycle"
+    repositories = FakeStep.calls.map { |call| call[:repository] }.uniq
+    assert_equal ["https://github.com/acme/storefront.git"], repositories
+    assert_includes out.string, "(5.0.0)"
+    assert_includes out.string, "(6.0.0)"
+    assert_equal 2, corpus.asked.size, "the queue is read once per cycle, not once per process"
+  end
+
+  # The shorthand an operator types, and the queue row the service hands over, both have
+  # to become something git can clone. The ssh URL is the case that a split on `@`
+  # silently gets wrong, and a *path* is the other: the service accepts a target whose
+  # `repo_url` is a directory on this machine (`identity()` leaves a bare path alone on
+  # purpose), and prefixing it with github.com turned a queue row into a clone of nothing.
+  def test_a_repository_shorthand_becomes_something_git_can_clone
+    assert_equal ["https://github.com/acme/storefront.git", nil], Serve.split("acme/storefront")
+    assert_equal ["https://github.com/acme/storefront.git", "v1"], Serve.split("acme/storefront@v1")
+    assert_equal ["https://github.com/acme/storefront.git", "main"],
+      Serve.split("https://github.com/acme/storefront.git@main")
+    assert_equal ["git@github.com:acme/storefront.git", nil],
+      Serve.split("git@github.com:acme/storefront.git")
+    assert_equal ["/srv/applications/storefront", nil], Serve.split("/srv/applications/storefront")
+    assert_equal ["./storefront", "main"], Serve.split("./storefront@main")
+  end
+
+  # A tree the loop keeps is the difference between a repository walked once and one that
+  # can walk: the next cycle's base is where this step arrived, so the ladder is asked for
+  # the rung *after* the one just settled.
+  def test_a_passing_step_leaves_its_tree_committed_for_the_next_rung
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    out = StringIO.new
+
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }]), cycles: 1,
+      out: out).run
+
+    tree = File.join(home, "fake-tree")
+    subject, = capture2("git", "-C", tree, "log", "-1", "--format=%s")
+    assert_includes subject, "the 4.2.11 -> 5.0.0 step", "the step's tree was not checkpointed"
+    assert_empty capture2("git", "-C", tree, "status", "--porcelain").first.strip
+    assert_includes out.string, "the step is committed as"
+    # And the flag that made it a kept tree at all: a loop that asked for a per-run copy
+    # would re-clone every cycle and never see its own previous step.
+    assert_equal [true], FakeStep.calls.map { |call| call[:reuse] }.uniq
+  end
+
+  # A step that did not pass advances nothing, so the tree goes back to its base commit:
+  # otherwise the next cycle plans from a Gemfile.lock the step had already rewritten,
+  # which is a skipped rung reported as a step that passed.
+  def test_a_step_that_did_not_pass_leaves_its_tree_at_the_base_commit
+    FakeStep.reset!(results: [Result.new(verdict: "failed", to_version: "5.0.0")])
+    out = StringIO.new
+
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }]), cycles: 1,
+      out: out).run
+
+    tree = File.join(home, "fake-tree")
+    assert_includes File.read(File.join(tree, "Gemfile")), %(gem "rails", "4.2.11"),
+      "the tree still holds the release the step never established"
+    refute File.exist?(File.join(tree, "app_update_added.rb")), "the step's added file survived"
+    assert_empty capture2("git", "-C", tree, "status", "--porcelain").first.strip
+    assert_includes out.string, "advances nothing, so the tree"
+  end
+
+  def capture2(*argv)
+    output, status = Open3.capture2e(*argv)
+    assert status.success?, "#{argv.join(' ')} failed: #{output}"
+    [output, status]
+  end
+
+  def test_the_queue_s_ref_is_carried_into_the_step
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront", "ref" => "v2022.01.04" }])
+
+    serve(corpus: corpus, cycles: 1).run
+
+    assert_equal "https://github.com/acme/storefront.git", FakeStep.calls.first[:repository]
+    assert_equal "v2022.01.04", FakeStep.calls.first[:ref],
+      "the queue named a ref and the step was handed something else"
+  end
+
+  # `nil` from a step means the ledger already settled that move. It is not a failure, it
+  # does not stop the loop, and it is worth a line — a service that has silently lost its
+  # volume is exactly a service whose every move looks already settled.
+  def test_a_settled_move_is_not_a_failure_and_does_not_stop_the_loop
+    FakeStep.reset!(results: [nil, nil])
+    out = StringIO.new
+
+    assert_equal 0, serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }]),
+      cycles: 2, out: out).run
+
+    assert_equal 2, FakeStep.calls.size, "the loop stopped at a settled move"
+    # Counted on the words the *step* line uses, because the startup line also says
+    # "already settled" — and a scan that could not tell the two apart would pass on a
+    # loop that logged the count and then never walked anything at all.
+    assert_equal 2, out.string.scan("nothing was run").size
+  end
+
+  # The one line that says whether the volume is still mounted. A lost `upgrader_cache`
+  # resets the service to "nothing settled" while the container reports healthy, so the
+  # count is read from the file on disk rather than from the process that just wrote it.
+  def test_a_restart_reads_the_ledger_and_names_what_is_already_settled
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }]), cycles: 1).run
+
+    assert File.file?(File.join(home, "ledger.json")), "the step's verdict was never persisted"
+
+    second = StringIO.new
+    serve(cycles: 1, out: second).run
+
+    assert_includes second.string, "1 move(s) already settled"
+    assert_includes second.string, "stopped after 1 cycle(s) with 1 move(s) settled"
+  end
+
+  # The healthcheck reads a file whose age is the loop's liveness. "Written at the end"
+  # would be a heartbeat that stops exactly when a cycle hangs, which is the failure it
+  # exists to catch, so the assertion is that a *later* cycle saw it — not merely that the
+  # file exists when the process has finished.
+  def test_the_heartbeat_is_written_every_cycle
+    FakeStep.reset!(results: [nil, nil])
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }]), cycles: 2).run
+
+    assert File.file?(File.join(home, "heartbeat"))
+    assert FakeStep.calls.last[:heartbeat_seen],
+      "the second cycle started with no heartbeat on disk, so a hang would be invisible"
+    assert Time.iso8601(File.read(File.join(home, "heartbeat")).strip)
+  end
+
+  # One repository that cannot be cloned is not the loop's problem. The other repositories
+  # still get walked, the cycle still counts, and the failure is logged with its class —
+  # which is the difference between a bad minute and a service that stops for everybody.
+  def test_one_repository_s_bad_minute_is_not_the_loop_s
+    FakeStep.reset!(results: [Source::Failed,
+                              Result.new(verdict: "passed", to_version: "5.0.0")])
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/broken" },
+                                      { "repo_url" => "acme/working" }])
+
+    assert_equal 0, serve(corpus: corpus, cycles: 1, out: out).run
+
+    assert_equal 2, FakeStep.calls.size, "the second repository was never walked"
+    assert_includes out.string, "Source::Failed"
+    assert_includes out.string, "(5.0.0)"
+  end
+
+  # An operator who named repositories meant them, and the queue is what answers when
+  # nobody did. Asking the service anyway would be a second opinion nobody wanted — and
+  # on a deployment with no egress it would be a delay before every cycle.
+  def test_the_operator_s_list_wins_over_the_service_s_queue
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    corpus = FakeCorpus.new(raises: Corpus::Unreachable.new("no route to host"))
+
+    assert_equal 0, serve(corpus: corpus, repos: ["acme/storefront"], cycles: 1).run
+
+    assert_empty corpus.asked, "the queue was read even though the operator named the work"
+    assert_equal ["https://github.com/acme/storefront.git"],
+      FakeStep.calls.map { |call| call[:repository] }.uniq
+  end
+
+  # A queue that could not be read is not an empty queue, and the loop must say which it
+  # got. It also must not exit: an unreachable service is a condition to wait out, and a
+  # container that stopped because its corpus had a bad minute would need an operator to
+  # watch it.
+  def test_a_queue_that_could_not_be_read_is_logged_and_does_not_end_the_loop
+    out = StringIO.new
+    corpus = FakeCorpus.new(raises: Corpus::Unreachable.new("connection refused"))
+
+    assert_equal 0, serve(corpus: corpus, cycles: 2, out: out).run
+
+    assert_includes out.string, "could not read the queue (connection refused)"
+    assert_empty FakeStep.calls
+    assert_equal 2, corpus.asked.size, "the loop gave up on the queue after one bad read"
+  end
+
+  # An empty queue and an unreachable one look identical to a client, so the loop states
+  # which it is. This is the miner's log lesson (`0 pair(s)` either way) in one line.
+  def test_an_empty_queue_is_stated_rather_than_inferred
+    out = StringIO.new
+
+    assert_equal 0, serve(corpus: FakeCorpus.new, cycles: 1, out: out).run
+
+    assert_includes out.string, "the service's queue is empty"
+    assert_includes out.string, "the work list comes from the service's queue"
+  end
+
+  def test_no_target_means_nothing_is_walked_and_nothing_is_asked_for
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }])
+
+    assert_equal 0, serve(corpus: corpus, to: nil, cycles: 1, out: out).run
+
+    assert_empty FakeStep.calls
+    assert_empty corpus.asked
+    assert_includes out.string, "no target"
+  end
+
+  # The deployment's own shape, which is also the bug this test exists for. The helper
+  # above defaults `repos:` to `[]`, but the CLI passes the flag's value — `nil` when
+  # nobody named a repository — and a keyword default does not apply to a key that is
+  # present. The loop's first line reads that list, so the container crash-looped before
+  # its first cycle: 31 restarts, each one printing the same line before dying.
+  def test_a_repository_list_of_nil_is_the_same_as_none_named
+    out = StringIO.new
+
+    assert_equal 0, serve(repos: nil, to: nil, cycles: 1, out: out).run
+
+    assert_includes out.string, "the work list comes from the service's queue"
+    assert_includes out.string, "no target"
+  end
+
+  # SIGTERM is a *different process's* question, so it is asked in one: a loop sleeping a
+  # ten-minute interval in the test process would be woken by a trap this test installed,
+  # which proves nothing about the container. The child is given a 600s interval, and the
+  # signal has to be answered in seconds — the assertion is on the promptness, because
+  # "eventually ends" is what a plain `sleep` does too, at the cost of a SIGKILL.
+  def test_sigterm_is_answered_between_cycles_rather_than_slept_through
+    lib = File.expand_path("../lib", __dir__)
+    script = File.join(track(Dir.mktmpdir), "serve.rb")
+    File.write(script, <<~RUBY)
+      $LOAD_PATH.unshift(#{lib.inspect})
+      require "agents_fyi/upgrader"
+
+      settled = Class.new do
+        def initialize(**) = nil
+        def run = nil
+      end
+
+      exit AgentsFyi::Upgrader::Serve.new(
+        api: "http://127.0.0.1:1", home: #{home.inspect},
+        heartbeat: #{File.join(home, "heartbeat").inspect}, to: "7.1.0",
+        repos: ["acme/storefront"], interval: 600, out: $stdout, step_class: settled
+      ).run
+    RUBY
+    log = File.join(home, "serve.log")
+    pid = Process.spawn(RbConfig.ruby, script, out: log, err: log)
+
+    begin
+      wait_for(File.join(home, "heartbeat"), 20)
+      started = Time.now
+      Process.kill("TERM", pid)
+      status = Timeout.timeout(10) { Process.wait2(pid).last }
+
+      assert_equal 0, status.exitstatus, "the loop did not stop cleanly: #{File.read(log)}"
+      assert_operator Time.now - started, :<, 5,
+        "a 600s interval was slept through rather than interrupted"
+    rescue Timeout::Error
+      Process.kill("KILL", pid)
+      flunk "the loop did not answer TERM within 10s: #{File.read(log)}"
+    end
+  end
+
+  def wait_for(path, seconds)
+    deadline = Time.now + seconds
+    sleep 0.05 until File.file?(path) || Time.now > deadline
+    assert File.file?(path), "#{path} never appeared"
+  end
+end

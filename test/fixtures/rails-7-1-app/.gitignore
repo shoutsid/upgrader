@@ -1,0 +1,22 @@
+# The .gitignore `rails new` writes, which `--skip-git` also skipped. It matters
+# here for a reason beyond tidiness: the fixture is an export, and a fixture whose
+# runtime droppings are untracked is a fixture that makes this repository dirty
+# every time its suite is run on the host.
+/.bundle
+/log/*
+/tmp/*
+!/log/.keep
+!/tmp/.keep
+/tmp/pids/*
+!/tmp/pids/
+!/tmp/pids/.keep
+/storage/*
+!/storage/.keep
+/public/assets
+/app/assets/builds/*
+!/app/assets/builds/.keep
+/node_modules
+/yarn-error.log
+/config/master.key
+/db/*.sqlite3
+/db/*.sqlite3-*
