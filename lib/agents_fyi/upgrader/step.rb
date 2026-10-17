@@ -488,12 +488,12 @@ module AgentsFyi
         moves = route.fetch("gems", []).select { |gem| gem["verdict"] == "move" }
         applied = moves.filter_map { |gem| apply_move(gem, step) }
         route.fetch("gems", []).each do |gem|
-          next unless %w[blocked unknown].include?(gem["verdict"])
+          next unless decision_worthy?(gem)
 
           @decisions << Record::Decision.new(
             path: "Gemfile.lock", line: nil, subject: "#{gem["name"]} #{gem["version"]}",
-            reason: gem["reason"], kind: gem["verdict"], replacement: gem["to"],
-            source: "GET /releases/route"
+            reason: gem["reason"] || gem["note"], kind: gem["verdict"],
+            replacement: gem["to"] || gem["replacement"], source: "GET /releases/route"
           )
         end
 
@@ -514,6 +514,17 @@ module AgentsFyi
           ran: false, exit_code: nil, seconds: 0.0,
           output_tail: "the routing read failed: #{e.message}")
         []
+      end
+
+      # Which routing verdicts a reader has to act on. The digest's `replace`/`remove` are the
+      # preflight's job when a machine may make them (`mechanical`), and a *decision* when it
+      # may not — the first real application's simple_form entry is exactly that case: the
+      # released line only fits once Rails itself has moved, so the preflight leaves it and
+      # this records it. `blocked` and `unknown` are always decisions.
+      def decision_worthy?(gem)
+        return true if %w[blocked unknown].include?(gem["verdict"])
+
+        %w[replace remove].include?(gem["verdict"]) && gem["mechanical"] != true
       end
 
       # One `move`, as a Gemfile rewrite: the same line-level caution the preflight takes, and

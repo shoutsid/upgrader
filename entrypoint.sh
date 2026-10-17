@@ -52,6 +52,18 @@ set -eu
 # nothing and costs the attempt. The loop checkpoints after each step, so a restart
 # resumes rather than starting over.
 : "${UPGRADER_STEP_TIMEOUT:=3600}"
+# **`--walk` is what makes this loop a walk.** Without it a cycle is one rung and the loop
+# comes back ten minutes later; with it, passed rungs chain inside the cycle (up to
+# `UPGRADER_RUNGS`, three by default — one rung is a bundle install and a suite, and a cycle
+# that never returned would hold the heartbeat untouched for a day) and an empty target is
+# read as the top of the service's ladder instead of the deliberate idle it means otherwise.
+: "${UPGRADER_WALK:=}"
+: "${UPGRADER_RUNGS:=}"
+# **Publishing is the delivery half and it is off unless asked for.** With it, every passed
+# rung becomes a branch (`agents-fyi/upgrade-<release>`) and a pull request chained to the
+# rung before it, and `UPGRADER_GITHUB_TOKEN` must be set — the client reads that itself and
+# never writes it down (a token in a record is a token in a corpus).
+: "${UPGRADER_PUBLISH:=}"
 # There is deliberately no log level, and this is a bug fixed rather than a preference.
 #
 # `--log-level "${UPGRADER_LOG_LEVEL}"` used to be passed from here to a CLI that accepts
@@ -107,9 +119,10 @@ end
     sleep 5
 done
 
-if [ -z "${UPGRADER_TO}" ]; then
+if [ -z "${UPGRADER_TO}" ] && [ -z "${UPGRADER_WALK}" ]; then
     echo "upgrader: UPGRADER_TO is empty, so this loop will not walk anything —" \
-        "set it to the Rails release the move ends at, for example 7.1.0" >&2
+        "set it to the Rails release the move ends at (for example 7.1.0), or set" \
+        "UPGRADER_WALK=1 to walk each repository to the top of the ladder" >&2
 elif [ -z "${UPGRADER_REPOS}" ]; then
     # With no target the loop walks nothing whatever the list says, so this is only worth
     # saying once the operator has got the target right: two warnings at once, one of
@@ -124,11 +137,22 @@ fi
 # (`--interval`) would be read as its value: a service that starts, reports healthy and
 # has been told a repository called `--interval`. Building the arguments is where that
 # is prevented, rather than in the list's own default.
+# Each flag is appended to the same positional list, and only when its setting is
+# non-empty: passed unconditionally, `--rungs ""` would leave `--rungs` with nothing to take
+# and the next flag would be read as its value.
 # shellcheck disable=SC2086
+set --
 if [ -n "${UPGRADER_REPOS}" ]; then
-    set -- --repos ${UPGRADER_REPOS}
-else
-    set --
+    set -- "$@" --repos ${UPGRADER_REPOS}
+fi
+if [ -n "${UPGRADER_WALK}" ]; then
+    set -- "$@" --walk
+fi
+if [ -n "${UPGRADER_RUNGS}" ]; then
+    set -- "$@" --rungs "${UPGRADER_RUNGS}"
+fi
+if [ -n "${UPGRADER_PUBLISH}" ]; then
+    set -- "$@" --publish
 fi
 
 exec /app/bin/agents-fyi-upgrader serve \

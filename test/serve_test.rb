@@ -131,12 +131,15 @@ class ServeTest < Minitest::Test
   # The service, as much of it as the loop touches: one method, and it records what it
   # was asked for so a test can tell a queue read from a queue read that never happened.
   class FakeCorpus
-    attr_reader :asked
+    attr_reader :asked, :ladder_reads
 
-    def initialize(targets: [], raises: nil)
+    def initialize(targets: [], raises: nil, ladder: "8.1.0", ladder_raises: nil)
       @targets = targets
       @raises = raises
+      @ladder = ladder
+      @ladder_raises = ladder_raises
       @asked = []
+      @ladder_reads = 0
     end
 
     def targets(limit:)
@@ -144,6 +147,33 @@ class ServeTest < Minitest::Test
       raise @raises if @raises
 
       @targets
+    end
+
+    def ladder
+      @ladder_reads += 1
+      raise @ladder_raises if @ladder_raises
+
+      { "top" => @ladder }
+    end
+  end
+
+  # Publishing, as much of it as the loop touches: it records every record it was handed.
+  class FakePublish
+    class << self
+      attr_reader :published
+
+      def reset! = @published = []
+    end
+
+    def initialize(**kwargs)
+      @kwargs = kwargs
+    end
+
+    def call
+      self.class.published << @kwargs[:record]
+      AgentsFyi::Upgrader::Publish::Result.new(pushed: true, branch: "agents-fyi/upgrade-#{@kwargs[:to_version]}",
+        base: "main", commit: "9f2c1ab8", pull_request: "https://github.com/acme/storefront/pull/1",
+        reason: "")
     end
   end
 
@@ -165,10 +195,11 @@ class ServeTest < Minitest::Test
   end
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
-            ledger: nil, out: nil)
+            ledger: nil, out: nil, walk: false, publish: false, rungs: nil)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
-      ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep)
+      ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
+      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish)
   end
 
   # One repository in the queue, walked once per cycle. Two cycles is the acceptance
@@ -396,6 +427,78 @@ class ServeTest < Minitest::Test
   # which proves nothing about the container. The child is given a 600s interval, and the
   # signal has to be answered in seconds — the assertion is on the promptness, because
   # "eventually ends" is what a plain `sleep` does too, at the cost of a SIGKILL.
+  # **`--walk` is what makes a cycle a walk rather than a rung.** Without it a loop takes one
+  # step per cycle (ten minutes apart in the deployment); with it, passed rungs are chained
+  # inside the cycle, up to the budget — and an empty target is read as the top of the
+  # service's ladder rather than as the deliberate idle it means without the flag.
+  def test_walk_chains_passed_rungs_within_a_cycle_up_to_its_budget
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "5.0.0"),
+      Result.new(verdict: "passed", to_version: "5.1.0"),
+      Result.new(verdict: "passed", to_version: "5.2.0")
+    ])
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }],
+      ladder: "8.1.0")
+
+    assert_equal 0, serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 3).run
+
+    assert_equal 3, FakeStep.calls.size, "three passed rungs should chain inside one cycle"
+    assert_equal ["8.1.0", "8.1.0", "8.1.0"], FakeStep.calls.map { |call| call[:to] },
+      "every step in the cycle moves towards the ladder's top"
+    assert_equal 1, corpus.ladder_reads, "the top is asked once per cycle, not once per rung"
+  end
+
+  def test_walk_stops_chaining_when_a_rung_does_not_pass
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "5.0.0"),
+      Result.new(verdict: "failed", to_version: "5.1.0")
+    ])
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 3).run
+
+    assert_equal 2, FakeStep.calls.size, "a failed rung must not be walked past"
+  end
+
+  def test_walk_says_so_when_the_ladder_cannot_be_read_instead_of_guessing
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }],
+      ladder_raises: Corpus::Unreachable.new("could not reach http://api.test: reset"))
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, out: out).run
+
+    assert_empty FakeStep.calls, "nothing may be walked without a target"
+    assert_includes out.string, "the ladder could not be read"
+  end
+
+  def test_a_passed_rung_is_published_when_the_operator_asked_for_it
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "5.0.0"),
+      Result.new(verdict: "passed", to_version: "5.1.0")
+    ])
+    FakePublish.reset!
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    serve(corpus: corpus, cycles: 1, to: "5.1.0", walk: true, publish: true, rungs: 2,
+      out: out).run
+
+    assert_equal %w[5.0.0 5.1.0], FakePublish.published.map(&:to_version)
+    assert_includes out.string, "agents-fyi/upgrade-5.0.0"
+    assert_includes out.string, "agents-fyi/upgrade-5.1.0"
+  end
+
+  def test_publishing_is_off_unless_asked_for
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    FakePublish.reset!
+
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }]),
+      cycles: 1, to: "5.0.0", walk: true, rungs: 1).run
+
+    assert_empty FakePublish.published, "a loop that was not asked to publish must not"
+  end
+
   def test_sigterm_is_answered_between_cycles_rather_than_slept_through
     lib = File.expand_path("../lib", __dir__)
     script = File.join(track(Dir.mktmpdir), "serve.rb")

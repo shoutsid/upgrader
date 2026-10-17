@@ -119,9 +119,14 @@ class DeployConfigTest < Minitest::Test
     # The list is only passed when there is one. Expanded unconditionally, an empty
     # `${UPGRADER_REPOS}` would leave `--repos` with nothing to take and the flag after it
     # would be read as its value — a service that starts, reports healthy, and has been
-    # told a repository called `--interval`.
-    assert_match(/\[ -n "\$\{UPGRADER_REPOS\}" \]/, entrypoint)
-    assert_includes entrypoint, "set -- --repos"
+    # told a repository called `--interval`. The same rule now covers the flags `--walk`,
+    # `--rungs` and `--publish`, each appended to the same positional list.
+    assert_match(/if \[ -n "\$\{UPGRADER_REPOS\}" \]; then/, entrypoint)
+    assert_includes entrypoint, 'set -- "$@" --repos ${UPGRADER_REPOS}'
+    %w[UPGRADER_WALK UPGRADER_RUNGS UPGRADER_PUBLISH].each do |setting|
+      assert_match(/if \[ -n "\$\{#{setting}\}" \]; then/, entrypoint,
+        "#{setting} is not checked before its flag is passed")
+    end
   end
 
   # The waiter's probe is a Ruby program inside a shell script, and it shipped as a syntax

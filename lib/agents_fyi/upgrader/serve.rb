@@ -41,6 +41,11 @@ module AgentsFyi
       # comes back.
       DEFAULT_QUEUE_LIMIT = 100
 
+      # How many rungs `--walk` chains in one cycle. A budget rather than "until the top":
+      # one rung is a bundle install and a test suite, and a cycle that never returned would
+      # leave the heartbeat untouched for a day — which is the failure the heartbeat is for.
+      DEFAULT_RUNGS_PER_CYCLE = 3
+
       # `contribute` is passed through to every step, and the default is the difference
       # between this class and `step` run by hand: the loop owns an operator's account and
       # the decision to walk somebody's application at all, so a run made here is the one
@@ -50,10 +55,23 @@ module AgentsFyi
       def initialize(api:, home:, heartbeat:, to: nil, repos: [], interval: 600,
                      step_timeout: 3600, out: $stdout, ledger: nil, cycles: nil,
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
-                     contribute: true)
+                     contribute: true, walk: false, publish: false, rungs: nil,
+                     publish_class: Publish)
         @api = api
         @home = home
         @to = to
+        # `walk` is the difference between a loop that takes one rung per cycle and one that
+        # walks a repository to its target in a cycle: it chains rungs while they pass, up to
+        # `rungs` (a budget, because one rung can take half an hour and a cycle that never
+        # returned would hold the ledger uncommitted for a day). With it, an empty `--to` is
+        # read as "the top of the service's ladder" — the read that exists for exactly this —
+        # instead of the deliberate idle an empty target means without it.
+        @walk = walk
+        @publish = publish
+        @rungs = rungs || DEFAULT_RUNGS_PER_CYCLE
+        # Injectable so the suite can drive "a passed rung is published" without a token, a
+        # remote or a network — the class itself is `publish_test.rb`'s subject.
+        @publish_class = publish_class
         @heartbeat = heartbeat || File.join(home, "heartbeat")
         # `Array(...)` rather than the parameter's own default, and it is not cosmetic:
         # `repos:` defaults to `[]` so a caller may leave it out, but the CLI passes the
@@ -90,9 +108,10 @@ module AgentsFyi
         # The target is required here for the same reason `plan` requires it: the ladder
         # is the service's and this tool keeps no copy, so a loop that picked "the next
         # release" would be deciding which rung the operator meant.
-        if @to.to_s.empty?
+        if @to.to_s.empty? && !@walk
           @out.puts("serve: no target, so this loop will not walk anything — set " \
-                    "UPGRADER_TO to the Rails release the move ends at")
+                    "UPGRADER_TO to the Rails release the move ends at, or `--walk` to walk " \
+                    "to the top of the service's ladder")
         end
 
         cycle = 0
@@ -121,14 +140,59 @@ module AgentsFyi
       end
 
       def walk
-        return if @to.to_s.empty?
+        return if target.nil?
 
         work.each do |spec|
           break if @stop
 
           repository, ref = self.class.split(spec)
-          run_one(repository, ref)
+          if @walk
+            walk_repository(repository, ref)
+          else
+            run_one(repository, ref)
+          end
         end
+      end
+
+      # The target every step in this cycle moves towards: the one the operator named, or —
+      # under `--walk` — the top of the service's ladder. Asked once per cycle and cached,
+      # because it is a fact about the service rather than about a repository, and a cycle
+      # that walked five rungs should not have asked five times.
+      #
+      # `nil` means this loop has nothing to walk towards and says so; without `--walk` that
+      # is the deliberate idle an unset target has always meant.
+      def target
+        return @to unless @to.to_s.empty?
+        return nil unless @walk
+
+        @target ||= @corpus.ladder.fetch("top")
+      rescue Corpus::Unreachable, Corpus::Refused, KeyError => e
+        @out.puts("serve: the ladder could not be read (#{e.message}), so this cycle will not walk")
+        nil
+      end
+
+      # One repository, walked: rungs taken while they pass, up to the cycle's budget, and
+      # each passed rung published when the operator asked for that.
+      def walk_repository(repository, ref)
+        @rungs.times do
+          record = run_one(repository, ref)
+          break unless record&.passed?
+
+          publish(record) if @publish
+        end
+      end
+
+      # A passed rung's branch and pull request, from the record the step produced. A publish
+      # that did not happen is a line rather than a raised exception: the rung *passed*, and
+      # a branch that could not be pushed does not un-pass it.
+      def publish(record)
+        result = @publish_class.new(
+          root: record.worktree.to_s.empty? ? @home : record.worktree,
+          repository: record.repository, from_version: record.from_version,
+          to_version: record.to_version, record: record, out: @out,
+          token: ENV[Publish::ENV_TOKEN]
+        ).call
+        @out.puts("serve: #{record.repository} — #{result}")
       end
 
       # The operator's list wins when there is one — a deployment that named its repositories
@@ -191,17 +255,18 @@ module AgentsFyi
       # line because it is also what a lost volume would look like from the other side.
       def run_one(repository, ref)
         record = @step_class.new(
-          repository: repository, ref: ref, to: @to, api: @api, home: @home, out: @out,
+          repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
-          return
+          return nil
         end
 
         @out.puts("serve: #{repository} -> #{record.verdict} (#{record.to_version})")
         settle(record)
+        record
       rescue Lockfile::Missing, Lockfile::Unreadable, Source::Failed, Corpus::Unreachable => e
         # One repository's bad minute is not the loop's: it is logged, the next
         # repository is walked, and the cycle's heartbeat still moves — a service that

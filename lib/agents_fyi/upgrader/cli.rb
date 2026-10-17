@@ -35,9 +35,10 @@ module AgentsFyi
                                     [--record DIR]
           agents-fyi-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--record DIR] [--work DIR]
-          agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] --to VERSION [--api URL]
+          agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] [--to VERSION] [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
-                                    [--step-timeout SECONDS] [--cycles N]
+                                    [--step-timeout SECONDS] [--cycles N] [--walk]
+                                    [--rungs N] [--publish]
 
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
@@ -55,6 +56,10 @@ module AgentsFyi
                   Prints the record, and writes the patch and the record as JSON with
                   --record. Never writes to --repo.
           serve   the same, one step per repository per cycle, over a durable ledger.
+                  With `--walk` it chains rungs within a cycle (up to `--rungs`) and reads an
+                  empty `--to` as the top of the service's ladder; with `--publish` it pushes
+                  a branch per passed rung and opens a pull request chained to the rung
+                  before it.
 
         Exit status:
           0  a plan was printed, a step ran and did not fail the suite, or the loop
@@ -202,7 +207,8 @@ module AgentsFyi
         Serve.new(
           api: options[:api], home: options[:home], heartbeat: options[:heartbeat],
           to: options[:to], repos: options[:repos], interval: options[:interval],
-          step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles]
+          step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
+          walk: options[:walk], publish: options[:publish], rungs: options[:rungs]
         ).run
       end
 
