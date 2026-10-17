@@ -149,7 +149,15 @@ module AgentsFyi
       # the environment travels as `-e` flags rather than being inherited, because the
       # walker's own environment names paths on the host. `nil` is the native machine, kept
       # so a caller that has no machine does not have to say so twice.
-      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: 4000, machine: nil)
+      # **A suite's excerpt is five times a command's, and the reason is what a failing
+      # example prints.** Four kilobytes is one failure message with its backtrace; a Rails
+      # suite with a dozen failures prints the messages in the middle of its output — where the
+      # head/tail bound does not reach — so the record showed a list of failing examples and
+      # none of their reasons. Twenty kilobytes is the first several failures and the summary
+      # at the end, which is what a reader (or an agent asked to repair the rung) needs.
+      SUITE_EXCERPT_BYTES = 20_000
+
+      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: SUITE_EXCERPT_BYTES, machine: nil)
         # First, so the rescue below can always measure: a run that fails to start is
         # still a run that has a duration, and the record keeps it.
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

@@ -549,13 +549,37 @@ class StepTest < Minitest::Test
 
   # And the preconditions: a baseline that was already red is not a failure the move caused,
   # so there is nothing here to repair — the step is `unverified`, with no model call at all.
-  def test_a_red_baseline_is_never_repaired
+  # **The baseline is repaired first, and this is the case old applications arrive in.** A
+  # suite that was red before the step makes everything after it unmeasurable — the lighthouse's
+  # was 133 examples red on `You must set config.secret_key_base in your app's config`, a
+  # 4.0.0.rc1-era generator writing `secret_token` while the framework already wanted
+  # `secret_key_base` — and the fix is a precondition of measuring anything rather than part of
+  # the move. The re-run baseline is what makes it green, and the verdict says so: "the suite
+  # was green before this step" is false without that clause, and a record that said it would be
+  # describing an application that was measured before it was fixed.
+  def test_a_red_baseline_is_repaired_before_the_move_and_the_verdict_says_so
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [red, green, green, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "2" }).run
+
+    stages = record.stages.map(&:stage)
+    assert_equal "passed", record.verdict
+    assert_operator stages.index("repair"), :<, stages.index("suite"),
+      "the baseline's repair must come before the move"
+    assert_includes record.why, "the baseline was red when the step arrived"
+    assert_includes record.why, "before anything was moved"
+  end
+
+  # And with no budget there is no model call at all: the step is `unverified`, which is the
+  # honest verdict for an application whose suite was already red.
+  def test_a_red_baseline_with_no_repair_budget_is_unverified_and_spends_nothing
     dir = track(app)
     record = step(dir, tests: SequencedTests.new(results: [red, red]), repair: FakeRepair,
-      env: { "UPGRADER_REPAIR_ATTEMPTS" => "2" }).run
+      env: {}).run
 
     assert_equal "unverified", record.verdict
     refute_includes record.stages.map(&:stage), "repair"
+    refute_includes record.why, "repair"
   end
 
   # The brief is the step's own record, which is what makes the attempt a repair of *this*

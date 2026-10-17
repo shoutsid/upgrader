@@ -184,6 +184,21 @@ module AgentsFyi
         # own stages.
         @baseline = baseline(stages)
 
+        # **The baseline first, and this is the case old applications actually arrive in.** A
+        # suite that was red before the step makes everything after it unmeasurable
+        # (`Record.verdict`), and for an application from 2013 that is ordinary rather than
+        # exceptional: the lighthouse's own suite was 133 examples red on `You must set
+        # config.secret_key_base in your app's config`, which is a 4.0.0.rc1-era generator
+        # writing `secret_token` while the framework already wanted `secret_key_base`. The
+        # repair is bounded exactly as the post-move one is, the re-run baseline is what makes
+        # it green, and the patch carries it — so a reviewer reads "the suite was red; this
+        # made it green; then the move", in that order.
+        if @baseline && !@baseline.ok?
+          repaired = repair(stages, step, subject: @baseline, before_the_move: true,
+            rerun: -> { @baseline = run_suite(stages, Record::BASELINE) })
+          @baseline = repaired || @baseline
+        end
+
         applied, refused, decisions = apply(stages, step)
         @applied.concat(applied)
         @refused.concat(refused)
@@ -206,7 +221,7 @@ module AgentsFyi
         # baseline and a red suite has a failure attributable to the move, which is what makes
         # repair a measurement rather than a hope; the attempt(s) and the suite they were
         # followed by are stages, so the record says how the rung was reached.
-        repair(stages, step)
+        repair(stages, step, subject: @suite, rerun: -> { @suite = run_suite(stages, Record::SUITE) })
 
         verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages)
         finish(build(step, stages, verdict, why))
@@ -326,8 +341,12 @@ module AgentsFyi
       # there is a failure to repair at all; and the suite is red. A repaired step is still
       # `passed` only because the *suite* says so afterwards — the model's word is never what
       # passes a rung, and the attempt is in the record either way.
-      def repair(stages, step)
-        return nil if @baseline.nil? || !@baseline.ok? || @suite.nil? || !@suite.ran || @suite.ok?
+      def repair(stages, step, subject:, rerun:, before_the_move: false)
+        return nil if subject.nil? || !subject.ran || subject.ok?
+        # A post-move repair is only meaningful against a green baseline: with a red one, the
+        # failure is the application's and there is nothing to attribute to the move. The
+        # baseline's own repair is the one case where "red" is the subject.
+        return nil if !before_the_move && (@baseline.nil? || !@baseline.ok?)
 
         repairer = @repair || Repair
         budget = repairer.budget(@env)
@@ -340,14 +359,17 @@ module AgentsFyi
             to_version: step["to_version"], suite_command: @suite_plan&.command,
             interpreter: @machine.interpreter, image: @machine.image,
             applied: @applied, refused: @refused, decisions: @decisions,
-            output_tail: @suite.output_tail
+            output_tail: subject.output_tail
           },
-          budget: budget, env: @env, out: @out,
-          rerun: -> { @suite = run_suite(stages, Record::SUITE) },
+          budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
           on_attempt: ->(attempt) { stages << repair_stage(attempt) }
         ).run
         @out.puts("  repair: #{result}") if @out && !result.attempts.empty?
-        result.attempts.empty? ? nil : @suite
+        return nil if result.attempts.empty?
+
+        # The re-run happened inside the loop (`rerun` assigns the ivar it was built around),
+        # so what this returns is the *latest* reading of the stage, green or not.
+        before_the_move ? @baseline : @suite
       end
 
       def repair_stage(attempt)

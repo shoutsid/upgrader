@@ -168,14 +168,35 @@ module AgentsFyi
 
         if suite.ok?
           repairs = stages.count { |stage| stage.stage == REPAIR && stage.ran }
-          return [PASSED, "the suite was green before this step and green after it"] if repairs.zero?
+          return [PASSED, "the suite was green before this step and green after it" \
+                          "#{baseline_repair_note(stages)}"] if repairs.zero?
 
           return [PASSED, "the suite was green before this step and green after #{repairs} agent " \
-                          "repair attempt(s); the attempt(s) are in the record"]
+                          "repair attempt(s); the attempt(s) are in the record" \
+                          "#{baseline_repair_note(stages)}"]
         end
 
         [FAILED, "the suite was green before this step and failed after it " \
                  "(exit #{suite.exit_code})#{repair_note(stages)}#{database_note(stages)}"]
+      end
+
+      # **A baseline that was red and then green, as a clause.** The verdict's sentence says
+      # "the suite was green before this step" — which is *false* for an application that
+      # arrived with a red suite and was repaired before anything was measured, and a record
+      # that said it would be describing an application that was measured before it was fixed.
+      # The stage list shows the order; this is the line a reviewer reads first.
+      def self.baseline_repair_note(stages)
+        last_baseline = stages.rindex { |stage| stage.stage == BASELINE }
+        return "" if last_baseline.nil?
+
+        before = stages[0...last_baseline]
+        return "" unless before.any? { |stage| stage.stage == BASELINE && !stage.ok? }
+
+        repairs = before.count { |stage| stage.stage == REPAIR && stage.ran }
+        return "" if repairs.zero?
+
+        " (the baseline was red when the step arrived: #{repairs} agent repair attempt(s) made " \
+          "it green before anything was moved)"
       end
 
       # The repair attempts a failed step carries, as a clause, or "" when there were none.

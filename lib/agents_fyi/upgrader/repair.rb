@@ -102,7 +102,7 @@ module AgentsFyi
       end
 
       def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
-                     on_attempt: nil)
+                     on_attempt: nil, before_the_move: false)
         @root = root
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
@@ -122,6 +122,11 @@ module AgentsFyi
         # Where an attempt is recorded, called as it happens rather than at the end: a loop
         # killed mid-flight must leave the evidence it had.
         @on_attempt = on_attempt
+        # **Whose failure this is.** A suite that went red *after* the move is the move's; a
+        # suite that was already red when the step arrived is the application's — an rc-era
+        # config the framework since requires, a spec that reads a file nobody has — and the
+        # brief has to say which, because the model's first question is "did I do this?".
+        @before_the_move = before_the_move
       end
 
       def run
@@ -255,7 +260,15 @@ module AgentsFyi
         lines = []
         lines << "You are repairing one step of an automated Rails upgrade. You are in a git"
         lines << "worktree of #{e[:repository]} and the move is Rails #{e[:from_version]} -> #{e[:to_version]}."
-        lines << "The application's test suite was GREEN before this move and is RED now."
+        if @before_the_move
+          lines << "**The application's test suite is RED *before* any of this move's changes.**"
+          lines << "Nothing has been moved yet: the failure is the application's own, and the step"
+          lines << "cannot measure anything until the suite is green. Fix the application — the"
+          lines << "usual causes are a configuration the framework now requires, a spec that reads"
+          lines << "something nobody has, and a gem the application declares but does not load."
+        else
+          lines << "The application's test suite was GREEN before this move and is RED now."
+        end
         lines << ""
         lines << "The suite command is: #{e[:suite_command]}"
         lines << "It runs under #{e[:interpreter]}#{e[:image].to_s.empty? ? "" : " (#{e[:image]})"}, which you"
@@ -286,9 +299,15 @@ module AgentsFyi
         lines << "```"
         lines << ""
         lines << "Rules, and they are not negotiable:"
-        lines << "- Fix the application for Rails #{e[:to_version]}. Do not edit the tests to make them"
-        lines << "  pass: a change that weakens a test is not a repair, and the record travels to a"
-        lines << "  reviewer who reads the diff."
+        if @before_the_move
+          lines << "- Make the suite green without changing what it asserts. Do not edit the tests"
+          lines << "  to make them pass: a change that weakens a test is not a repair, and the record"
+          lines << "  travels to a reviewer who reads the diff."
+        else
+          lines << "- Fix the application for Rails #{e[:to_version]}. Do not edit the tests to make them"
+          lines << "  pass: a change that weakens a test is not a repair, and the record travels to a"
+          lines << "  reviewer who reads the diff."
+        end
         lines << "- Do not hand-edit Gemfile.lock."
         lines << "- Keep the change small. This is one rung of a ladder, reviewed on its own."
         lines << "- Stop when you are done."
