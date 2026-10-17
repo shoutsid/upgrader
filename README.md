@@ -146,10 +146,16 @@ The pipeline has three stages that make the rest mean anything:
    about is *researched* first — this client can reach `index.rubygems.org` and the
    service cannot — and the routing is asked again. `replace`/`remove` are the
    preflight's; `blocked` and `unknown` are decisions, never a silent pass.
-8. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
-   Only the meta-gem: an application that pins the framework as components has a
-   different line for each one, and choosing which of them move together is a decision.
-   That repository is refused, with a sentence saying what to do instead.
+8. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails
+   --conservative` runs: the locked version of every gem the resolution does not have to
+   change is kept, because a rung moves Rails and not the world. The lighthouse proved the
+   cost of the alternative — an unconstrained resolve pulled rake 12.3.3 beside Rails 4.1
+   (railties asks only `rake >= 0.8.7`), and `rails:update` died on
+   `Rake::Application#last_comment`, which rake 11 removed. The gem moves applied just
+   before are honoured, since their requirements are what the resolve must satisfy.
+   Only the meta-gem is rewritten: an application that pins the framework as components
+   has a different line for each one, and choosing which of them move together is a
+   decision. That repository is refused, with a sentence saying what to do instead.
 9. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
    application old enough to have a `Rakefile` and no `bin/rails`). Added files are
    adopted; a file the application
