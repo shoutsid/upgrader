@@ -599,6 +599,81 @@ class StepTest < Minitest::Test
     assert_includes evidence[:output_tail], "1 examples, 1 failure"
   end
 
+  # **One default at a time, judged by the application's own suite.** `app:update` writes the file
+  # commented out on purpose; this pass enables one toggle, runs the suite, keeps it if it is green
+  # and puts it back if it is not — so the failure is about the *toggle* rather than about the move,
+  # which is what makes "revert this one" the right answer rather than a guess. A default this
+  # application cannot take stays in the file, under Rails' own comment, as a decision.
+  def test_a_new_default_that_breaks_the_suite_is_put_back_and_the_rest_are_kept
+    dir = track(app)
+    with_source(dir, "config/initializers/new_framework_defaults_5_0.rb", <<~RUBY)
+      # Enable per-form CSRF tokens. Previous versions had false.
+      # Rails.application.config.action_controller.per_form_csrf_tokens = true
+
+      # Raise an error when a translation is missing. Previous versions had false.
+      # Rails.application.config.i18n.raise_on_missing_translations = true
+    RUBY
+    with_source(dir, "config/application.rb",
+      "module Storefront\n  class Application < Rails::Application\n  end\nend\n")
+    tests = SequencedTests.new(results: [green, green, red, green])
+
+    record = step(dir, tests: tests, env: { "UPGRADER_DEFAULT_STEPS" => "5" }).run
+
+    assert record.passed?, record.why
+    file = File.read(File.join(dir, "config/initializers/new_framework_defaults_5_0.rb"))
+    assert_includes file, "# Rails.application.config.action_controller.per_form_csrf_tokens = true",
+      "the toggle the suite refused must be commented out again"
+    assert_includes file, "\nRails.application.config.i18n.raise_on_missing_translations = true"
+    stages = record.stages.select { |stage| stage.stage == "defaults" }
+    assert_equal 3, stages.size, "two toggles, each a suite run of its own, and the summary"
+    assert_includes stages.first.output_tail, "per_form_csrf_tokens"
+    assert_includes stages.first.output_tail, "reverted"
+    assert_includes stages[1].output_tail, "kept"
+    assert_includes stages.last.output_tail, "1 of 2 new default(s) are on"
+  end
+
+  # And when every toggle passes, the guide's last step is taken: the line goes into the
+  # application's class, the file goes, and the suite runs once more to prove the state that
+  # survives — both files having been saved first, so a red run there is reverted exactly.
+  def test_when_every_default_passes_the_file_is_dropped_and_load_defaults_written
+    dir = track(app)
+    with_source(dir, "config/initializers/new_framework_defaults_5_0.rb", <<~RUBY)
+      # Enable per-form CSRF tokens. Previous versions had false.
+      # Rails.application.config.action_controller.per_form_csrf_tokens = true
+
+      # Raise an error when a translation is missing. Previous versions had false.
+      # Rails.application.config.i18n.raise_on_missing_translations = true
+    RUBY
+    with_source(dir, "config/application.rb",
+      "module Storefront\n  class Application < Rails::Application\n  end\nend\n")
+    tests = SequencedTests.new(results: [green, green, green, green, green])
+
+    record = step(dir, tests: tests, env: { "UPGRADER_DEFAULT_STEPS" => "5" }).run
+
+    assert record.passed?, record.why
+    refute File.exist?(File.join(dir, "config/initializers/new_framework_defaults_5_0.rb")),
+      "the file and the line say the same thing; the line is the one that survives"
+    assert_includes File.read(File.join(dir, "config/application.rb")), "config.load_defaults 5.0"
+    last = record.stages.reverse.find { |stage| stage.stage == "defaults" }
+    assert_includes last.output_tail, "every new default is on"
+  end
+
+  # **Off unless a number says otherwise.** Every toggle is a suite run, so a deployment that has
+  # not decided to spend that must not have it spent for it — the same posture as the repair budget,
+  # and the reason this is a switch rather than a default behaviour.
+  def test_the_defaults_pass_is_off_unless_a_number_turns_it_on
+    dir = track(app)
+    with_source(dir, "config/initializers/new_framework_defaults_5_0.rb", <<~RUBY)
+      # Rails.application.config.action_controller.per_form_csrf_tokens = true
+    RUBY
+
+    record = step(dir, tests: SequencedTests.new(results: [green, green])).run
+
+    assert record.passed?, record.why
+    assert_empty record.stages.select { |stage| stage.stage == "defaults" },
+      "the pass ran without being asked for"
+  end
+
   # **The residue reaches the brief, not the blanket.** A change with a call site is work; a change
   # this rung carried that the application does not use is not — and the two are handed over
   # separately, so the agent is not sent looking for call sites that do not exist.

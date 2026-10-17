@@ -49,6 +49,11 @@ module AgentsFyi
       # Which machine this step executes on — see `Machine::RUNTIME_ENV` for the three answers.
       RUNTIME_ENV = Machine::RUNTIME_ENV
 
+      # How many new framework defaults one step may try. **Off unless a number says otherwise**,
+      # because every toggle is a suite run: the same posture as the repair budget, for the same
+      # reason — a deployment decides what it spends.
+      DEFAULTS_ENV = "UPGRADER_DEFAULT_STEPS"
+
       # How many times the pin may be re-run with the gems bundler named. Each round is a
       # resolve, and bundler names what it could not leave alone, so a real application needs
       # one or two; the cap is what keeps a pathological cascade from spending a walk.
@@ -236,6 +241,12 @@ module AgentsFyi
         update(stages)
         boot(stages)
         @suite = suite(stages)
+
+        # **The new defaults, stepped, and only after the move's own suite passed.** A red run here
+        # is then about the toggle and never about the move, which is what makes "revert this one"
+        # the right answer rather than a guess. Off unless a number says otherwise: every toggle is
+        # a suite run, and a deployment that has not decided to spend that must not have it spent.
+        step_defaults(stages, step)
 
         # **The agentic half, and the last thing before the verdict.** A step that ran a green
         # baseline and a red suite has a failure attributable to the move, which is what makes
@@ -601,6 +612,88 @@ module AgentsFyi
         return nil unless @machine.services?
 
         stages << command(Record::SERVICES, ["agents-fyi-services"], chdir: @worktree.root)
+        stages.last
+      end
+
+      # **One default at a time, each judged by the application's own suite.**
+      #
+      # `app:update` writes `config/initializers/new_framework_defaults_<version>.rb` commented out
+      # on purpose — the guide's advice is to turn the defaults on one by one and read what each
+      # does. A walker can do better than reading: enable one, run the suite, keep it if it is green
+      # and put it back if it is not. What a toggle *does* travels in the record beside its verdict,
+      # because the file's own comment above it is Rails' sentence about the change.
+      #
+      # The guide's last step is taken only when every toggle passed: the file and the
+      # `config.load_defaults` line say the same thing, and the line is the one that survives. Both
+      # files are saved first, so a red run there is reverted exactly rather than approximately.
+      def step_defaults(stages, step)
+        budget = @env[DEFAULTS_ENV].to_s.to_i
+        return nil unless budget.positive?
+        # The move's own measurement comes first, and this pass is about the defaults rather than
+        # about the move: a suite that was already red is not a verdict on a toggle.
+        return nil unless @suite&.ok?
+
+        path = Defaults.file_in(@worktree.root)
+        unless path
+          stages << Record::Command.new(stage: Record::DEFAULTS, command: "defaults: nothing to step",
+            ran: true, exit_code: 0, seconds: 0.0,
+            output_tail: "no config/initializers/new_framework_defaults_*.rb in this application")
+          return nil
+        end
+
+        defaults = Defaults.new(path: path, root: @worktree.root)
+        all = defaults.toggles
+        kept = []
+        reverted = []
+        all.first(budget).each do |toggle|
+          defaults.enable(toggle)
+          stage = run_suite(stages, Record::DEFAULTS)
+          stage.output_tail = "#{stage.output_tail}\nnew default: #{toggle} — " \
+                              "#{stage.ok? ? "kept" : "reverted"}"
+          if stage.ok?
+            kept << toggle
+          else
+            defaults.disable(toggle)
+            reverted << toggle
+          end
+        end
+
+        if reverted.empty? && all.any? && kept.size == all.size
+          # One run, after the edits, and not one before them: the suite that matters is the one
+          # that sees the state which survives (`finish_defaults`).
+          finish_defaults(stages, defaults, step, path)
+        elsif all.size > kept.size
+          stages << Record::Command.new(stage: Record::DEFAULTS,
+            command: "defaults: #{all.size - kept.size} toggle(s) left",
+            ran: true, exit_code: 0, seconds: 0.0,
+            output_tail: "#{kept.size} of #{all.size} new default(s) are on; the rest stay in " \
+                         "#{File.basename(path)} with their own comments — a default this " \
+                         "application cannot take is a decision, not a silent flip")
+        end
+        [kept, reverted]
+      end
+
+      # The last step of the guide, with the revert kept exact: both files are read before anything
+      # is written, and a suite that goes red puts them back byte for byte. The file is *not* dropped
+      # until the line is in place and the suite has run, because the file is what a reviewer needs if
+      # it fails.
+      def finish_defaults(stages, defaults, step, path)
+        application = File.join(@worktree.root, "config", "application.rb")
+        before_file = File.binread(path)
+        before_app = File.file?(application) ? File.binread(application) : nil
+        line = defaults.load_defaults!(step["to_version"])
+        defaults.drop!
+        stage = run_suite(stages, Record::DEFAULTS)
+        if line && stage.ok?
+          stage.output_tail = "#{stage.output_tail}\n#{line} and #{File.basename(path)} dropped — " \
+                              "every new default is on, and the suite is green with all of them"
+        else
+          File.binwrite(path, before_file)
+          File.binwrite(application, before_app) if before_app
+          stage.output_tail = "#{stage.output_tail}\n#{line ? "`#{line}` did not hold" : "the " \
+                              "application's class line was not found"}: #{File.basename(path)} is " \
+                              "back and every default it carries is on"
+        end
         stages.last
       end
 

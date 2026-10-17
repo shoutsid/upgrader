@@ -63,6 +63,11 @@ module AgentsFyi
       # its exit code, and the files it touched. A stage per attempt, because "the suite went
       # green after two repairs" and "it went green on the first try" are different records.
       REPAIR = "repair"
+
+      # The new framework defaults, stepped one at a time and judged by the suite (`Defaults`). Its
+      # own stage because each toggle is a suite run, and the record has to say which run was about
+      # which default.
+      DEFAULTS = "defaults"
       BASELINE = "baseline"
       # The application's own database preparation (`db:create`, `db:test:prepare`), run
       # before the baseline. Deliberately *not* required: a suite that manages its own
