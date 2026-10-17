@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "json"
 require "agents_fyi/upgrader"
 
 # The upgrader's vocabulary against the service's, because the upgrader is the client.
@@ -22,8 +23,28 @@ require "agents_fyi/upgrader"
 class VocabularyTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   SCHEMA = File.join(ROOT, "db", "structure.sql")
+  LADDER = File.join(ROOT, "data", "rails_ladder.json")
   # The type's own block, so a pattern that drifted cannot pick up another enum's values.
   VERDICT_TYPE = /CREATE TYPE public\.upgrade_verdict AS ENUM \(\n(.*?)\n\);/m
+
+  # **Every rule and every gap names a change the ladder carries, spelled the way the ladder spells
+  # it.** A rule finds its change by `subject`, and a subject that differs from the ladder's by a
+  # character is a rule that never fires and never says so — the whole residue would report the change
+  # as uncovered while the rule sat there looking written. A *gap* keyed on a misspelled subject fails
+  # the same way and more quietly: it falls back to the generic sentence, so the specific reason
+  # somebody wrote is never read. This is the same class of failure as the two vocabularies above, one
+  # layer up: the ladder is the service's, and this tool has to agree with it.
+  def test_every_rule_and_gap_names_a_change_the_ladder_carries
+    changes = JSON.parse(File.read(LADDER))["steps"].flat_map { |step| step["changes"] }
+    subjects = changes.map { |change| change["subject"] }
+
+    assert_operator subjects.size, :>=, 95, "the ladder stopped being read, so this proves nothing"
+    rewrites = AgentsFyi::Upgrader::Rewrites
+    named = rewrites::RULES.map(&:subject) + rewrites::GAPS.keys + rewrites::PARTIAL.keys
+    assert_empty named.uniq - subjects,
+      "a rule or gap names a change the ladder does not carry, so it can never be reached"
+    assert_empty rewrites.inert(changes), "a rule outlives the change it belongs to"
+  end
 
   # The values `upgrade_verdict` declares, read out of the schema of record.
   #
