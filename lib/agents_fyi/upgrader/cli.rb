@@ -190,16 +190,37 @@ module AgentsFyi
       def step(options)
         return usage_error("step needs --repo PATH|URL") unless options[:repo]
 
-        record = Step.new(
-          repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
-          home: options[:home], out: @out, work: options[:work], record: options[:record],
-          ledger: Ledger.load(File.join(options[:home], "ledger.json")),
-          suite_timeout: options[:step_timeout], force: options[:force],
-          suite_env: options[:suite_env]
-        ).run
-        return step_status(record) unless options[:publish]
+        services = services_for(options)
+        begin
+          record = Step.new(
+            repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
+            home: options[:home], out: @out, work: options[:work], record: options[:record],
+            ledger: Ledger.load(File.join(options[:home], "ledger.json")),
+            suite_timeout: options[:step_timeout], force: options[:force],
+            suite_env: options[:suite_env], services: services
+          ).run
+          return step_status(record) unless options[:publish]
 
-        published(record, options)
+          published(record, options)
+        ensure
+          services&.stop!
+        end
+      end
+
+      # **The services container belongs to the walk, not to a step.** `rvm` mode runs the
+      # application on the host, so its services are a sibling container with published ports
+      # that has to outlive every step of the walk — which is what makes the mode fast: a
+      # container per step, and per interpreter candidate, was the slowest thing a walk did.
+      # The other two modes need none: `docker` puts the services inside the step's own
+      # container, and a native step uses whatever the host already has.
+      def services_for(options)
+        return nil unless rvm_mode?
+
+        Machine::Services.new(home: options[:home], out: @out)
+      end
+
+      def rvm_mode?
+        %w[rvm host].include?(@env[Step::RUNTIME_ENV].to_s.strip.downcase)
       end
 
       # The delivery half of a walk: a branch per passed rung and a pull request chained to
@@ -230,13 +251,18 @@ module AgentsFyi
       end
 
       def serve(options)
-        Serve.new(
-          api: options[:api], home: options[:home], heartbeat: options[:heartbeat],
-          to: options[:to], repos: options[:repos], interval: options[:interval],
-          step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
-          walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
-          suite_env: options[:suite_env]
-        ).run
+        services = services_for(options)
+        begin
+          Serve.new(
+            api: options[:api], home: options[:home], heartbeat: options[:heartbeat],
+            to: options[:to], repos: options[:repos], interval: options[:interval],
+            step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
+            walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
+            suite_env: options[:suite_env], services: services
+          ).run
+        ensure
+          services&.stop!
+        end
       end
 
       # 0 ran, 2 refused, 1 the pipeline could not go on or the suite failed after a

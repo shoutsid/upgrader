@@ -47,11 +47,18 @@ module AgentsFyi
       # One era, as the matrix declares it: a name a human says ("2.2"), the interpreter's own
       # full version (compared against a step's floor, so it must be the *image's* version —
       # `2.2.10`, not `2.2`), the image reference, the base image's pin, and the era's facts.
-      Entry = Struct.new(:name, :ruby, :image, :base, :bundler, keyword_init: true) do
+      Entry = Struct.new(:name, :ruby, :image, :base, :bundler, :rvm, keyword_init: true) do
         def to_h
           { "name" => name, "ruby" => ruby, "image" => image, "base" => base,
-            "bundler" => bundler }
+            "bundler" => bundler, "rvm" => rvm }
         end
+
+        # The rvm name of this era's interpreter, which is what `rvm install <version>`
+        # produces — `ruby-2.1.10`. A deployment that names it differently (a patched build, a
+        # non-rvm manager with an rvm-compatible layout) says so in the matrix, because the
+        # alternative is a host whose interpreter the walker cannot find and a sentence that
+        # does not say why.
+        def rvm_name = rvm.to_s.empty? ? "ruby-#{ruby}" : rvm.to_s
       end
 
       # The matrix could not be read, or an entry in it is not one of these.
@@ -142,7 +149,8 @@ module AgentsFyi
 
           Entry.new(
             name: name, ruby: row.fetch("ruby").to_s, image: overrides[name] || row.fetch("image").to_s,
-            base: row.fetch("base").to_s, bundler: row.fetch("bundler").to_s
+            base: row.fetch("base").to_s, bundler: row.fetch("bundler").to_s,
+            rvm: row["rvm"].to_s
           )
         end
 

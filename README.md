@@ -57,6 +57,9 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 | `UPGRADER_REPAIR_ATTEMPTS` | the repair budget, and the only setting here that spends money. Empty or 0 is off (the library's default); a deployment turns it on with a number, and an agent working in the step's tree gets that many attempts. It needs an authenticated model — the agent uses opencode's own configuration (`UPGRADER_REPAIR_MODEL` pins which model is asked) |
 | `--suite-env FILE` | `step`/`serve`: `KEY=VALUE` lines merged into every command that runs *the application* (the suite, the database preparation, the update, the boot) — for a repository whose secrets are not in it, which is the ordinary case: a git-ignored `config/application.yml`, a `.env` |
 | `--publish` | `step`/`serve`: a passed rung becomes a branch and a pull request chained to the rung before it. Needs `UPGRADER_GITHUB_TOKEN` (a token with `contents: write` and `pull_requests: write`); the token is never written down, and every message on the way out has it replaced |
+| `UPGRADER_RUNTIME` | which machine a step executes on: `docker` (the era's container — the default, and the answer for an old application on a modern host), `rvm` (the host's own interpreter for the era, through rvm, with one services container for the whole walk), or anything else — including nothing — for this process's own Ruby |
+| `UPGRADER_RVM_ROOT` | where rvm lives, for `rvm` mode; defaults to `~/.rvm` |
+| `UPGRADER_RVM_GEMSET` | the rvm gemset the eras are installed in, for `rvm` mode; defaults to `agents-fyi-upgrader`, because a walk must not install its gems into the gemset a developer uses for their own work |
 | `--step-timeout SECONDS` | how long one suite may run |
 | `--cycles N` | stop `serve` after N cycles; the default is never |
 
@@ -232,6 +235,32 @@ A step executed this way needs Docker at runtime. A deployment that runs the loo
 container (see `docker-compose.yml`) mounts `/var/run/docker.sock` and sets
 `UPGRADER_DOCKER_GID` to the socket's group; a hand-run `step` on a host needs neither, and
 can instead run natively on an interpreter that suits the application.
+
+**`UPGRADER_RUNTIME=rvm` is the third machine, and it is the fast one.** The application's
+commands run in this process's own namespace — no container to start, which was the slowest
+thing a walk did (twenty seconds healthy, ninety when the daemon degraded, paid once per
+interpreter candidate) — and the interpreter is the *era's*, resolved through rvm's wrappers:
+`~/.rvm/wrappers/<ruby>@<gemset>/bundle` is a real executable that sets `GEM_HOME`, `GEM_PATH`
+and the interpreter before exec'ing, so a command is an argv with one bin directory in front of
+`PATH`. `scripts/upgrader-rubies.sh install` sets a host up (interpreter, gemset, the era's
+bundler, the wrappers) and `check` says which eras are missing.
+
+Its services are a **sibling container with published ports**, kept for the whole walk rather
+than started per step: an application running on the host reaches `localhost`, which is what a
+2013 `database.yml` says — so `127.0.0.1:5432` is the era image's own PostgreSQL, the roles and
+databases in the application's `database.yml` are created by the same script the container
+machine runs, and the file is never edited for the machine's convenience. It is the *era's*
+image (an old suite may need that era's PostgreSQL) and it is replaced when a step's era changes,
+not restarted per step. The application's own ports are used when they are free; when they are
+not, a free port is chosen and `PGHOST`/`PGPORT` carry it.
+
+**What `rvm` mode trades away is the digest.** A container's identity is its image's content id,
+which is what makes a rebuilt era a *different* machine to the ledger; a host interpreter's
+identity is its version, its gemset and its bundler, and a gem or a system library that changed
+under those versions is not noticed. The stamp says exactly that and no more. It is also why
+`docker` remains the default: the era images carry the era's **C libraries** (ImageMagick 6 for
+rmagick 2.x, libpq, the era's PostgreSQL), which a modern host does not have and which is the
+part rvm cannot give you.
 
 ## What a run writes, and when
 

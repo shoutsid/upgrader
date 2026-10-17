@@ -46,7 +46,8 @@ module AgentsFyi
       # machine with the right interpreter, and — the measured half — the unit suite runs
       # with no daemon at all, so a default of "docker if it happens to be there" would make
       # every test of the pipeline a test that could talk to a container runtime.
-      RUNTIME_ENV = "UPGRADER_RUNTIME"
+      # Which machine this step executes on — see `Machine::RUNTIME_ENV` for the three answers.
+      RUNTIME_ENV = Machine::RUNTIME_ENV
 
       # How many times the pin may be re-run with the gems bundler named. Each round is a
       # resolve, and bundler names what it could not leave alone, so a real application needs
@@ -64,7 +65,7 @@ module AgentsFyi
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
-        research: nil, env: ENV, repair: nil, force: false, suite_env: nil
+        research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil
       )
         @repository = repository
         @to = to
@@ -111,6 +112,7 @@ module AgentsFyi
         # on with a number and a step by hand stays off.
         @repair = repair
         @env = env
+        @services = services
         # **The ledger is a memory, not a lock.** `--force` is the operator saying "walk this
         # rung now" — after fixing whatever made the last attempt unverifiable, after an image
         # rebuild, or simply to see it again — and the record says the ledger was set aside so
@@ -442,7 +444,7 @@ module AgentsFyi
       #   against this process's interpreter, because running a Rails 5 step on a 3.3
       #   interpreter "successfully" is not a thing that can happen and saying so before
       #   spending a bundle resolve is the cheaper answer;
-      # * `docker` walks the era candidates in order and *probes by installing*: the
+      # * `rvm` and `docker` walk the era candidates in order and *probe by installing*: the
       #   interpreter that can install the application's own bundle is the one that can run
       #   its suite, and every candidate's attempt — the reason it was tried and the reason
       #   it was rejected — travels in the record. When none works, the record is
@@ -453,7 +455,7 @@ module AgentsFyi
 
         native = Machine::Native.new
         floor = step["requires_ruby"]
-        unless docker_mode?
+        unless docker_mode? || rvm_mode?
           if Interpreters.meets?(native.ruby_version, floor) == false
             return Record.unverified(
               repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
@@ -523,12 +525,34 @@ module AgentsFyi
       end
 
       def docker_mode?
+        %w[docker container].include?(runtime_mode)
+      end
+
+      # **The application on the host, through the era's own Ruby.** `rvm` and `docker` both
+      # walk the era candidates; what differs is where a candidate executes — the era's
+      # container, or the host's rvm gemset — and what serves it (`Machine::Services` is a
+      # sibling container with published ports, because the application on the host reaches
+      # `localhost` and a `database.yml` from 2013 says exactly that).
+      def rvm_mode?
+        %w[rvm host].include?(runtime_mode)
+      end
+
+      def runtime_mode
         mode = @runtime_mode.nil? ? ENV[RUNTIME_ENV] : @runtime_mode
-        %w[docker container].include?(mode.to_s.strip.downcase)
+        mode.to_s.strip.downcase
+      end
+
+      # The services a host-run step talks to, owned by the *walk* rather than by the step: a
+      # container per step — and per interpreter candidate — is the cost this exists to remove.
+      # Built lazily, so a docker-mode step, whose services live inside its own container,
+      # never creates one.
+      def services
+        @services ||= Machine::Services.new(home: @home, run_id: run_id, out: @out)
       end
 
       def build_machine(entry)
         return @machine_factory.call(entry) if @machine_factory
+        return Machine::Host.new(entry: entry, home: @home, out: @out, services: services) if rvm_mode?
 
         Machine::Container.new(entry: entry, home: @home, out: @out, run_id: run_id)
       end

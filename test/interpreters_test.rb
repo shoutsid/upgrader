@@ -187,6 +187,28 @@ class InterpretersTest < Minitest::Test
   # a `services.sh` the image does not copy is a step whose PostgreSQL was never started.
   # The suite cannot build six images, so it reads the recipe and the script — the same shape
   # as `deploy_config_test.rb` one component over.
+  # **The host setup script is the other half of `UPGRADER_RUNTIME=rvm`, and it has to agree with
+  # the matrix and with the walker.** Three facts, each of which has been wrong in some version of
+  # a setup script: the interpreter comes from the matrix rather than from a second list, the gemset
+  # is the walker's own variable (a walk must not install its gems into the gemset a developer uses
+  # for their own work), and it installs no system packages — rvm's `autolibs` is respected rather
+  # than overridden, because a script that ran `sudo apt-get` on somebody's machine because they
+  # asked for a Ruby is a script that changes that machine in ways nobody read.
+  def test_the_host_setup_script_reads_the_matrix_and_changes_no_system_packages
+    root = File.expand_path("..", __dir__)
+    script = File.read(File.expand_path("../../scripts/upgrader-rubies.sh", root), encoding: "utf-8")
+
+    assert_includes script, "interpreters.json", "the script keeps its own copy of the eras"
+    assert_includes script, 'rvm install "$ruby"', "the era's interpreter is not installed"
+    assert_includes script, 'gem install bundler --version "$bundler"',
+      "the era's bundler is not installed, and a Rails 4-era lockfile requires bundler < 2"
+    assert_includes script, "UPGRADER_RVM_GEMSET", "the gemset is not the walker's own variable"
+    assert_includes script, "UPGRADER_RVM_ROOT", "the rvm root is not the walker's own variable"
+    assert_includes script, "missing_packages", "missing system packages are not reported"
+    refute_match(/^\s*(sudo|apt-get)\b/m, script,
+      "the script changes the host's system packages instead of reporting them")
+  end
+
   def test_the_era_images_and_the_matrix_agree
     root = File.expand_path("..", __dir__)
     dockerfile = File.read(File.join(root, "images", "Dockerfile"), encoding: "utf-8")

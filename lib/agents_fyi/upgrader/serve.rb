@@ -56,7 +56,7 @@ module AgentsFyi
                      step_timeout: 3600, out: $stdout, ledger: nil, cycles: nil,
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
-                     publish_class: Publish, suite_env: nil)
+                     publish_class: Publish, suite_env: nil, services: nil)
         @api = api
         @home = home
         @to = to
@@ -67,6 +67,9 @@ module AgentsFyi
         # read as "the top of the service's ladder" — the read that exists for exactly this —
         # instead of the deliberate idle an empty target means without it.
         @walk = walk
+        # The services a host-run walk talks to, one container for the whole loop (see
+        # `Machine::Services`): a step must not own it, because the next step needs it too.
+        @services = services
         @publish = publish
         @rungs = rungs || DEFAULT_RUNGS_PER_CYCLE
         # Injectable so the suite can drive "a passed rung is published" without a token, a
@@ -261,7 +264,7 @@ module AgentsFyi
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
-          corpus: @corpus, reuse: true
+          corpus: @corpus, reuse: true, services: @services
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")

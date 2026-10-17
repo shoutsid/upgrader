@@ -49,11 +49,18 @@ module AgentsFyi
       # `sleep infinity`; `tail -f /dev/null` is the alternative and it reads as a trick.
       KEEPALIVE = %w[sleep infinity].freeze
 
-      # The label every step container carries, and the pid of the process that owns it. A
-      # container outlives a walker that was *killed* rather than ended (see `reap!`), so the
-      # owner is written onto it where the next run — or an operator — can read it.
+      # The label every container this tool starts carries, and the pid of the process that owns
+      # it. A container outlives a walker that was *killed* rather than ended (see `reap!`), so
+      # the owner is written onto it where the next run — or an operator — can read it. **A step
+      # container and a services container are reaped by the same rule**, which is why the labels
+      # live here rather than on one of the two.
       LABEL = "org.agentsfyi.upgrader.step"
       PID_LABEL = "org.agentsfyi.upgrader.pid"
+
+      # The names this tool gives its containers. Both are reaped when the process that owns
+      # them is gone; the pattern is what `reap!` filters on.
+      NAME_PREFIX = "agentsfyi-"
+      NAME_PATTERN = "name=^agentsfyi-(step|services)-"
 
       # The interpreter's own home inside the container, on the volume, so a gem's build
       # cache (`~/.gem`) and a bundler's user config survive between steps rather than being
@@ -84,10 +91,31 @@ module AgentsFyi
       # How long a `docker version` probe may take before this machine is declared absent.
       DOCKER_PROBE_SECONDS = 5
 
+      # Which machine a step executes on: `docker` (the era's container), `rvm` (the host's
+      # interpreter for the era), or anything else — including nothing — for this process's own
+      # Ruby. Named here rather than on `Step` because the machines and the step all read it,
+      # and a name written in three places is a name that drifts.
+      RUNTIME_ENV = "UPGRADER_RUNTIME"
+
       # A path this machine cannot reach — outside the mounted home — is refused rather than
       # translated into a path that does not exist in the container and would run a command
       # somewhere nobody looked.
       class Unavailable < StandardError; end
+
+      # A host path as a container that has the walker's home mounted at `CONTAINER_ROOT` sees
+      # it, or a refusal. One function because two machines mount the home — the step's own
+      # container and the services container — and a path translated two different ways is a
+      # command that runs in a directory nobody looked at.
+      def self.translate(path, home)
+        full = File.expand_path(path)
+        unless full == home || full.start_with?("#{home}/")
+          raise Unavailable,
+            "#{path} is outside this step's home (#{home}), which is the only directory " \
+            "mounted into its interpreter container"
+        end
+
+        "#{CONTAINER_ROOT}#{full.delete_prefix(home)}"
+      end
 
       # The container a step executes on.
       class Container
@@ -168,7 +196,7 @@ module AgentsFyi
         def stop!
           return if @container_id.to_s.empty?
 
-          Open3.capture3("docker", "rm", "--force", @container_id)
+          @inspector.capture3("docker", "rm", "--force", @container_id)
           @container_id = nil
         rescue StandardError
           nil
@@ -213,7 +241,7 @@ module AgentsFyi
         def self.list(inspector)
           format = "{{.ID}}\t{{.Names}}\t{{.Label \"#{PID_LABEL}\"}}"
           listing, _status = inspector.capture2e(
-            "docker", "ps", "-a", "--filter", "name=^agentsfyi-step-", "--format", format
+            "docker", "ps", "-a", "--filter", NAME_PATTERN, "--format", format
           )
           listing.to_s.lines.filter_map do |line|
             id, name, pid = line.split("\t", 3).map(&:strip)
@@ -283,16 +311,7 @@ module AgentsFyi
         # A host path, as the container sees it. Anything outside the mounted home is refused:
         # the container has no view of the rest of the machine, and a command sent to a path
         # that does not exist there would run in whatever directory it did find.
-        def translate(path)
-          full = File.expand_path(path)
-          unless full == @home || full.start_with?("#{@home}/")
-            raise Unavailable,
-              "#{path} is outside this step's home (#{@home}), which is the only directory " \
-              "mounted into its interpreter container"
-          end
-
-          "#{CONTAINER_ROOT}#{full.delete_prefix(@home)}"
-        end
+        def translate(path) = Machine.translate(path, @home)
 
         private
 
@@ -366,6 +385,290 @@ module AgentsFyi
           return text unless text == @home || text.start_with?("#{@home}/")
 
           translate(text)
+        end
+      end
+
+      # The script the image runs to start the services, and the ports the application's own
+      # configuration expects when it names none.
+      SERVICES_SCRIPT = "agents-fyi-services"
+      PG_PORT = 5432
+      REDIS_PORT = 6379
+
+      # **The application on the host, through the era's own Ruby** (`UPGRADER_RUNTIME=rvm`).
+      #
+      # No container is started for the application, which was the slowest thing a walk did —
+      # twenty seconds healthy, ninety when the daemon degraded, paid once per interpreter
+      # candidate — and the interpreter is the *era's*, resolved through rvm rather than being
+      # whatever Ruby happens to be first on the path.
+      #
+      # rvm's **wrappers** are the seam: `~/.rvm/wrappers/<ruby>@<gemset>/bundle` is a real
+      # executable that sets `GEM_HOME`, `GEM_PATH` and the interpreter before exec'ing, so a
+      # command here is an argv with one bin directory in front of `PATH` — the same shape
+      # `Machine::Container` produces with `docker exec`. The gemset is the walker's own, so a
+      # walk cannot disturb what a developer installed for their own work.
+      #
+      # **What this machine has no equivalent of is an image digest, and the difference is
+      # real.** A container's identity is its image's content id, which is what makes a
+      # rebuilt era a *different* machine to the ledger; a host interpreter's identity is its
+      # version, its gemset and its bundler, and a gem or a system library that changed under
+      # those same versions is not noticed. The stamp says exactly that much and no more.
+      #
+      # Services are a **sibling container with published ports** (`Services`), because an
+      # application running on the host reaches `localhost` — which is what a 2013
+      # `database.yml` says, and the reason the container machine keeps them inside itself.
+      class Host
+        # rvm's own directory, and the gemset this tool keeps its eras in: a walk that installed
+        # its gems into the developer's default gemset would be a walk that changed the machine
+        # it was run on.
+        RVM_ENV = "UPGRADER_RVM_ROOT"
+        GEMSET_ENV = "UPGRADER_RVM_GEMSET"
+        DEFAULT_GEMSET = "agents-fyi-upgrader"
+
+        attr_reader :entry, :home
+
+        def initialize(entry:, home:, services:, out: nil, runner: Shell, rvm_root: nil,
+                       gemset: nil)
+          @entry = entry
+          @home = File.expand_path(home)
+          @services = services
+          @out = out
+          @runner = runner
+          @rvm_root = rvm_root.to_s.strip
+          @rvm_root = File.expand_path("~/.rvm") if @rvm_root.empty?
+          @gemset = gemset.to_s.strip
+          @gemset = DEFAULT_GEMSET if @gemset.empty?
+          @unavailable = nil
+        end
+
+        # The rvm name of the era's interpreter — what `rvm install <version>` produces, which
+        # the matrix may override for a deployment that names it differently.
+        def rvm_name = entry.rvm.to_s.empty? ? "ruby-#{entry.ruby}" : entry.rvm.to_s
+
+        # Where the era's commands live: rvm's wrapper directory for this gemset.
+        def wrapper = File.join(@rvm_root, "wrappers", "#{rvm_name}@#{@gemset}")
+
+        def installed? = File.executable?(File.join(wrapper, "ruby"))
+
+        # The interpreter, then the services it will talk to. Both are refused by name when they
+        # are not there, because "no interpreter could install the bundle" is the wrong sentence
+        # for a host that has not been set up.
+        def start!(stage:, stages:)
+          unless installed?
+            @unavailable = "the era's interpreter is not installed on this host: " \
+                           "#{wrapper}/ruby does not exist — `scripts/upgrader-rubies.sh " \
+                           "install #{entry.name}` installs it (rvm install #{entry.ruby}, " \
+                           "gemset #{@gemset}), or run this step with #{RUNTIME_ENV}=docker"
+            return false
+          end
+          unless @services.ensure!(entry, stage: stage, stages: stages)
+            @unavailable = @services.unavailable
+            return false
+          end
+
+          verified = @runner.run([File.join(wrapper, "ruby"), "-v"], stage: stage, chdir: @home)
+          stages << verified
+          unless verified.ok?
+            @unavailable = "the era's interpreter could not be asked: " \
+                           "#{Record.first_line(verified.output_tail)}"
+            return false
+          end
+          unless verified.output_tail.to_s.include?("ruby #{entry.ruby}")
+            @unavailable = "the host's rvm answers #{Record.first_line(verified.output_tail)} and " \
+                           "the matrix calls it ruby #{entry.ruby}; the matrix and the host disagree"
+            return false
+          end
+
+          true
+        end
+
+        # Why the last `start!` failed, in one sentence.
+        attr_reader :unavailable
+
+        # Nothing to stop: the interpreter is the host's, and the services belong to the *walk*
+        # rather than to a step (`Services#stop!` is the caller's, at the end of the walk).
+        def stop! = nil
+
+        def command(argv, chdir:, env: {})
+          return @services.command(argv, chdir: chdir) if argv.first.to_s == SERVICES_SCRIPT
+
+          [argv, command_env(env)]
+        end
+
+        # A command line the application stated (`bundle exec rspec`): a shell, because
+        # splitting it here would be guessing at its quoting. The one name that is not the
+        # application's is the services script, which runs where the services are.
+        def script(command, chdir:, env: {})
+          return @services.command(["sh", "-lc", command.to_s], chdir: chdir) if
+            command.to_s.strip == SERVICES_SCRIPT
+
+          [["sh", "-lc", command.to_s], command_env(env)]
+        end
+
+        def interpreter = "ruby #{entry.ruby}"
+        def ruby_version = entry.ruby
+        def era = entry.name
+        # The record's `image` field for a machine that has none: where the interpreter came
+        # from, which is the closest honest analogue of an image reference.
+        def image = "rvm #{rvm_name}@#{@gemset}"
+        def services? = true
+
+        def stamp
+          "#{interpreter} (rvm #{rvm_name}@#{@gemset}, bundler #{entry.bundler})"
+        end
+
+        private
+
+        # What every command of the application's runs under: where the services answer, the
+        # caller's own environment (the bundle path, the suite's secrets), and the era's bin
+        # directory in front of `PATH` — which is what makes `bin/rails`'s shebang resolve to
+        # the era's Ruby rather than to this process's.
+        def command_env(env)
+          @services.env.merge(env).merge("PATH" => "#{wrapper}:#{ENV["PATH"]}")
+        end
+      end
+
+      # **The services a host-run application talks to, in one container for the whole walk.**
+      #
+      # The container machine starts PostgreSQL and Redis *inside* the step's own container,
+      # and its comment gives the reason: a 2013 `database.yml` says `host: localhost`, and a
+      # service on a Docker network is not localhost. With the application on the host, a
+      # *published port* is localhost — so the services can be a sibling container that outlives
+      # the step, which is the whole point of this class: a container per step, and per
+      # interpreter candidate, was the slowest thing a walk did.
+      #
+      # It is the **era's image**, because an old application's suite may need that era's
+      # PostgreSQL, and it is replaced when a step's era changes rather than restarted per step.
+      # The application's own ports are used when they are free; when they are not, a free port
+      # is chosen and `PGHOST`/`PGPORT` carry it — libpq honours those when the `database.yml`
+      # names no host or port, so the application's configuration still needs no edit, and the
+      # record says which port answered.
+      class Services
+        attr_reader :pg_port, :redis_port, :container_id, :name
+
+        def initialize(home:, run_id: nil, out: nil, runner: Shell, pg_port: nil, redis_port: nil,
+                       uid: Process.uid, gid: Process.gid, volume: nil, self_marker: SELF_MARKER,
+                       name: nil, inspector: Open3)
+          @home = File.expand_path(home)
+          @out = out
+          @runner = runner
+          @uid = uid
+          @gid = gid
+          @inspector = inspector
+          # nil asks the environment; anything else, including "", is what the caller said.
+          @volume = (volume.nil? ? ENV[VOLUME_ENV] : volume).to_s.strip
+          @self_marker = self_marker
+          @name = name || "agentsfyi-services-#{run_id || Process.pid}"
+          @pg_port = pg_port || free_port(PG_PORT)
+          @redis_port = redis_port || free_port(REDIS_PORT)
+          @container_id = nil
+          @entry = nil
+          @unavailable = nil
+        end
+
+        # The services for this era, running. A step on a *different* era replaces the container
+        # rather than adding one, because the application's `localhost:5432` can only be one
+        # thing at a time — and the era's PostgreSQL is what an old suite needs.
+        def ensure!(entry, stage:, stages:)
+          return true if !@container_id.nil? && @entry&.name == entry.name
+
+          stop!
+          started = @runner.run(start_argv(entry), stage: stage, chdir: @home)
+          stages << started
+          unless started.ok?
+            @unavailable = "the services container would not start: " \
+                           "#{Record.first_line(started.output_tail)}"
+            return false
+          end
+
+          @container_id = started.output_tail.to_s.strip.lines.last.to_s.strip
+          @entry = entry
+          @out&.puts("  services: #{entry.image} on 127.0.0.1:#{@pg_port} (postgres), " \
+                     "127.0.0.1:#{@redis_port} (redis)") if @out
+          true
+        end
+
+        attr_reader :unavailable
+
+        # What the application's commands read to find them. `PGHOST` is set even when the
+        # `database.yml` names no host: libpq's default is the Unix socket, and a socket inside
+        # a container is not one the host can open.
+        def env
+          {
+            "PGHOST" => "127.0.0.1",
+            "PGPORT" => @pg_port.to_s,
+            "REDIS_URL" => "redis://127.0.0.1:#{@redis_port}"
+          }
+        end
+
+        # A command inside the services container — the script that starts them, with the
+        # application's directory as the working directory, because that is where it reads the
+        # `database.yml` whose roles and databases it creates.
+        def command(argv, chdir:)
+          ["docker", "exec", "--user", "#{@uid}:#{@gid}", "--workdir",
+           Machine.translate(chdir, @home), @container_id.to_s, *argv]
+        end
+
+        # Removed when the walk is over — the caller's job, and the reason a killed walker's is
+        # reaped: it carries the pid of the process that owns it, like a step's container.
+        def stop!
+          return if @container_id.to_s.empty?
+
+          @inspector.capture3("docker", "rm", "--force", @container_id)
+          @container_id = nil
+          @entry = nil
+        rescue StandardError
+          nil
+        end
+
+        private
+
+        def start_argv(entry)
+          ["docker", "run", "-d", "--rm", "--name", @name,
+           "--label", "#{LABEL}=#{@name}",
+           "--label", "#{PID_LABEL}=#{Process.pid}",
+           "-p", "127.0.0.1:#{@pg_port}:#{PG_PORT}",
+           "-p", "127.0.0.1:#{@redis_port}:#{REDIS_PORT}",
+           *mount_argv,
+           "-e", "HOME=#{CONTAINER_HOME}",
+           "-e", "TMPDIR=#{CONTAINER_TMP}",
+           "-e", "LANG=C.UTF-8",
+           "-e", "PGUSER=app",
+           "-e", "AGENTS_FYI_UID=#{@uid}",
+           "-e", "AGENTS_FYI_GID=#{@gid}",
+           "-w", CONTAINER_ROOT,
+           entry.image, "agents-fyi-start", *KEEPALIVE]
+        end
+
+        def mount_argv
+          name = @volume.empty? ? self_volume : @volume
+          return ["--mount", "type=bind,source=#{@home},target=#{CONTAINER_ROOT}"] if name.empty?
+
+          ["--mount", "type=volume,source=#{name},target=#{CONTAINER_ROOT}"]
+        end
+
+        def self_volume
+          return @self_volume unless @self_volume.nil?
+
+          unless File.exist?(@self_marker)
+            return @self_volume = ""
+          end
+          template = "{{range .Mounts}}{{if eq .Destination \"#{@home}\"}}{{.Name}}{{end}}{{end}}"
+          out, _status = @inspector.capture2e("docker", "inspect", "-f", template, Socket.gethostname)
+          @self_volume = out.to_s.strip
+        rescue StandardError
+          @self_volume = ""
+        end
+
+        # The port the application expects, or a free one when something else on this machine
+        # already has it: a developer with PostgreSQL running is not a developer who cannot walk.
+        def free_port(preferred)
+          TCPServer.new("127.0.0.1", preferred).close
+          preferred
+        rescue SystemCallError
+          server = TCPServer.new("127.0.0.1", 0)
+          port = server.addr[1]
+          server.close
+          port
         end
       end
 

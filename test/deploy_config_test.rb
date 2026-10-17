@@ -274,11 +274,16 @@ class DeployConfigTest < Minitest::Test
       "the walker cannot start the containers it executes steps on"
     assert_match(/group_add:\s*\n\s+-\s*"\$\{UPGRADER_DOCKER_GID/, block,
       "the socket is mounted without the group that may use it")
-    # The runtime is read by the step from the environment (`Step::RUNTIME_ENV`), not
-    # passed as a flag: it is a property of the deployment rather than of one invocation,
-    # and the entrypoint's flag contract is checked by the test above.
-    assert_includes File.read(CLI_PATH.gsub("cli.rb", "step.rb"), encoding: "utf-8"),
+    # The runtime is read from the environment (`Step::RUNTIME_ENV`), not passed as a flag: it
+    # is a property of the deployment rather than of one invocation, and the entrypoint's flag
+    # contract is checked by the test above. **The name is declared once**, on the machine layer
+    # that the step and all three machines read — a name written in three places is a name that
+    # drifts, and the step's constant is that name rather than a second copy of the string.
+    assert_includes File.read(CLI_PATH.gsub("cli.rb", "machine.rb"), encoding: "utf-8"),
       'RUNTIME_ENV = "UPGRADER_RUNTIME"',
+      "the runtime's name is no longer declared on the machine layer"
+    assert_includes File.read(CLI_PATH.gsub("cli.rb", "step.rb"), encoding: "utf-8"),
+      "RUNTIME_ENV = Machine::RUNTIME_ENV",
       "the step no longer reads the runtime the compose file sets"
   end
 
