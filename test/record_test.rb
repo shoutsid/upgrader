@@ -37,6 +37,26 @@ class RecordTest < Minitest::Test
     assert_includes why, "green before this step and green after it"
   end
 
+  # **A stage that ran more than once is judged by its last attempt.** The pin retries with the
+  # gems bundler named it could not leave alone, and a walk whose pin succeeded on the second
+  # round is a walk whose pin succeeded — the first round's exit 6 is evidence, not a verdict.
+  def test_a_stage_that_ran_more_than_once_is_judged_by_its_last_attempt
+    pin = AgentsFyi::Upgrader::Record::PIN
+    word, why = AgentsFyi::Upgrader::Record.verdict(
+      baseline: suite, suite: suite,
+      stages: [command(stage: pin, exit_code: 6), command(stage: pin, exit_code: 0)]
+    )
+
+    assert_equal "passed", word, why
+
+    failed, failed_why = AgentsFyi::Upgrader::Record.verdict(
+      baseline: suite, suite: suite, stages: [command(stage: pin, exit_code: 6)]
+    )
+
+    assert_equal "failed", failed
+    assert_includes failed_why, "pin did not succeed"
+  end
+
   # The finding this tool exists to produce.
   def test_a_failure_after_a_green_baseline_is_the_step_s_b_doing
     word, why = verdict(baseline: suite, test: suite(exit_code: 1))

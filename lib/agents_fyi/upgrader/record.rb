@@ -143,8 +143,18 @@ module AgentsFyi
       # own exit code and a reader acts on them differently: a red suite after a green
       # baseline is a finding about the move, unless the command that loads the test schema
       # never worked, in which case nothing about the move was measured at all.
+      # **The failed stages a verdict gates on, one per kind, judged by each kind's last
+      # attempt.** The pin is the one stage that may run more than once — each round unlocks the
+      # gems bundler said it could not leave alone — and a walk whose pin succeeded on the
+      # second round is a walk whose pin succeeded. `filing.rb` reads this same list, so the
+      # sentence a reader gets from the verdict and the evidence filed are about one command.
+      def self.failed_stages(stages)
+        last = stages.group_by(&:stage).transform_values(&:last)
+        REQUIRED.filter_map { |stage| last[stage] }.reject(&:ok?)
+      end
+
       def self.verdict(baseline:, suite:, stages:)
-        failed = stages.select { |stage| REQUIRED.include?(stage.stage) && !stage.ok? }
+        failed = failed_stages(stages)
         unless failed.empty?
           first = failed.first
           return [FAILED, "#{first.stage} did not succeed: `#{first.command}` " \

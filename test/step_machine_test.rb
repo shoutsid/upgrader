@@ -45,6 +45,7 @@ class StepMachineTest < Minitest::Test
         actionpack (4.0.0.rc1)
           activesupport (= 4.0.0.rc1)
         activesupport (4.0.0.rc1)
+        i18n (0.6.4)
         rails (4.0.0.rc1)
           actionpack (= 4.0.0.rc1)
           railties (= 4.0.0.rc1)
@@ -287,6 +288,31 @@ class StepMachineTest < Minitest::Test
     assert_includes command, "--conservative", command
     refute_includes command, "rake ", command
     refute_includes command, "sprockets-rails", command
+  end
+
+  # **A locked gem the move requires is named by bundler itself, and the pin asks again.** The
+  # lighthouse proved the framework's own gems are not enough: `i18n` was locked at 0.6.4 and
+  # activesupport 4.1.0 requires `i18n (>= 0.6.9, ~> 0.6)`, so the first resolve could not find
+  # a compatible set. Bundler's message names exactly that gem — it is the resolver's own answer
+  # for this application, which no matrix here could have — and the next round unlocks it while
+  # everything else stays where it was. The first round's failure stays in the record.
+  def test_a_pin_bundler_could_not_resolve_names_what_bundler_named_and_tries_again
+    runner = FakeRunner.new(answers: {
+      "i18n" => [0, ""],
+      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+                             "versions for gem \"i18n\":\n  In snapshot (Gemfile.lock):\n    " \
+                             "i18n (= 0.6.4)\n"]
+    })
+
+    record = step(app(lockfile: FRAMEWORK_LOCK), machines: machines, runner: runner).run
+
+    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+
+    assert_equal 2, pins.length, "the pin should have been asked again with the gem bundler named"
+    refute_includes pins.first.command, "i18n", pins.first.command
+    assert_includes pins.last.command, "i18n", pins.last.command
+    assert pins.last.ok?, pins.last.output_tail
+    assert record.passed?, record.why
   end
 
   # No interpreter can install this application's bundle. The verdict is `unverified` — the

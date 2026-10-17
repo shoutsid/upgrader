@@ -156,11 +156,11 @@ module AgentsFyi
       # The stage that made this a failure, chosen in the same order `Record.verdict`
       # chooses it — a required stage first, then the suite, then the baseline — so the
       # sentence a reader gets from the verdict and the evidence filed here are about the
-      # same command. It lives here rather than on `Record` because `Record` must not depend
-      # on how a report is filed; if a third reader ever needs it, that is the moment to
-      # move it.
+      # same command. The first half is `Record.failed_stages` rather than a second copy of
+      # the rule, because the rule now has a subtlety (a stage that ran more than once is
+      # judged by its last attempt) and two copies of a subtlety is how they disagree.
       def self.failing_stage(record:)
-        failed = record.stages.select { |stage| Record::REQUIRED.include?(stage.stage) && !stage.ok? }
+        failed = Record.failed_stages(record.stages)
         return failed.first unless failed.empty?
         return record.suite if record.suite && !record.suite.ok?
 

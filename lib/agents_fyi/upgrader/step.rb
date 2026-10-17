@@ -48,6 +48,11 @@ module AgentsFyi
       # every test of the pipeline a test that could talk to a container runtime.
       RUNTIME_ENV = "UPGRADER_RUNTIME"
 
+      # How many times the pin may be re-run with the gems bundler named. Each round is a
+      # resolve, and bundler names what it could not leave alone, so a real application needs
+      # one or two; the cap is what keeps a pathological cascade from spending a walk.
+      PIN_ROUNDS = 5
+
       # Whether this run goes into the shared corpus: the run record the queue and the
       # coverage figure are built from, and — for a failure — a report filed through
       # precheck. Off by default, and `serve` is what turns it on. The reason is that a
@@ -981,17 +986,49 @@ module AgentsFyi
         end
 
         File.write(path, updated)
-        # **`--conservative`, because a rung moves Rails and not the world.** The lighthouse
-        # proved what the alternative costs: the application pinned rake 10.0.4, the
-        # unconstrained update resolved 12.3.3 (railties 4.1 only asks `rake >= 0.8.7`), and
-        # Rails 4.1's own `rails:update` then died on `Rake::Application#last_comment`, which
-        # rake 11 removed — a rung that failed on a gem the move had no reason to touch, and
-        # a failure that reads as the application's. `--conservative` keeps the locked version
-        # of everything the resolution does not have to change, which is the same rule the
-        # routing states: what moves is what this rung requires.
-        stages << command(Record::PIN, ["bundle", "update", *pin_gems, "--conservative"],
-          chdir: @worktree.root, env: @worktree.bundle_env)
+        pin(stages)
         nil
+      end
+
+      # **The pin is a conversation with the resolver, and `--conservative` is why.** A rung
+      # moves Rails and not the world: the lighthouse proved what the alternative costs — the
+      # application pinned rake 10.0.4, the unconstrained `bundle update rails` resolved 12.3.3
+      # (railties 4.1 only asks `rake >= 0.8.7`), and Rails 4.1's own `rails:update` then died
+      # on `Rake::Application#last_comment`, which rake 11 removed. So the first attempt names
+      # the framework's own gems and keeps everything else where the application put it.
+      #
+      # **A locked gem the move *requires* is then named by bundler itself.** Its message is
+      # the authority on what the resolve could not leave alone — "could not find compatible
+      # versions for gem i18n: rails (= 4.1.0) ... activesupport (= 4.1.0) ... depends on i18n
+      # (>= 0.6.9, ~> 0.6)" — a fact no compatibility matrix here could have, because it is the
+      # resolver's own answer for this application. Each round unlocks exactly the gems named,
+      # so `i18n` and `coffee-rails` move while `rake` stays at 10.0.4. The rounds are capped
+      # because a cascade is finite but a walk is not: every round adds at least one gem, and
+      # the cap is what stops a pathological one from spending the step.
+      def pin(stages)
+        gems = pin_gems
+        PIN_ROUNDS.times do
+          stage = command(Record::PIN, ["bundle", "update", *gems, "--conservative"],
+            chdir: @worktree.root, env: @worktree.bundle_env)
+          stages << stage
+          return stage if stage.ok?
+
+          named = stuck_gems(stage.output_tail) - gems
+          return stage if named.empty?
+
+          gems += named
+        end
+        stages.last
+      end
+
+      # The gems bundler said it could not leave alone, as its own message names them. Read
+      # rather than guessed: the resolver knows this application's requirement graph, and a
+      # list of "gems that usually have to move with Rails" would be a second, worse answer.
+      # Names the lockfile does not pin are dropped — nothing outside it can be unlocked.
+      def stuck_gems(text)
+        quoted = text.to_s.scan(/could not find compatible versions for gem "([^"]+)"/).flatten
+        bare = text.to_s.scan(/could not find compatible versions for gem ([\w.-]+)/).flatten
+        ((quoted + bare).uniq & @lockfile.specs.keys)
       end
 
       # **The gems that move with the meta-gem, and the measurement that says they must be
