@@ -40,7 +40,7 @@ module AgentsFyi
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--publish] [--suite-env FILE]
-          agents-fyi-upgrader prune
+          agents-fyi-upgrader prune [--home DIR]
 
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
@@ -57,10 +57,11 @@ module AgentsFyi
                   `app:update` keeping only what it adds; boot it; run the suite again.
                   Prints the record, and writes the patch and the record as JSON with
                   --record. Never writes to --repo.
-          prune   remove the step containers a killed run left running. A container is
-                  removed when its own process ends; a process that is *killed* runs no
-                  cleanup at all, so its container keeps its services and its memory until
-                  this looks. `step` and `serve` run the same pass before starting one.
+          prune   remove what finished and killed runs left behind: the step containers a
+                  killed run kept running (a process that is *killed* runs no cleanup at
+                  all, so its container keeps its services and its memory) and the bundle
+                  a run installed, which is per-run by design and 150 MB each. `step` and
+                  `serve` run the same pass before they start one of their own.
           serve   the same, one step per repository per cycle, over a durable ledger.
                   With `--walk` it chains rungs within a cycle (up to `--rungs`) and reads an
                   empty `--to` as the top of the service's ladder; with `--publish` it pushes
@@ -176,10 +177,12 @@ module AgentsFyi
       # they end, and a process that is killed runs no `ensure` at all — so a container from a
       # crash or a `SIGKILL` keeps running until something looks. This is that look, and the
       # same pass runs before any container starts.
-      def prune(_options)
-        removed = Machine::Container.reap!(out: @out, inspector: @inspector)
-        if removed.empty?
-          @out.puts("nothing to reap: every step container's process is still running")
+      def prune(options)
+        containers = Machine::Container.reap!(out: @out, inspector: @inspector)
+        bundles = Source.prune_bundles(home: options[:home], out: @out)
+        if containers.empty? && bundles.empty?
+          @out.puts("nothing to prune: no step container outlived its process and no run " \
+                    "left a bundle behind")
         end
         EXIT_OK
       end

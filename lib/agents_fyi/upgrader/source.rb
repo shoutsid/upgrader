@@ -155,6 +155,33 @@ module AgentsFyi
          "BUNDLE_WITHOUT" => "development" }
       end
 
+      # **The bundles of runs that are over.** A gemset is per-run on purpose — a killed step
+      # must not leave a half-installed one for the next run to trust — and the price of that is
+      # that nothing ever asks for the directory again: 21 of them, 2.0 GB and 154,560 files
+      # under this walker's home, which is the bind mount Docker sets up for *every* step.
+      # Measured: one step's `docker run` went from twenty seconds to **five minutes** as that
+      # directory grew, and the step that pays for it has not started yet.
+      #
+      # A run directory's name carries the pid that owns it (`run-<timestamp>-<pid>`), so a run
+      # whose process is gone is a run whose bundle is dead weight. A live run's bundle is never
+      # touched, and neither is the kept tree's under `targets/` — that one is not a run at all,
+      # it is the reuse a walk is built around, and it has no run directory to be judged by.
+      def self.prune_bundles(home:, out: nil)
+        removed = []
+        Dir[File.join(home, "work", "*", "run-*")].each do |root|
+          pid = File.basename(root)[/run-\d+-(\d+)\z/, 1]
+          next if pid.nil? || Processes.alive?(pid)
+
+          path = File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16])
+          next unless File.directory?(path)
+
+          FileUtils.remove_entry(path)
+          removed << path
+        end
+        out&.puts("  pruned #{removed.size} bundle(s) of runs that are over") if removed.any?
+        removed
+      end
+
       # The commit, or nil when the source is not a git working tree — which is a
       # fact worth printing rather than a reason to refuse: a person pointing this at
       # an unversioned export still gets the plan they asked for.

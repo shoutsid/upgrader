@@ -135,6 +135,10 @@ module AgentsFyi
         @decisions = []
         @out.puts("step: #{@repository} -> #{@to}") if @out
 
+        # What finished runs left behind, reclaimed before this one adds to it: the home is the
+        # bind mount the step's own container is given, and its size is paid at `docker run`.
+        Source.prune_bundles(home: @home, out: @out)
+
         prepared = prepare(stages)
         record = prepared if prepared.is_a?(Record)
         return finish(record) if record

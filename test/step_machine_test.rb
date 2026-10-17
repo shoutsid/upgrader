@@ -315,6 +315,24 @@ class StepMachineTest < Minitest::Test
     assert record.passed?, record.why
   end
 
+  # **A step prunes before it installs, not only when an operator asks.** The home it mounts
+  # into its own container is the bind mount Docker sets up at `docker run`, and what a finished
+  # run left there is paid by the *next* step's container start — measured, twenty seconds to
+  # five minutes as the bundles accumulated.
+  def test_a_step_prunes_the_bundles_of_runs_that_are_over_before_it_installs
+    dir = app
+    gone = Process.spawn("true")
+    Process.wait(gone)
+    root = File.join(dir, "work", "abc123", "run-20261017203314-#{gone}")
+    FileUtils.mkdir_p(root)
+    bundle = File.join(dir, "bundles", Digest::SHA256.hexdigest(root)[0, 16])
+    FileUtils.mkdir_p(bundle)
+
+    step(dir, machines: machines).run
+
+    refute File.exist?(bundle), "a finished run's bundle was left in the home this step mounts"
+  end
+
   # No interpreter can install this application's bundle. The verdict is `unverified` — the
   # machine could not make the measurement — and every attempt's reason travels, because the
   # fix (a missing system library, a newer era, a compiler in the image) is decided from them.

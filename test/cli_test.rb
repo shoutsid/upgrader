@@ -139,18 +139,41 @@ class CliTest < Minitest::Test
     listing = "eee555\tagentsfyi-step-20261017193851-#{gone}-2-1\t\n"
     inspector = StubInspector.new(listing: listing)
 
-    code, out, err = run_cli(["prune"], inspector: inspector)
+    Dir.mktmpdir do |home|
+      code, out, err = run_cli(["prune", "--home", home], inspector: inspector)
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
-    assert_includes inspector.calls, "docker rm --force eee555"
-    assert_includes out, "reaped 1 step container"
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_includes inspector.calls, "docker rm --force eee555"
+      assert_includes out, "reaped 1 step container"
+    end
   end
 
-  def test_prune_with_nothing_to_reap_says_so_rather_than_printing_an_empty_list
-    code, out, _err = run_cli(["prune"], inspector: StubInspector.new)
+  # The bundle half of the same pass: a run that is over left a gemset nothing will ask for
+  # again, and it is the bind mount every step's container is given.
+  def test_prune_also_removes_the_bundle_a_finished_run_left
+    gone = Process.spawn("true")
+    Process.wait(gone)
+    Dir.mktmpdir do |home|
+      root = File.join(home, "work", "abc123", "run-20261017203314-#{gone}")
+      FileUtils.mkdir_p(root)
+      bundle = File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16])
+      FileUtils.mkdir_p(bundle)
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code
-    assert_includes out, "nothing to reap"
+      code, out, err = run_cli(["prune", "--home", home], inspector: StubInspector.new)
+
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      refute File.exist?(bundle)
+      assert_includes out, "pruned 1 bundle"
+    end
+  end
+
+  def test_prune_with_nothing_to_do_says_so_rather_than_printing_an_empty_list
+    Dir.mktmpdir do |home|
+      code, out, _err = run_cli(["prune", "--home", home], inspector: StubInspector.new)
+
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code
+      assert_includes out, "nothing to prune"
+    end
   end
 
   # The tool keeps no copy of the ladder, so a caller that did not name a target is given

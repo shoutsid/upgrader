@@ -20,7 +20,7 @@ disagreeing, which is the failure this project has paid for more than once.
 | `step` | runs the *first* release of that move end to end on a working copy this tool owns, and prints the record | a patch and the record, where `--record` says — and nothing to the corpus |
 | `serve` | the service: a durable ledger, the service's queue, one step per repository per cycle — or, with `--walk`, rungs chained inside a cycle up to `--rungs` | the run record and, for a failure, a report |
 | `serve --walk --publish` | the unattended walk: an empty `--to` reads as the top of the service's ladder, and every passed rung becomes a branch and a pull request chained to the rung before it | the corpus, the branches and the pull requests |
-| `prune` | removes the step containers a killed run left running — the same pass `step` and `serve` run before starting one | nothing: it removes containers whose owning process is gone |
+| `prune` | removes what finished and killed runs left behind — the step container of a killed run, and the bundle a run installed (per-run by design, ~150 MB each, and the bind mount every step's container is given) — the same pass `step` and `serve` run before starting one | nothing: it removes only what belongs to a process that is gone |
 
 The default is `plan`, on the miner's reasoning: a tool whose first run writes into a
 shared corpus is a tool that discovers its mistakes in the corpus.
@@ -222,7 +222,11 @@ walker that is *killed* rather than ended runs no cleanup at all**, and `--rm` d
 it: the process inside the container is a keepalive that never exits, so the container keeps
 running with its Postgres and its Redis until something looks. Every container therefore
 carries the pid of the walker that owns it, `step` and `serve` remove what a dead owner left
-behind before they start their own, and `prune` is that same pass by hand.
+behind before they start their own, and `prune` is that same pass by hand. The same rule applies
+to the bundle a run installs: it is per-run on purpose (a killed step must not leave a
+half-installed gemset for the next to trust), so a finished run's is dead weight in the home
+every step mounts — 21 of them and 2.0 GB here, which took one `docker run` from twenty seconds
+to five minutes.
 
 A step executed this way needs Docker at runtime. A deployment that runs the loop in a
 container (see `docker-compose.yml`) mounts `/var/run/docker.sock` and sets

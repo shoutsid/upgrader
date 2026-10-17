@@ -198,7 +198,7 @@ module AgentsFyi
           removed = []
           list(inspector).each do |id, name, pid|
             owner = pid.to_s.strip.empty? ? name.to_s[NAME, 1] : pid
-            next if owner.to_s.empty? || owner_alive?(owner)
+            next if owner.to_s.empty? || Processes.alive?(owner)
 
             inspector.capture2e("docker", "rm", "--force", id)
             removed << id
@@ -221,17 +221,6 @@ module AgentsFyi
 
             [id, name, pid]
           end
-        end
-
-        # Whether the process that owns a container is still running. `EPERM` means it exists
-        # and belongs to somebody else; `ESRCH` and an unparseable pid mean it does not.
-        def self.owner_alive?(pid)
-          Process.kill(0, Integer(pid))
-          true
-        rescue Errno::EPERM
-          true
-        rescue Errno::ESRCH, ArgumentError, TypeError
-          false
         end
 
         # [argv, process_env] for Shell, and for anything else that spawns its own child:
