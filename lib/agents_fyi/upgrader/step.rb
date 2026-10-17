@@ -551,7 +551,7 @@ module AgentsFyi
             # `actionpack < 4.1` and `bundle update rails` answered "could not find compatible
             # versions for actionpack". This pass runs after the baseline, at the rung where
             # the move is being made, so it is where that entry belongs.
-            next if already_applied?(gem)
+            next withdraw_decision(gem) if already_applied?(gem)
 
             applied << apply_gem_change(gem, step)
           when "blocked", "unknown"
@@ -588,6 +588,16 @@ module AgentsFyi
       # read as two.
       def already_applied?(gem)
         @applied.any? { |edit| edit.subject.to_s == gem["name"].to_s }
+      end
+
+      # **One statement per gem, not two.** A digest entry the preflight may not apply is
+      # recorded there as a decision ("this needs a person or a later rung"), and when this
+      # rung *makes* that move the decision is withdrawn: the list a reviewer reads is "what
+      # still needs a person", and a gem the routing has just moved is not that any more. The
+      # applied edit carries the digest's own reason, so the record still says what moved and
+      # why — in one place rather than in two that disagree about the tense.
+      def withdraw_decision(gem)
+        @decisions.reject! { |decision| decision.subject.to_s == gem["name"].to_s }
       end
 
       def routing_decision(gem, reason: nil)
@@ -655,6 +665,7 @@ module AgentsFyi
           subject: name,
           note: "#{gem["reason"] || gem["note"]} (routed for Rails #{step["to_version"]})")
         @applied << edit
+        withdraw_decision(gem)
         edit
       end
 

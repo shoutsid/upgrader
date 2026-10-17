@@ -459,6 +459,34 @@ class StepTest < Minitest::Test
     assert_includes record.patch, %(gem "rspec-rails", "~> 3.0.0")
   end
 
+  # **One statement per gem.** The preflight records a non-mechanical digest entry as a
+  # decision ("this moves at the rung that takes Rails past 4.0.0"); when the rung makes that
+  # move, the decision is withdrawn — otherwise the reviewer's list says a gem still needs a
+  # person while the diff beside it shows the line already moved.
+  def test_a_gem_the_rung_moved_is_no_longer_listed_as_needing_a_decision
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "simple_form", github: "plataformatec/simple_form"
+    GEM
+    corpus = FakeCorpus.new(payload: plan, route: {
+      "ruby" => "2.1.10", "rails" => "5.0.0", "gems_read" => 1,
+      "counts" => { "keep" => 0, "move" => 0, "replace" => 1, "remove" => 0, "blocked" => 0,
+                    "unknown" => 0 },
+      "gems" => [{ "name" => "simple_form", "version" => "3.0.0.rc", "verdict" => "replace",
+                   "replacement" => "simple_form", "requirement" => "~> 3.1", "mechanical" => false,
+                   "note" => "the released line only fits once Rails has moved" }],
+      "stored" => false, "next_step" => "1 pin(s) are the digest's own moves"
+    })
+    record = step(dir, corpus: corpus).run
+
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "simple_form", "~> 3.1")
+    assert(record.applied.any? { |edit| edit.subject == "simple_form" },
+      "the move is not in the record")
+    refute(record.decisions.any? { |decision| decision.subject == "simple_form" },
+      "a gem the rung moved is still listed as needing a decision")
+  end
+
   # A pin the routing could not answer about is researched — this client is the side that can
   # reach an index — and the routing is asked again. What the second answer still cannot
   # place is a decision naming the gem, never a silent pass.
