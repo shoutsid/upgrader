@@ -46,7 +46,7 @@ module AgentsFyi
       # change that was refused, copied off the edit rather than invented here. The
       # service stores a refusal under exactly these names — `kind` is "the kind of
       # change, as the ladder names it", `source` is the guide chapter
-      # (`models.UpgradeRefusal`) — so a client that filled them with its own vocabulary
+      # (`Upgrade::Refusal`) — so a client that filled them with its own vocabulary
       # would be answering a different question in the same field. They are nil for a
       # refusal that is not about a change at all (an unsafe path, a file that could not
       # be read), which is honest rather than empty.

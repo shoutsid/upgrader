@@ -683,7 +683,7 @@ module AgentsFyi
       # What is *not* sent is this tool's word for which side refused. It used to fill
       # `kind` and `source` with `"applier"` and `"plan"`, and the service reads those two
       # fields as the ladder's own vocabulary — `kind` is "the kind of change, as the
-      # ladder names it" and `source` is the chapter of the guide (`models.UpgradeRefusal`)
+      # ladder names it" and `source` is the chapter of the guide (`Upgrade::Refusal`)
       # — so a refusal arrived describing the wrong thing in a field that meant something
       # else. The distinction is not lost: the service derives it from the subject against
       # the ladder's own rewrites (`upgrades.py`), which is the only side that owns it.

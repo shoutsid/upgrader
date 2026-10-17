@@ -64,7 +64,7 @@ module AgentsFyi
       # `kind`, `replacement` and `source` are the ladder's own words, carried rather
       # than summarised: the service stores a refusal under exactly these fields, where
       # `kind` is "the kind of change, as the ladder names it" and `source` is the
-      # chapter of the guide it came from (`models.UpgradeRefusal`). The first version of
+      # chapter of the guide it came from (`Upgrade::Refusal`). The first version of
       # this sent `kind: "plan"` — this tool's word for where the refusal came from — in
       # a field that means what kind of *change* it is, which is the same trap as a field
       # that means two things (`AGENTS.md`). `path` and `line` are present only when the
