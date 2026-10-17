@@ -44,8 +44,14 @@ module AgentsFyi
 
       # The file this rung's `app:update` wrote, or nil. Newest first, because a walk that has
       # crossed several rungs has one per rung and the newest is the one this step is about.
+      #
+      # **Two names, because Rails renamed it.** 4.1's `rails:update` wrote
+      # `config/initializers/new_framework_defaults.rb` with no version in the name; 4.2 and later
+      # write `new_framework_defaults_<version>.rb`. A glob with only the second shape would find
+      # nothing on the release this walker's first real application is standing on — which is
+      # exactly the kind of gap a rule that was never measured against an old release leaves.
       def self.file_in(root)
-        Dir[File.join(root, "config", "initializers", "new_framework_defaults_*.rb")]
+        Dir[File.join(root, "config", "initializers", "new_framework_defaults*.rb")]
           .max_by { |path| File.mtime(path) }
       end
 

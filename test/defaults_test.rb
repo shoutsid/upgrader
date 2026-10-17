@@ -121,6 +121,16 @@ class DefaultsTest < Minitest::Test
     assert_equal "new_framework_defaults_4_1.rb", File.basename(Defaults.file_in(dir))
   end
 
+  # **Two names, because Rails renamed it**: 4.1 wrote `new_framework_defaults.rb` with no version
+  # in it, 4.2 and later write `new_framework_defaults_<version>.rb`. A glob with only the second
+  # shape finds nothing on the release this walker's first real application stands on.
+  def test_the_unsuffixed_name_rails_4_1_wrote_is_found_too
+    dir = app(name: "new_framework_defaults.rb")
+
+    assert_equal "new_framework_defaults.rb", File.basename(Defaults.file_in(dir))
+    assert_equal 3, defaults(dir).toggles.size
+  end
+
   def test_a_repository_with_no_such_file_has_nothing_to_step
     assert_nil Defaults.file_in(app(file: nil))
   end
