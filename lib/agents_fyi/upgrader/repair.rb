@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "json"
 require "open3"
 require "timeout"
@@ -49,9 +50,14 @@ module AgentsFyi
       # shell — when the name is unknown, and a shell is what this loop removes.
       AGENT = "repair"
 
-      # Where opencode reads its project config. Written into the worktree for the length of
-      # one attempt and put back afterwards, because the application may have a file of its
-      # own under the same name.
+      # The name of the config document, and **the reason it is not written into the
+      # worktree**: measured on the first live repair, where opencode answered `Agent not
+      # found: "repair"` in 1.3 seconds. A step's working copy is a `git worktree` of
+      # somebody's repository, so the project root opencode resolves is the repository the
+      # worktree points at — and the `opencode.json` this class wrote beside the application
+      # was never read. `OPENCODE_CONFIG` names the file outright instead
+      # (`opencode debug config` reads it from there, verified), and the file lives in this
+      # client's own home: no file in the application's tree, and none to clean up.
       CONFIG = "opencode.json"
 
       # One attempt, as the record shows it.
@@ -102,7 +108,7 @@ module AgentsFyi
       end
 
       def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
-                     on_attempt: nil, before_the_move: false)
+                     on_attempt: nil, before_the_move: false, config_dir: nil)
         @root = root
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
@@ -127,6 +133,7 @@ module AgentsFyi
         # config the framework since requires, a spec that reads a file nobody has — and the
         # brief has to say which, because the model's first question is "did I do this?".
         @before_the_move = before_the_move
+        @config_dir = config_dir.to_s
       end
 
       def run
@@ -158,7 +165,7 @@ module AgentsFyi
         prompt = prompt_for(failure)
         before = changed_files
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        exit_code, output = with_config { run_agent(prompt) }
+        exit_code, output = run_agent(prompt)
         Attempt.new(
           number: number, command: command_label(prompt), ran: !exit_code.nil?,
           exit_code: exit_code, seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
@@ -166,36 +173,30 @@ module AgentsFyi
         )
       end
 
-      # The config is in place for exactly the length of one attempt, and whatever the
-      # application had under that name is restored afterwards: a file this tool wrote into
-      # a worktree is a file in the patch, and an application's own `opencode.json` is not
-      # this tool's to overwrite permanently.
-      def with_config
-        path = File.join(@root, CONFIG)
-        previous = File.file?(path) ? File.read(path, encoding: "utf-8") : nil
+      # The document, written once per attempt (the model may be pinned per run, so it is not
+      # memoised across instances) and named to the agent through `OPENCODE_CONFIG`.
+      def config_path
+        dir = @config_dir.empty? ? File.join(Dir.tmpdir, "agents-fyi-repair") : @config_dir
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, CONFIG)
         File.write(path, "#{JSON.pretty_generate(self.class.document(model: @model, agent: @agent))}\n")
-        yield
-      ensure
-        if previous.nil?
-          File.delete(path) if File.file?(path)
-        else
-          File.write(path, previous)
-        end
+        path
       end
 
       def run_agent(prompt)
         argv = [@binary, "run", "--standalone", "--agent", @agent]
         argv += ["--model", @model] unless @model.empty?
         argv << prompt
-        return @runner.call(argv, chdir: @root, timeout: @timeout, env: @env) if @runner
+        env = @env.merge("OPENCODE_CONFIG" => config_path)
+        return @runner.call(argv, chdir: @root, timeout: @timeout, env: env) if @runner
 
-        collect(argv)
+        collect(argv, env)
       end
 
-      def collect(argv)
+      def collect(argv, env)
         output = +""
         status = nil
-        Open3.popen2e(@env, *argv, chdir: @root) do |stdin, stream, wait|
+        Open3.popen2e(env, *argv, chdir: @root) do |stdin, stream, wait|
           stdin.close
           begin
             Timeout.timeout(@timeout) { stream.each_line { |line| output << line } }

@@ -37,6 +37,13 @@ class RepairTest < Minitest::Test
   end
 
   # A git worktree with one commit, which is the shape a step leaves behind.
+  # A temporary directory this test owns, for the walker's own home (the config lives there).
+  def temp_home
+    dir = Dir.mktmpdir
+    @dirs << dir
+    dir
+  end
+
   def git_app
     dir = Dir.mktmpdir
     @dirs << dir
@@ -87,11 +94,11 @@ class RepairTest < Minitest::Test
     end
   end
 
-  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {})
+  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil)
     reruns = suites.dup
     Repair.new(
       root: @root, evidence: evidence, budget: budget(attempts: attempts),
-      env: env, out: nil, runner: agent,
+      env: env, out: nil, runner: agent, config_dir: config_dir,
       rerun: -> { reruns.shift || FakeSuite.new(ok: false, output: "still red") },
       on_attempt: on_attempt
     )
@@ -258,31 +265,31 @@ class RepairTest < Minitest::Test
 
   # --- the config file --------------------------------------------------------------------
 
-  # The config is in place for exactly one attempt, and an application's own file under that
-  # name is put back: a tool that permanently overwrites `opencode.json` in somebody's
-  # worktree has written into their patch.
-  def test_the_config_is_written_for_the_attempt_and_the_application_s_own_is_restored
-    original = %({"agent": {"mine": {}}}\n)
-    File.write(File.join(@root, "opencode.json"), original)
-    seen = nil
-    agent = FakeAgent.new do |_argv, chdir, _n|
-      seen = File.read(File.join(chdir, "opencode.json"))
-      [0, "done\n"]
-    end
+  # **The config is named to the agent, not left beside the application.** Measured on the
+  # first live repair: written into the worktree — the harness's shape, where the run directory
+  # *is* the project — opencode did not read it, because a step's working copy is a `git
+  # worktree` of somebody's repository and the project root opencode resolves is the repository
+  # it points at. It answered `Agent not found: "repair"` in 1.3 seconds. `OPENCODE_CONFIG`
+  # names the file outright, and the file lives in this client's own home.
+  def test_the_config_is_named_to_the_agent_through_the_environment
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+    home = temp_home
 
-    repair(agent: agent, suites: [FakeSuite.new(ok: true)]).run
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)], config_dir: File.join(home, "repair")).run
 
-    assert_includes seen, "\"repair\""
-    assert_equal original, File.read(File.join(@root, "opencode.json")),
-      "the application's own config was not restored"
+    env = agent.calls.first[:env]
+    path = env.fetch("OPENCODE_CONFIG")
+    assert_includes path, File.join(home, "repair")
+    document = JSON.parse(File.read(path))
+    assert document.fetch("agent").key?("repair"), "the agent is not declared in the config"
   end
 
-  def test_no_config_file_is_left_behind_when_the_application_had_none
+  def test_no_config_file_is_left_in_the_application_s_tree
     agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
 
-    repair(agent: agent, suites: [FakeSuite.new(ok: true)]).run
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)], config_dir: File.join(temp_home, "repair")).run
 
     refute File.exist?(File.join(@root, "opencode.json")),
-      "a config file this tool wrote would be in the patch"
+      "a config file written into the worktree would be in the patch and is not read there"
   end
 end

@@ -362,6 +362,7 @@ module AgentsFyi
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
+          config_dir: File.join(@home, "repair"),
           on_attempt: ->(attempt) { stages << repair_stage(attempt) }
         ).run
         @out.puts("  repair: #{result}") if @out && !result.attempts.empty?
