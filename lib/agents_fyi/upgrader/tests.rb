@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "shell"
+
 module AgentsFyi
   module Upgrader
     # Does this application have a suite, and what happened when it ran?
@@ -164,15 +166,15 @@ module AgentsFyi
 
         # Its own process group, so the kill below reaches the workers a Rails suite
         # forks and not only the shell that started it.
-        tail = +""
-        reader_thread = Thread.new { drain(reader, tail, tail_bytes) }
+        excerpt = Shell::Excerpt.new(bytes: tail_bytes)
+        reader_thread = Thread.new { drain(reader, excerpt) }
         waiter = Thread.new { Process.waitpid2(pid) }
 
         if waiter.join(timeout)
           status = waiter.value.last
           reader_thread.join(2)
           close(reader)
-          finished(command: command, status: status, tail: tail, tail_bytes: tail_bytes,
+          finished(command: command, status: status, excerpt: excerpt, tail_bytes: tail_bytes,
             seconds: elapsed(started), timed_out: false)
         else
           kill_group(pid)
@@ -181,7 +183,7 @@ module AgentsFyi
           close(reader)
           Result.new(
             command: command, ran: false, passed: false, exit_code: nil,
-            seconds: elapsed(started), output_tail: bounded(tail, tail_bytes),
+            seconds: elapsed(started), output_tail: bounded(excerpt, tail_bytes),
             timed_out: true
           )
         end
@@ -246,10 +248,9 @@ module AgentsFyi
       # `tail_bytes` of it. Both halves are load-bearing: a pipe holds 64 KB, so a
       # suite that prints more than that blocks for ever waiting for a reader that only
       # arrives after it exits; and the tail is bounded because this text is recorded.
-      def self.drain(reader, tail, tail_bytes)
+      def self.drain(reader, excerpt)
         while (chunk = reader.read(65_536))
-          tail << chunk
-          tail.replace(tail.byteslice(-tail_bytes, tail_bytes)) if tail.bytesize > tail_bytes
+          excerpt << chunk
         end
       rescue IOError, Errno::EBADF
         # The pipe was closed under this thread, which is what happens when a run is
@@ -284,7 +285,7 @@ module AgentsFyi
         true
       end
 
-      def self.finished(command:, status:, tail:, tail_bytes:, seconds:, timed_out:)
+      def self.finished(command:, status:, excerpt:, tail_bytes:, seconds:, timed_out:)
         code = status.exitstatus
         # A signalled process has no exit status, and a suite that was killed
         # established nothing about the application — the same third answer a timeout
@@ -292,16 +293,17 @@ module AgentsFyi
         ran = !code.nil? && code != NOT_FOUND
         Result.new(
           command: command, ran: ran, passed: ran && code.zero?, exit_code: code,
-          seconds: seconds, output_tail: bounded(tail, tail_bytes), timed_out: timed_out
+          seconds: seconds, output_tail: bounded(excerpt, tail_bytes), timed_out: timed_out
         )
       end
 
       # A suite can print bytes that are not UTF-8, and this text is written into a
       # JSON record afterwards: scrubbing here is what keeps a stray byte in a
       # test's output from being the reason a step cannot be recorded.
-      def self.bounded(tail, tail_bytes)
-        text = tail.bytesize > tail_bytes ? tail.byteslice(-tail_bytes, tail_bytes) : tail
-        text.to_s.dup.force_encoding(Encoding::UTF_8).scrub("\uFFFD")
+      # The excerpt's own `to_s` is the bound: the two ends were kept while the output
+      # streamed and the middle was counted as it went.
+      def self.bounded(excerpt, _tail_bytes)
+        excerpt.to_s
       end
 
       def self.close(io)

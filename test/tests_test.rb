@@ -146,16 +146,41 @@ class TestsTest < Minitest::Test
     assert_includes Tests.summary(result), "unverified"
   end
 
-  def test_only_the_tail_of_a_long_output_is_kept
+  # **Both ends of a long output, and the middle counted.** A Ruby failure's first lines carry
+  # the exception's message and its last lines carry the frames nearest the failure — the first
+  # real walk's records showed frames and no error, because a tail-only bound had dropped the
+  # half that said what went wrong. This drives the *streaming* form (`Tests.drain`), which is
+  # the one a suite uses, and asserts the marker that says how much was not kept.
+  def test_a_long_output_keeps_its_head_and_its_tail_and_says_what_it_dropped
     result = run_suite(
       kind: :rspec,
-      script: 'print("x" * 50_000); print("END-MARKER")',
+      script: 'print("BEGIN-MARKER"); print("x" * 50_000); print("END-MARKER")',
       tail_bytes: 1000
     )
 
     assert result.passed
-    assert_operator result.output_tail.bytesize, :<=, 1000
+    assert_operator result.output_tail.bytesize, :<=, 1100
+    assert_includes result.output_tail, "BEGIN-MARKER", "the head of the output was dropped"
     assert_includes result.output_tail, "END-MARKER"
+    assert_match(/\[\.\.\.\d+ byte\(s\) dropped from the middle\.\.\.\]/, result.output_tail,
+      "the record does not say how much it did not keep")
+  end
+
+  # And the excerpt keeps the head even when the *first* thing printed is enormous: the middle
+  # is dropped as it flows, so a suite that prints a gigabyte of dots still records the error
+  # that came before them.
+  def test_an_excerpt_keeps_the_first_bytes_when_the_output_starts_with_them
+    excerpt = AgentsFyi::Upgrader::Shell::Excerpt.new(bytes: 100)
+    excerpt << "MESSAGE-AT-THE-START\n" << ("x" * 10_000)
+
+    text = excerpt.to_s
+    kept = text.sub(/\[\.\.\.\d+ byte\(s\) dropped from the middle\.\.\.\]/, "").strip
+
+    assert_includes text, "MESSAGE-AT-THE-START"
+    # The two ends are within the budget; the separators that join them and the marker are the
+    # record's own punctuation, not content.
+    assert_operator kept.bytesize, :<=, 104,
+      "the budget bounds the content; the marker is the record's own annotation"
   end
 
   # A Rails suite that runs without `RAILS_ENV` boots in development, against the
