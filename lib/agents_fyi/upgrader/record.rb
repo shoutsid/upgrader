@@ -404,7 +404,14 @@ module AgentsFyi
         lines << "   applied #{@applied.size} edit(s), refused #{@refused.size}, " \
                  "#{@decisions.size} need(s) a decision" \
                  "#{@decisions.empty? ? "" : " (#{located} located, #{carried} carried)}"}"
-        by_rule = @applied.count { |edit| edit.origin.to_s == "rule" }
+        # **The applied list holds two kinds of edit, and only one of them has an origin.** A preflight
+        # repair (`Preflight::Repair`) is a Gemfile line this step rewrote on the digest's authority,
+        # and it has no `origin` because there is no other side to tell it apart from; a scanned or
+        # rule-written edit (`Applier::Applied`) does. Reading `origin` without asking first is a
+        # `NoMethodError` in the one place that renders a finished run — so every run whose preflight
+        # repaired a Gemfile raised while printing its summary, which is the shape `AGENTS.md` keeps
+        # paying for: a `to_s` the tests never call with the input a real run has.
+        by_rule = @applied.count { |edit| edit.respond_to?(:origin) && edit.origin.to_s == "rule" }
         lines << "   #{by_rule} of those edit(s) were made by this tool's own rules" if by_rule.positive?
         @refused.first(5).each { |edit| lines << "     refused: #{edit.path}:#{edit.line} — #{edit.reason}" }
         @decisions.first(5).each { |change| lines << "     decide: #{change.subject} — #{change.reason}" }

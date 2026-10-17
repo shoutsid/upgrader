@@ -156,6 +156,28 @@ class RecordTest < Minitest::Test
     assert_equal "suite", body["stages"].first["stage"]
   end
 
+  # **The applied list holds two kinds of edit, and only one of them has an origin.** A preflight
+  # repair is a Gemfile line this step rewrote on the digest's authority and has no other side to be
+  # told apart from; a scanned or rule-written edit does. `to_s` read `origin` without asking, so
+  # every run whose preflight repaired a Gemfile raised while printing its summary — and no test
+  # caught it, because every test built the applied list out of `Applier::Applied`. This is that run.
+  def test_a_record_with_a_preflight_repair_renders
+    repair = AgentsFyi::Upgrader::Preflight::Repair.new(
+      path: "Gemfile", line: 3, text: %(gem "simple_form", git: "git://github.com/x/y"),
+      after: %(gem "simple_form", github: "x/y"), subject: "simple_form",
+      note: "the dead protocol (routed for Rails 5.0)"
+    )
+    record = AgentsFyi::Upgrader::Record.new(
+      repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
+      verdict: "passed", why: "the suite was green", applied: [repair]
+    )
+
+    assert_includes record.to_s, "applied 1 edit(s)"
+    refute_includes record.to_s, "by this tool's own rules",
+      "a preflight repair is not one of this tool's own rules"
+    assert_equal "simple_form", JSON.parse(record.to_json)["applied"].first["subject"]
+  end
+
   # A decision is not a refusal, and they travel in separate lists: one is a change that
   # needs a person, the other is a line that did not match what the service read.
   def test_a_decision_and_a_refusal_are_reported_apart
