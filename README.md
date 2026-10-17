@@ -156,7 +156,10 @@ The pipeline has three stages that make the rest mean anything:
    an existing family, and every change no rule covers carries a **gap** saying what
    would close it — the residue is a queue with reasons, not a list. A rule may also need
    a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class
-   does), and the step writes it before the suite runs. `docs/upgrades.md` has the policy.
+   does), and the step writes it before the suite runs. A change whose note's own replacement
+   is a **gem** is handled by a declaration rather than by an edit — the call sites keep
+   working — and the gem goes inside the block that names its group, because a test-only gem
+   declared at the top level is installed in production. `docs/upgrades.md` has the policy.
 7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer

@@ -1216,6 +1216,95 @@ class StepTest < Minitest::Test
     refute_includes applied.output_tail, "file(s) created for a rule"
   end
 
+  # **A change whose fix is a gem, and where the line goes.** `assigns` and `assert_template` moved into
+  # `rails-controller-testing`; the call sites need no edit, so what handles them is a declaration —
+  # and it goes inside the block that names the test group, because a controller-testing helper
+  # declared at the top level is installed in production. The declaration lands in the record as the
+  # same `Preflight::Repair` a digest move does, and the change stops being a decision.
+  def test_a_bridge_declares_the_gem_in_its_group_and_withdraws_the_decision
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+
+      group :test do
+        gem "rspec-rails"
+      end
+    GEM
+    with_source(dir, "spec/controllers/posts_controller_spec.rb",
+      "describe PostsController do\n  it { expect(assigns(:post)).to be_a(Post) }\nend\n")
+    located = { "path" => "spec/controllers/posts_controller_spec.rb", "line" => 2,
+                "text" => "  it { expect(assigns(:post)).to be_a(Post) }", "after" => nil,
+                "subject" => "assigns / assert_template", "kind" => "moved",
+                "replacement" => "the rails-controller-testing gem", "source" => "5.0",
+                "note" => "the helpers moved out of Rails", "automatic" => false }
+    payload = plan(changes: [change(subject: "assigns / assert_template", kind: "moved",
+      source: "5.0", replacement: "the rails-controller-testing gem")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    gemfile = File.read(File.join(dir, "Gemfile"))
+    assert_match(/group :test do\n.*^  gem 'rails-controller-testing'$\nend/m, gemfile,
+      "the declaration did not land indented inside the block that names the test group")
+    assert_empty record.decisions, "the gem handles every one of the change's call sites"
+    applied = record.stages.find { |stage| stage.stage == "apply" }
+    assert_includes applied.output_tail,
+      "1 gem(s) declared for a change (assigns / assert_template)"
+    assert_equal 1, record.applied.size
+    assert_equal "Gemfile", record.applied.first.path
+    assert_includes record.applied.first.after, "rails-controller-testing"
+  end
+
+  # **The one refusal here.** A test-only gem appended to the end of the file is installed in
+  # production, and that is a fact about the deployment rather than about the line — so a Gemfile with
+  # no block for the gem's group keeps the change as a decision.
+  def test_a_bridge_leaves_the_decision_when_the_gemfile_has_no_block_for_its_group
+    dir = track(app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\n)))
+    with_source(dir, "spec/controllers/posts_controller_spec.rb",
+      "describe PostsController do\n  it { expect(assigns(:post)).to be_a(Post) }\nend\n")
+    located = { "path" => "spec/controllers/posts_controller_spec.rb", "line" => 2,
+                "text" => "  it { expect(assigns(:post)).to be_a(Post) }", "after" => nil,
+                "subject" => "assigns / assert_template", "kind" => "moved",
+                "replacement" => "the rails-controller-testing gem", "source" => "5.0",
+                "note" => "the helpers moved out of Rails", "automatic" => false }
+    payload = plan(changes: [change(subject: "assigns / assert_template", kind: "moved",
+      source: "5.0", replacement: "the rails-controller-testing gem")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    refute_includes File.read(File.join(dir, "Gemfile")), "rails-controller-testing"
+    assert_equal ["assigns / assert_template"], record.decisions.map(&:subject)
+    assert_includes record.decisions.first.reason, "installed in production"
+  end
+
+  # An application that already declared the gem is *handled* without an edit: the change is satisfied
+  # whether this step declared it or the application did, and re-declaring it would be editing a
+  # Gemfile for no reason.
+  def test_a_bridge_counts_a_gem_the_application_already_declared_as_handled
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "rails-controller-testing"
+    GEM
+    with_source(dir, "spec/controllers/posts_controller_spec.rb",
+      "describe PostsController do\n  it { expect(assigns(:post)).to be_a(Post) }\nend\n")
+    located = { "path" => "spec/controllers/posts_controller_spec.rb", "line" => 2,
+                "text" => "  it { expect(assigns(:post)).to be_a(Post) }", "after" => nil,
+                "subject" => "assigns / assert_template", "kind" => "moved",
+                "replacement" => "the rails-controller-testing gem", "source" => "5.0",
+                "note" => "the helpers moved out of Rails", "automatic" => false }
+    payload = plan(changes: [change(subject: "assigns / assert_template", kind: "moved",
+      source: "5.0", replacement: "the rails-controller-testing gem")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert_empty record.decisions
+    assert_empty record.applied, "the gem was already declared, so there was nothing to write"
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

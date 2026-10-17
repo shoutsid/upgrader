@@ -112,6 +112,54 @@ module AgentsFyi
       # own edits depend on for the same reason.
       Scaffold = Struct.new(:path, :content, keyword_init: true)
 
+      # **A change whose fix is a gem rather than an edit to a call site.** `assigns` and
+      # `assert_template` moved out of Rails into `rails-controller-testing`, and every one of the
+      # application's nineteen call sites keeps working once it is declared — so the "edit" is a
+      # Gemfile line and the located lines are *handled* rather than rewritten. That is a different
+      # kind of knowledge from a `Rule`: there is no pattern to match and no line to rewrite, which is
+      # why it is a `Bridge` and not a rule with an empty replacement. The declaration goes through
+      # the preflight's own reader (one question, one pattern, so the two can never disagree about
+      # which line a gem is on) and lands in the record as the same `Preflight::Repair` a digest move
+      # does.
+      #
+      # `group` is the environment the gem belongs in, and it is the one field here with a cost: a gem
+      # declared at the top level is installed in production, so `rails-controller-testing` belongs in
+      # the block that declares `:test` — and a Gemfile with no such block is left as a decision
+      # rather than guessed at.
+      Bridge = Struct.new(:subject, :gems, :group, :why, keyword_init: true)
+
+      # The changes whose note's own replacement is a gem. Each is here because the note names the
+      # gem *as* the fix — `sanitize / strip_tags` is not, because its note offers
+      # `rails-deprecated_sanitizer` only "if the difference matters", which is a decision about what
+      # the application's HTML allows rather than a declaration a walker may make. That one stays a
+      # gap, and so does `the protected_attributes gem`, which is a removal rather than an addition.
+      BRIDGES = [
+        # "Both gems are drop-in, so this is a Gemfile line rather than a code change — but an
+        # application that used them loses the caching entirely without it."
+        Bridge.new(subject: "caches_action / caches_page",
+          gems: %w[actionpack-action_caching actionpack-page_caching], group: nil,
+          why: "the caching left Action Pack and both gems are drop-in, and without them the application loses it entirely; the change names both, so both are declared — a line a reviewer can delete if this application used only one"),
+        Bridge.new(subject: "ActiveResource", gems: %w[activeresource], group: nil,
+          why: "ActiveResource left the framework; the gem is the same library"),
+        Bridge.new(subject: "Observers and sweepers", gems: %w[rails-observers], group: nil,
+          why: "observers and sweepers left the framework; the gem restores them"),
+        Bridge.new(subject: "respond_with / class-level respond_to", gems: %w[responders], group: nil,
+          why: "the class-level form and respond_with left the framework; instance-level respond_to is unaffected"),
+        # "content_tag, or the record_tag_helper gem" — the gem is the behaviour-preserving half, and
+        # the rewrite is a choice about the view.
+        Bridge.new(subject: "content_tag_for / div_for", gems: %w[record_tag_helper], group: nil,
+          why: "the helpers left the framework; the gem restores them, where rewriting the views would be a choice about how much of the view is being changed"),
+        # **The one with a group.** A controller-testing helper declared at the top level is
+        # installed in production.
+        Bridge.new(subject: "assigns / assert_template", gems: %w[rails-controller-testing],
+          group: :test,
+          why: "the helpers left the framework for a test-only gem; every call site keeps working once it is declared in the test group"),
+        Bridge.new(subject: "to_xml", gems: %w[activemodel-serializers-xml], group: nil,
+          why: "the serialiser left the framework; the gem is the same one"),
+        Bridge.new(subject: "Active Storage variants", gems: %w[image_processing], group: nil,
+          why: "image_processing is what the macros are built on now; which processor it uses behind that is the application's configuration")
+      ].freeze
+
       Result = Struct.new(:edits, :applied, :left, :scaffolds, keyword_init: true) do
         def to_s
           return "no rule applies" if edits.empty?
@@ -141,10 +189,11 @@ module AgentsFyi
                                            "*goes*, which the line does not show; `on:` and the " \
                                            "transactional-callbacks default are decisions about the " \
                                            "application's error handling",
-        "sanitize / strip_tags" => "the note's own replacement is a gem " \
-                                   "(`rails-deprecated_sanitizer`), so no call site changes: a rule " \
-                                   "for it declares a Gemfile line, which is this tool's preflight " \
-                                   "rather than its rewriter",
+        "sanitize / strip_tags" => "the note offers `rails-deprecated_sanitizer` *if the difference " \
+                                   "matters*, which is a decision about what the application's HTML " \
+                                   "is allowed to contain — declaring it unconditionally would keep " \
+                                   "the weaker sanitiser this change exists to replace, so it is a " \
+                                   "gap rather than a bridge",
         "serialize" => "the change is what a `nil` assignment *stores* — `NULL` rather than the " \
                        "encoded form — so a rule would need the attribute's queries, not its " \
                        "declaration",
@@ -179,19 +228,6 @@ module AgentsFyi
         "config_for" => "the note's replacement is a call on the *result* " \
                         "(`.with_indifferent_access`), which keeps every call site as it is — so " \
                         "what is missing is a rule that edits the assignment rather than the use",
-        "to_xml" => "the note's own replacement is a gem (`activemodel-serializers-xml`), so no " \
-                    "call site changes: a rule for it declares a Gemfile line",
-        "content_tag_for / div_for" => "the note names both a gem (`record_tag_helper`) and a " \
-                                       "rewrite (`content_tag`), and which one is right is a " \
-                                       "decision about how much of the view is being changed",
-        "assigns / assert_template" => "the note's own replacement is a gem " \
-                                       "(`rails-controller-testing`), so the located lines keep " \
-                                       "working once it is there: a rule for it declares a Gemfile " \
-                                       "line rather than rewriting a call site",
-        "caches_action / caches_page" => "the note says both gems are drop-in, so this is a Gemfile " \
-                                         "line rather than a code change — a rule for it declares " \
-                                         "the gem, and an application that had the caching loses it " \
-                                         "entirely without one",
         "the protected_attributes gem" => "the change is the *absence* of a bridge, so the edit is a " \
                                           "Gemfile line to remove — and removing it is only right " \
                                           "once the models have moved to strong parameters, which " \
@@ -210,6 +246,31 @@ module AgentsFyi
       # an instance while `params.each` is not, and a residue that said "a rule covers this" while
       # leaving four spellings untouched would be the empty-answer trap with the sign flipped.
       PARTIAL = {
+        # One sentence for all eight, because the refusal is the same one: the gem's *home* is the
+        # thing this tool will not guess.
+        "assigns / assert_template" => "the bridge declares the gem in the block that names its " \
+                                       "group, or at the top level when the gem belongs everywhere. " \
+                                       "A Gemfile with no such block is left, because a test-only gem " \
+                                       "appended to the end of the file is installed in production",
+        "to_xml" => "the bridge declares the gem; a Gemfile whose group blocks this tool cannot read " \
+                    "(a string where the group name is, a block nested in one) is left",
+        "content_tag_for / div_for" => "the bridge declares the gem — the behaviour-preserving half " \
+                                       "of the note, which also offers rewriting the views; that " \
+                                       "rewrite is a decision about how much of the view is being " \
+                                       "changed",
+        "caches_action / caches_page" => "the bridge declares both gems the change names, and a " \
+                                         "Gemfile it cannot read is left. An application that used " \
+                                         "only one of the two caches gets a line a reviewer can " \
+                                         "delete",
+        "ActiveResource" => "the bridge declares the gem, and a Gemfile this tool cannot read is " \
+                            "left",
+        "Observers and sweepers" => "the bridge declares the gem, and a Gemfile this tool cannot " \
+                                    "read is left",
+        "respond_with / class-level respond_to" => "the bridge declares the gem, and a Gemfile this " \
+                                                   "tool cannot read is left",
+        "Active Storage variants" => "the bridge declares `image_processing`; which processor it " \
+                                     "drives (`vips`, `mini_magick`) is the application's " \
+                                     "configuration and stays a decision",
         "protect_from_forgery" => "the rule adds `prepend: true` unconditionally, because the line " \
                                   "does not show what runs before it: where a filter is declared " \
                                   "above the callback the option restores the order 5.0 changed, and " \
@@ -643,13 +704,23 @@ module AgentsFyi
         Result.new(edits: edits, applied: applied, left: left, scaffolds: scaffolds.uniq)
       end
 
+      # **The bridges for the changes the scan located.** Driven by what the scan found rather than by
+      # the rung's whole change list, because a bridge is about call sites: a change this application
+      # does not use needs no gem declared for it, and declaring one would be installing a library
+      # nothing loads.
+      def self.bridges(manual, bridges: BRIDGES)
+        subjects = Array(manual).map { |entry| entry["subject"].to_s }.uniq
+        bridges.select { |bridge| subjects.include?(bridge.subject) }
+      end
+
       # The rules that name no change in the rung's own plan: a rule that outlives its change is dead
       # weight, and a walker that kept applying it would be editing code for a change the ladder no
-      # longer documents. Reported rather than removed, because removing one is a decision about this
-      # file rather than about a rung.
-      def self.inert(changes, rules: RULES)
+      # longer documents. A bridge is the same claim about a gem, so it is reported the same way.
+      # Reported rather than removed, because removing one is a decision about this file rather than
+      # about a rung.
+      def self.inert(changes, rules: RULES, bridges: BRIDGES)
         subjects = Array(changes).map { |change| change["subject"].to_s }
-        rules.map(&:subject).uniq.reject { |subject| subjects.include?(subject) }
+        (rules.map(&:subject) + bridges.map(&:subject)).uniq.reject { |subject| subjects.include?(subject) }
       end
 
       # **What would close this change's gap**, for the residue to carry. A change a rule covers needs

@@ -1033,7 +1033,8 @@ module AgentsFyi
         # edits — the scan's `text` is what the applier compares against, so a line that moved
         # between the read and the write is refused rather than half-rewritten. A change a rule
         # applies stops being a decision, because it is no longer one.
-        rules = Rewrites.apply(scan["manual"] || [], files: file_lines(files))
+        manual = scan["manual"] || []
+        rules = Rewrites.apply(manual, files: file_lines(files))
         inert = Rewrites.inert(step["changes"] || [])
         # A rule that *knows* the change and would not touch this line is the most specific thing
         # anything downstream can be told, so it is kept rather than counted: the repair agent's
@@ -1041,27 +1042,35 @@ module AgentsFyi
         @unapplied_rules = rules.left
         result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
         created = write_scaffolds(rules.scaffolds)
+        # **The changes whose fix is a gem**, applied to the call sites the scan located: the call
+        # sites need no edit, so what handles them is a declaration in the application's Gemfile.
+        declared, bridged = declare_bridges(Rewrites.bridges(manual))
+        handled = rules.applied + bridged
         decisions = decisions_for(step, scan).reject do |decision|
-          rules.applied.include?(decision.subject.to_s)
+          handled.include?(decision.subject.to_s)
         end
         stages << Record::Command.new(
           stage: Record::APPLY,
           command: "apply #{scan["edits"].to_a.size} edit(s) to #{files.size} scanned file(s)",
           ran: true, exit_code: 0, seconds: 0.0,
-          output_tail: apply_summary(result, decisions, rules, inert, created)
+          output_tail: apply_summary(result, decisions, rules, inert, created, declared)
         )
-        [result.applied, result.refused, decisions]
+        [result.applied + declared, result.refused, decisions]
       end
 
       # What the apply stage's tail says: the counts, then what this tool's own rules did, then the
       # rules that name no change in this rung. The last two are evidence rather than decoration —
       # a rule that applied nothing and a rule whose change has left the ladder look identical from
       # the outside, which is the shape `AGENTS.md` keeps paying for.
-      def apply_summary(result, decisions, rules, inert, created = [])
+      def apply_summary(result, decisions, rules, inert, created = [], declared = [])
         parts = ["applied #{result.applied.size}, refused #{result.refused.size}, " \
                  "#{decisions.size} change(s) need a decision"]
         parts << "#{rules.edits.size} by this tool's own rules (#{rules.applied.uniq.join(", ")})" if
           rules.edits.any?
+        # **A gem declared for a change whose fix is one**, named by the gem rather than the subject:
+        # what a reviewer has to check is the Gemfile line, and whether it landed in the right group.
+        parts << "#{declared.size} gem(s) declared for a change (#{declared.map { |edit| edit.subject }.uniq.join(", ")})" if
+          declared.any?
         # **The files a rule's edit depends on**, named rather than counted: a reader of the patch
         # needs to know the diff is not the whole change (`ApplicationRecord` is in a file the patch
         # does not show).
@@ -1093,6 +1102,100 @@ module AgentsFyi
           File.write(path, scaffold.content)
           scaffold.path
         end
+      end
+
+      # **A bridge: the change's fix is a gem, so its call sites are handled by a declaration.** The
+      # declaration goes into the block that names the gem's group, or at the end of the file when the
+      # gem belongs everywhere. A gem already declared is left alone and still counts as handled — the
+      # change is satisfied whether this step declared it or the application did — and a gem whose
+      # group has no block is *not* handled, which is the one refusal here: appending a test-only gem
+      # to the end of the file installs it in production, and that is a fact about the deployment
+      # rather than about the line.
+      #
+      # The record's shape is a line and what it became, so a new declaration travels as the line the
+      # insert is anchored to and that line with the declaration beside it. A `Repair` with an empty
+      # `text` would read as "the line was empty" rather than "the file did not have it".
+      def declare_bridges(bridges)
+        path = File.join(@worktree.root, "Gemfile")
+        return [[], []] unless File.file?(path)
+
+        lines = File.binread(path).split("\n", -1)
+        repairs = []
+        handled = []
+        bridges.each do |bridge|
+          bridge.gems.each do |gem|
+            if declaration_line(gem)
+              handled << bridge.subject
+              next
+            end
+
+            at = bridge.group ? group_end(lines, bridge.group) : [last_line(lines), ""]
+            next if at.nil?
+
+            index, indent = at
+            line = lines[index].to_s
+            inserted = "#{indent}gem '#{gem}'\n"
+            lines[index] = bridge.group ? "#{inserted}#{line}" : "#{line}#{inserted}"
+            repairs << Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line,
+              after: lines[index], subject: bridge.subject, note: bridge.why)
+            handled << bridge.subject
+          end
+        end
+        File.binwrite(path, lines.join("\n")) if repairs.any?
+        [repairs, handled.uniq]
+      end
+
+      # The line that closes the block declaring this group, and the indentation its body uses — which
+      # is where a gem for that group goes. **The block whose list is exactly this group first**, then
+      # one that also names others: a block declared for the group alone is where a gem for that group
+      # belongs, and a block that also names others still loads in the right environment, so it is the
+      # fallback rather than a refusal. The nesting is counted over *masked* lines, so a `do` inside a
+      # string or a comment cannot be mistaken for a block.
+      def group_end(lines, group)
+        blocks = []
+        lines.each_with_index do |line, index|
+          found = Rewrites.mask(line).match(/\A\s*group\s+(?<names>.+?)\s+do\b/)
+          next if found.nil?
+
+          blocks << [index, found[:names].scan(/:(\w+)/).flatten]
+        end
+        chosen = blocks.find { |_, names| names == [group.to_s] } ||
+          blocks.find { |_, names| names.include?(group.to_s) }
+        return nil if chosen.nil?
+
+        start = chosen.first
+        depth = 0
+        closing = nil
+        (start...lines.size).each do |index|
+          masked = Rewrites.mask(lines[index])
+          depth += masked.scan(/\bdo\b|\bif\b|\bunless\b|\bwhile\b|\bcase\b/).size
+          depth -= masked.scan(/\bend\b/).size
+          if index > start && depth.zero?
+            closing = index
+            break
+          end
+        end
+        return nil if closing.nil?
+
+        [closing, body_indent(lines, start, closing)]
+      end
+
+      # **The block's own indentation, not the `end`'s.** A Gemfile puts `end` at the margin and its
+      # declarations two spaces in, so copying the closing line's indent wrote an unindented
+      # declaration into the middle of a block — which is a diff a reviewer has to fix rather than
+      # read. A block with no body yet gets one level more than its `end`.
+      def body_indent(lines, start, closing)
+        body = lines[(start + 1)...closing].to_a.find { |line| !line.strip.empty? }
+        return body[/\A\s*/].to_s if body
+
+        "#{lines[closing][/\A\s*/]}  "
+      end
+
+      # The last line with anything on it — where a gem with no group goes. A Gemfile that ends inside
+      # a block is not a Gemfile (it would not parse), so the last real line is either the `end` of one
+      # or a declaration at the top level.
+      def last_line(lines)
+        lines.rindex { |line| !line.strip.empty? } || 0
       end
 
       # The file contents the scan sent, by path and line — what a rule that reads more than its own

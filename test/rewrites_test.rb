@@ -162,7 +162,8 @@ class RewritesTest < Minitest::Test
     assert_nil Rewrites.gap_for("MultiJson"), "a covered change needs no gap"
     assert_includes Rewrites.gap_for("default_scope"), "callers that chain conditions onto the scope"
     assert_includes Rewrites.gap_for("alias_attribute"), "the attribute's own definition"
-    assert_includes Rewrites.gap_for("assigns / assert_template"), "declares a Gemfile line"
+    assert_includes Rewrites.gap_for("assigns / assert_template"),
+      "installed in production"
     assert_includes Rewrites.gap_for("config.secret_token"), "leave it in place and add"
     assert_equal Rewrites::GENERIC_GAP, Rewrites.gap_for("a change nobody has looked at yet")
     assert_includes Rewrites::GENERIC_GAP, "carried as a located decision until one is written"
@@ -184,7 +185,8 @@ class RewritesTest < Minitest::Test
 
     assert_includes inert, ":confirm option on link_to"
     refute_includes inert, "request.content_type"
-    assert_empty Rewrites.inert(Rewrites::RULES.map { |rule| { "subject" => rule.subject } })
+    named = (Rewrites::RULES.map(&:subject) + Rewrites::BRIDGES.map(&:subject)).map { |s| { "subject" => s } }
+    assert_empty Rewrites.inert(named), "a rule or bridge that names no change is reported"
   end
 
   # **A dynamic finder's own name carries its arguments, and the family splits them out.** The note
@@ -441,6 +443,23 @@ class RewritesTest < Minitest::Test
     ], result.edits.map { |edit| edit["after"] }
     assert_equal ["protect_from_forgery"], result.left
     assert_includes Rewrites.gap_for("protect_from_forgery"), "unconditionally"
+  end
+
+  # **A bridge is not a rule.** There is no pattern to match and no line to rewrite — the call sites
+  # keep working once the gem is declared — so it is selected by what the scan *located* rather than by
+  # the rung's whole change list: a change this application does not use needs no library installed.
+  # And it counts against the change the way a rule does, which is why `inert` reports a bridge whose
+  # change has left the ladder too.
+  def test_a_bridge_is_selected_by_what_the_scan_located_and_counts_as_coverage
+    located = [entry(subject: "assigns / assert_template", text: "  expect(assigns(:post))")]
+    bridges = Rewrites.bridges(located)
+
+    assert_equal ["assigns / assert_template"], bridges.map(&:subject)
+    assert_equal ["rails-controller-testing"], bridges.first.gems
+    assert_equal :test, bridges.first.group,
+      "a controller-testing helper declared at the top level is installed in production"
+    assert_empty Rewrites.bridges([entry(subject: "MultiJson", text: "  x = MultiJson.dump(a)")])
+    assert_includes Rewrites.inert([{ "subject" => "MultiJson" }]), "assigns / assert_template"
   end
 
   # End to end through the applier: the write is the applier's, so the line re-check, the sealed
