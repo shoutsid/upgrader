@@ -100,11 +100,27 @@ class CliTest < Minitest::Test
     end
   end
 
-  def run_cli(argv, corpus: nil)
+  def run_cli(argv, corpus: nil, inspector: nil)
     out = StringIO.new
     err = StringIO.new
-    code = AgentsFyi::Upgrader::CLI.new(argv, out: out, err: err, env: {}, corpus: corpus).run
+    code = AgentsFyi::Upgrader::CLI.new(argv, out: out, err: err, env: {}, corpus: corpus,
+      inspector: inspector || Open3).run
     [code, out.string, err.string]
+  end
+
+  # What `docker ps` answers a reaping, so the suite never asks a real daemon.
+  class StubInspector
+    attr_reader :calls
+
+    def initialize(listing: "")
+      @listing = listing
+      @calls = []
+    end
+
+    def capture2e(*argv)
+      @calls << argv.join(" ")
+      [@listing, nil]
+    end
   end
 
   def repository
@@ -112,6 +128,29 @@ class CliTest < Minitest::Test
       File.write(File.join(dir, "Gemfile.lock"), LOCK)
       yield dir
     end
+  end
+
+  # **A killed run leaves its container running, and `prune` is the look that removes it.**
+  # `--rm` ends a container whose own process exits; this one never does, so the owner's pid
+  # travels on the container and this pass removes only the ones whose owner is gone.
+  def test_prune_reaps_the_containers_a_killed_run_left_running
+    gone = Process.spawn("true")
+    Process.wait(gone)
+    listing = "eee555\tagentsfyi-step-20261017193851-#{gone}-2-1\t\n"
+    inspector = StubInspector.new(listing: listing)
+
+    code, out, err = run_cli(["prune"], inspector: inspector)
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+    assert_includes inspector.calls, "docker rm --force eee555"
+    assert_includes out, "reaped 1 step container"
+  end
+
+  def test_prune_with_nothing_to_reap_says_so_rather_than_printing_an_empty_list
+    code, out, _err = run_cli(["prune"], inspector: StubInspector.new)
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code
+    assert_includes out, "nothing to reap"
   end
 
   # The tool keeps no copy of the ladder, so a caller that did not name a target is given

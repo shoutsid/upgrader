@@ -40,6 +40,7 @@ module AgentsFyi
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--publish] [--suite-env FILE]
+          agents-fyi-upgrader prune
 
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
@@ -56,6 +57,10 @@ module AgentsFyi
                   `app:update` keeping only what it adds; boot it; run the suite again.
                   Prints the record, and writes the patch and the record as JSON with
                   --record. Never writes to --repo.
+          prune   remove the step containers a killed run left running. A container is
+                  removed when its own process ends; a process that is *killed* runs no
+                  cleanup at all, so its container keeps its services and its memory until
+                  this looks. `step` and `serve` run the same pass before starting one.
           serve   the same, one step per repository per cycle, over a durable ledger.
                   With `--walk` it chains rungs within a cycle (up to `--rungs`) and reads an
                   empty `--to` as the top of the service's ladder; with `--publish` it pushes
@@ -71,12 +76,15 @@ module AgentsFyi
              whose suite was green before it and failed after
       TEXT
 
-      def initialize(argv, out: $stdout, err: $stderr, env: ENV, corpus: nil)
+      def initialize(argv, out: $stdout, err: $stderr, env: ENV, corpus: nil, inspector: Open3)
         @argv = argv
         @out = out
         @err = err
         @env = env
         @corpus = corpus
+        # What `prune` asks the daemon with. Injectable for the same reason every other seam
+        # is: the suite asserts the command that *would* run rather than running one.
+        @inspector = inspector
       end
 
       def run
@@ -90,10 +98,11 @@ module AgentsFyi
         when "preflight" then preflight(options)
         when "step" then step(options)
         when "serve" then serve(options)
+        when "prune" then prune(options)
         else
           usage_error(
             "unknown command `#{options[:command]}` — the modes that exist are `plan`, " \
-            "`preflight`, `step` and `serve`"
+            "`preflight`, `step`, `serve` and `prune`"
           )
         end
       rescue Corpus::Refused => e
@@ -163,6 +172,18 @@ module AgentsFyi
       # step ran; nothing was able to check it) and the JSON says which it was, because
       # a caller that only reads the exit code cannot be told a nuance it did not ask
       # for — and one that reads the record gets all of it.
+      # **The containers a killed run left behind.** `step` and `serve` remove their own when
+      # they end, and a process that is killed runs no `ensure` at all — so a container from a
+      # crash or a `SIGKILL` keeps running until something looks. This is that look, and the
+      # same pass runs before any container starts.
+      def prune(_options)
+        removed = Machine::Container.reap!(out: @out, inspector: @inspector)
+        if removed.empty?
+          @out.puts("nothing to reap: every step container's process is still running")
+        end
+        EXIT_OK
+      end
+
       def step(options)
         return usage_error("step needs --repo PATH|URL") unless options[:repo]
 

@@ -38,17 +38,25 @@ class MachineTest < Minitest::Test
     end
   end
 
-  # What `docker image inspect` prints for a rebuilt image, and what `docker inspect` prints
-  # for this process's own mounts — so the digest a stamp carries and the volume an era
-  # container joins are stated by the test rather than by the daemon.
+  # What `docker image inspect` prints for a rebuilt image, what `docker inspect` prints for
+  # this process's own mounts, and what `docker ps` lists for the containers a killed run left
+  # behind — so the digest a stamp carries, the volume an era container joins and the reaping
+  # are stated by the test rather than by the daemon.
   class FakeInspector
-    def initialize(sha: "b" * 64, volume: "")
+    attr_reader :calls
+
+    def initialize(sha: "b" * 64, volume: "", listing: "")
       @sha = sha
       @volume = volume
+      @listing = listing
+      @calls = []
     end
 
     def capture2e(*argv)
-      return ["#{@volume}\n", nil] if argv.join(" ").include?("Mounts")
+      @calls << argv
+      line = argv.join(" ")
+      return [@listing, nil] if line.include?("docker ps")
+      return ["#{@volume}\n", nil] if line.include?("Mounts")
 
       ["sha256:#{@sha}\n", nil]
     end
@@ -221,6 +229,64 @@ class MachineTest < Minitest::Test
 
   def test_stopping_a_container_that_never_started_is_not_an_error
     assert_nil container.stop!
+  end
+
+  # A pid that is certainly gone: this process's own child, waited for.
+  def dead_pid
+    pid = Process.spawn("true")
+    Process.wait(pid)
+    pid
+  end
+
+  # **The container carries the pid of the process that owns it.** `--rm` removes a container
+  # when its own process exits, and this container's process is a keepalive that never does —
+  # so a walker that is *killed* leaves a container running for ever, and the pid on the
+  # container is what lets the next run tell "in flight" from "abandoned".
+  def test_the_container_is_labelled_with_the_process_that_owns_it
+    shell = FakeShell.new(answers: { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] })
+    container(runner: shell).start!(stage: "interpreter", stages: [])
+
+    run_argv = shell.calls.first[:argv].join(" ")
+    assert_includes run_argv, "--label org.agentsfyi.upgrader.step=agentsfyi-step-run1-2-2"
+    assert_includes run_argv, "--label org.agentsfyi.upgrader.pid=#{Process.pid}"
+  end
+
+  # A container whose owner is gone is removed; a container whose owner is running — a step
+  # in flight, possibly somebody else's — is not, and the check errs that way on purpose.
+  def test_a_container_whose_owner_is_gone_is_reaped_and_a_live_one_is_not
+    gone = dead_pid
+    listing = [
+      "aaa111\tagentsfyi-step-20261017193851-#{gone}-2-1\t",
+      "bbb222\tagentsfyi-step-20261017193851-#{Process.pid}-2-1\t#{Process.pid}"
+    ].join("\n") + "\n"
+    inspector = FakeInspector.new(listing: listing)
+
+    assert_equal ["aaa111"], Machine::Container.reap!(inspector: inspector)
+    refute_includes inspector.calls.map { |argv| argv.join(" ") }, "docker rm --force bbb222"
+  end
+
+  # A container started before the labels existed still states its owner in its name, which is
+  # the run id `Step#run_id` composes — `<timestamp>-<pid>` — so the reaper finds the ones
+  # already on a daemon rather than only the ones it starts from now on.
+  def test_a_container_from_before_the_labels_is_reaped_through_the_pid_in_its_name
+    listing = "ccc333\tagentsfyi-step-20261017193851-#{dead_pid}-2-1\t\n"
+
+    assert_equal ["ccc333"], Machine::Container.reap!(inspector: FakeInspector.new(listing: listing))
+  end
+
+  # The reaping is not only an operator's command: a step removes what the step before it left,
+  # which is what keeps the leak from accumulating in the first place.
+  def test_starting_a_container_reaps_what_a_killed_run_left_behind
+    inspector = FakeInspector.new(
+      listing: "ddd444\tagentsfyi-step-20261017193851-#{dead_pid}-2-1\t\n"
+    )
+    machine = container(runner: FakeShell.new(
+      answers: { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] }
+    ), inspector: inspector)
+
+    assert machine.start!(stage: "interpreter", stages: [])
+
+    assert_includes inspector.calls.map { |argv| argv.join(" ") }, "docker rm --force ddd444"
   end
 
   # The native machine is this process, and its identity is the interpreter plus the image, if

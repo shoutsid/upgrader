@@ -216,6 +216,8 @@ class StepMachineTest < Minitest::Test
     assert_equal "ruby 2.2 (era-2.2@sha256:#{"f" * 64})", record.machine
     assert fleet["2.2"].started
     assert fleet["2.1"].stopped, "the rejected era's container was left running"
+    assert fleet["2.2"].stopped,
+      "the container the step ran in was left running: `--rm` does not end a keepalive"
     refute fleet["2.5"].started, "an era was started after one already installed the bundle"
 
     assert_equal 2, record.stages.count { |stage| stage.stage == "interpreter" },

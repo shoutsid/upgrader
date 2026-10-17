@@ -49,6 +49,12 @@ module AgentsFyi
       # `sleep infinity`; `tail -f /dev/null` is the alternative and it reads as a trick.
       KEEPALIVE = %w[sleep infinity].freeze
 
+      # The label every step container carries, and the pid of the process that owns it. A
+      # container outlives a walker that was *killed* rather than ended (see `reap!`), so the
+      # owner is written onto it where the next run — or an operator — can read it.
+      LABEL = "org.agentsfyi.upgrader.step"
+      PID_LABEL = "org.agentsfyi.upgrader.pid"
+
       # The interpreter's own home inside the container, on the volume, so a gem's build
       # cache (`~/.gem`) and a bundler's user config survive between steps rather than being
       # re-derived. Scratch is a volume too: `/tmp` here is tmpfs and a bundle is hundreds of
@@ -126,6 +132,8 @@ module AgentsFyi
           # application answered `bundle install` with \"`/agents-fyi/home` is not a
           # directory\" — a failure that reads as the application's.
           FileUtils.mkdir_p([File.join(@home, "home"), File.join(@home, "tmp")])
+          # What a killed predecessor left running, before this one adds to the stack.
+          self.class.reap!(out: @out, inspector: @inspector)
           pulled = @runner.run(start_argv, stage: stage, chdir: @home)
           stages << pulled
           unless pulled.ok?
@@ -154,13 +162,76 @@ module AgentsFyi
         # Why the last `start!` failed, in one sentence.
         attr_reader :unavailable
 
+        # **This runs from an `ensure`, so it never raises.** A cleanup that failed loudly
+        # would replace the step's own outcome with its own, and the leak it would be
+        # reporting is exactly what `reap!` removes on the next start.
         def stop!
           return if @container_id.to_s.empty?
 
-          _out, _err, _status = Open3.capture3("docker", "rm", "--force", @container_id)
+          Open3.capture3("docker", "rm", "--force", @container_id)
           @container_id = nil
-        rescue Errno::ENOENT
+        rescue StandardError
           nil
+        end
+
+        # The name this class gives a container, and the pid inside it: `run_id` is
+        # `<timestamp>-<pid>` (`Step#run_id`), so a name states its owner even for a container
+        # started before the labels existed.
+        NAME = /\Aagentsfyi-step-\d{14}-(\d+)-/
+
+        # **Remove the containers a walker that was killed rather than ended left behind.**
+        #
+        # `--rm` removes a container when its own process exits, and this container's process
+        # is a keepalive that never exits: it is removed when the walker says so. A `SIGKILL`,
+        # a crash or a closed terminal says nothing — so the container keeps running with its
+        # Postgres, its Redis and its memory, and eight of them had accumulated here over one
+        # afternoon before anybody looked at `docker ps`.
+        #
+        # Every container therefore carries the pid of the process that owns it, in a label and
+        # (through the run id) in its name, and this removes the ones whose owner is gone.
+        # **A live owner is never touched**: a container whose pid is still running is a step
+        # in flight, possibly somebody else's, and the check errs that way deliberately — a pid
+        # reused by an unrelated process keeps a stale container rather than removing a live
+        # one. `step` and `serve` call this before starting a container of their own, and
+        # `prune` is the same pass for an operator.
+        def self.reap!(out: nil, inspector: Open3)
+          removed = []
+          list(inspector).each do |id, name, pid|
+            owner = pid.to_s.strip.empty? ? name.to_s[NAME, 1] : pid
+            next if owner.to_s.empty? || owner_alive?(owner)
+
+            inspector.capture2e("docker", "rm", "--force", id)
+            removed << id
+          end
+          out&.puts("  reaped #{removed.size} step container(s) whose process was gone") if removed.any?
+          removed
+        end
+
+        # The containers this tool has started, as `[id, name, owner pid]`. The name filter is
+        # the primary one because it also finds a container from before the labels existed; the
+        # label is read for the ones that carry it.
+        def self.list(inspector)
+          format = "{{.ID}}\t{{.Names}}\t{{.Label \"#{PID_LABEL}\"}}"
+          listing, _status = inspector.capture2e(
+            "docker", "ps", "-a", "--filter", "name=^agentsfyi-step-", "--format", format
+          )
+          listing.to_s.lines.filter_map do |line|
+            id, name, pid = line.split("\t", 3).map(&:strip)
+            next if id.to_s.empty? || name.to_s.empty?
+
+            [id, name, pid]
+          end
+        end
+
+        # Whether the process that owns a container is still running. `EPERM` means it exists
+        # and belongs to somebody else; `ESRCH` and an unparseable pid mean it does not.
+        def self.owner_alive?(pid)
+          Process.kill(0, Integer(pid))
+          true
+        rescue Errno::EPERM
+          true
+        rescue Errno::ESRCH, ArgumentError, TypeError
+          false
         end
 
         # [argv, process_env] for Shell, and for anything else that spawns its own child:
@@ -238,6 +309,8 @@ module AgentsFyi
 
         def start_argv
           ["docker", "run", "-d", "--rm", "--name", @name,
+           "--label", "#{LABEL}=#{@name}",
+           "--label", "#{PID_LABEL}=#{Process.pid}",
            *mount_argv,
            "-e", "HOME=#{CONTAINER_HOME}",
            "-e", "TMPDIR=#{CONTAINER_TMP}",

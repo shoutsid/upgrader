@@ -234,6 +234,15 @@ module AgentsFyi
 
         verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages)
         finish(build(step, stages, verdict, why))
+      ensure
+        # **The container is a step's, and the step's process is what ends it.** `--rm` only
+        # removes a container whose own process exits, and this one is a keepalive that never
+        # does: without this line every step — passed, failed or refused halfway — leaves a
+        # container running, and eight of them had accumulated before the first `docker ps`
+        # looked. It is in an `ensure` because the paths that matter most are the ones that
+        # raise, and `stop!` never raises for the same reason. A process that is *killed* runs
+        # no `ensure` at all, which is what `Machine::Container.reap!` answers.
+        @machine&.stop!
       end
 
       private
