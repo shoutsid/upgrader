@@ -1071,6 +1071,9 @@ class StepTest < Minitest::Test
     assert_equal "7.2", decision.source
     assert_includes decision.reason, "reads the column directly"
     assert_nil decision.path, "a call site was invented for a name the application never uses"
+    # **The gap travels with it.** A change no rule covers is a queue entry with a reason, so the
+    # residue says what would close it rather than handing over the same blank list every rung.
+    assert_includes decision.reason, "not automated yet:"
   end
 
   # And where the scan *did* find it, the decision points at the line, because that is

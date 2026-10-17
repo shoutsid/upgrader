@@ -1090,11 +1090,19 @@ module AgentsFyi
       # order a reader wants them: what the guide says the change is, then what this
       # application's line looks like.
       def decision(change, entry)
+        subject = ((change && change["subject"]) || entry["subject"]).to_s
+        # **The gap travels with the change, and that is the point of it.** A change no rule covers
+        # is not a verdict about the application: it is a queue entry, and `Rewrites.gap_for` says
+        # what would close it — so the next lighthouse (or the next agent) starts from what is
+        # missing rather than from the same blank list. A permanent refusal is the settled-work trap
+        # with the sign flipped (`Step#no_interpreter_stamp` is the same posture one layer down).
+        gap = Rewrites.gap_for(subject)
+        reason = [change && change["note"], entry && entry["note"]]
+                 .compact.reject { |note| note.to_s.empty? }.uniq.join(" — ")
+        reason = [reason, gap && "not automated yet: #{gap}"].compact.reject(&:empty?).join(" — ")
         Record::Decision.new(
           path: entry && entry["path"], line: entry && entry["line"],
-          subject: ((change && change["subject"]) || entry["subject"]).to_s,
-          reason: [change && change["note"], entry && entry["note"]]
-                  .compact.reject { |note| note.to_s.empty? }.uniq.join(" — "),
+          subject: subject, reason: reason,
           kind: (change && change["kind"]) || (entry && entry["kind"]),
           replacement: (change && change["replacement"]) || (entry && entry["replacement"]),
           source: (change && change["source"]) || (entry && entry["source"])

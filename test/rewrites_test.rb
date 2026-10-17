@@ -127,13 +127,52 @@ class RewritesTest < Minitest::Test
     assert_equal "the change's own note", edit["note"]
   end
 
+  # **A note that forbids a swap is read as what it forbids, not as a verdict.** `MultiJson`'s note
+  # says "do not swap it mechanically for JSON.dump/JSON.load — those serialise arbitrary Ruby
+  # objects and are not the same thing", and it is right about the *names*. The ladder's own
+  # replacement is `obj.to_json`, which is the same operation for a call that takes one argument —
+  # so the edit is mechanical there, and a call carrying options is a decision.
+  def test_the_multi_json_note_forbids_the_names_and_not_the_edit
+    result = Rewrites.apply([
+      entry(subject: "MultiJson", text: "  body = MultiJson.dump(payload)"),
+      entry(subject: "MultiJson", text: "  data = MultiJson.load(response.body)"),
+      entry(subject: "MultiJson", text: "  body = MultiJson.dump(payload, pretty: true)")
+    ])
+
+    assert_equal ["  body = payload.to_json", "  data = JSON.parse(response.body)"],
+      result.edits.map { |edit| edit["after"] }
+    assert_equal ["MultiJson"], result.left, "a call with options is not the same operation"
+  end
+
+  # **A family is the reusable half, and this is the proof**: a name that moved, in a library nobody
+  # has walked yet, is an instance of the same family the Rails rules use.
+  def test_a_family_builds_the_same_rule_for_another_lighthouse
+    rule = Rewrites.name_moved(subject: "SomeGem::Old", from: "Old", to: "New")
+    result = Rewrites.apply([entry(subject: "SomeGem::Old", text: "  x = Old.new")], rules: [rule])
+
+    assert_equal :name_moved, rule.family
+    assert_equal ["  x = New.new"], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Nothing is "never".** A change with no rule is a *gap*, and the gap says what would close it —
+  # which is what makes the residue a queue with reasons rather than a list a person re-derives every
+  # rung. A subject nobody has looked at says so in the generic sentence rather than reading as a
+  # verdict, and a change a rule covers needs no gap at all.
+  def test_a_gap_says_what_would_close_it_and_what_nobody_has_looked_at_says_so
+    assert_nil Rewrites.gap_for("MultiJson"), "a covered change needs no gap"
+    assert_includes Rewrites.gap_for("default_scope"), "callers that chain conditions onto the scope"
+    assert_includes Rewrites.gap_for("belongs_to"), "whether absence is legal"
+    assert_equal Rewrites::GENERIC_GAP, Rewrites.gap_for("a change nobody has looked at yet")
+    assert_includes Rewrites::GENERIC_GAP, "carried as a located decision until one is written"
+  end
+
   # **A rule whose change has left the ladder is inert and said to be.** Applying it would be
   # editing code for a change nobody documents any more.
   def test_a_rule_that_names_no_change_in_this_rung_is_reported_rather_than_used
     inert = Rewrites.inert([{ "subject" => "request.content_type" }])
 
-    assert_equal [":confirm option on link_to", "HashWithIndifferentAccess", "require_dependency"],
-      inert
+    assert_equal [":confirm option on link_to", "HashWithIndifferentAccess", "require_dependency",
+                  "MultiJson"], inert
     assert_empty Rewrites.inert(Rewrites::RULES.map { |rule| { "subject" => rule.subject } })
   end
 
