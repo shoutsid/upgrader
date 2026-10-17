@@ -157,6 +157,18 @@ class CliTest < Minitest::Test
     end
   end
 
+  # The first argument is shifted as the command before OptionParser can see it, so a
+  # bare `--help` was refused as a mode named `--help` — while `plan --help` printed the
+  # usage, which is why only the form CI invokes was the one that broke.
+  def test_a_bare_help_flag_prints_the_usage_rather_than_naming_an_unknown_mode
+    code, out, err = run_cli(["--help"])
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+    assert_includes out, "Usage:"
+    assert_includes out, "agents-fyi-upgrader plan"
+    assert_empty err
+  end
+
   def test_an_unknown_command_says_which_modes_exist
     code, _out, err = run_cli(["upgrade", "--repo", "."])
 

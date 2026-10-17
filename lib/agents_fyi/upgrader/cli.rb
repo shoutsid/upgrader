@@ -166,7 +166,10 @@ module AgentsFyi
 
       def parse
         argv = @argv.dup
-        command = argv.shift
+        # A leading flag is not a command. `agents-fyi-upgrader --help` was read as an
+        # unknown mode named `--help`, because the shift took the flag before OptionParser
+        # could claim it — and `plan --help` worked, so only the bare form was wrong.
+        command = argv.first&.start_with?("-") ? nil : argv.shift
         options = {
           command: command,
           api: @env["AGENTS_FYI_URL"].to_s.empty? ? DEFAULT_API : @env["AGENTS_FYI_URL"],
