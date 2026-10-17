@@ -166,16 +166,17 @@ class RewritesTest < Minitest::Test
       "installed in production"
     assert_includes Rewrites.gap_for("config.secret_token"), "leave it in place and add"
     assert_equal Rewrites::GENERIC_GAP, Rewrites.gap_for("a change nobody has looked at yet")
-    assert_includes Rewrites::GENERIC_GAP, "carried as a located decision until one is written"
+    assert_includes Rewrites::GENERIC_GAP, "no call site to match at all",
+      "the generic sentence has to be honest for a change no pattern can find"
   end
 
   # The gap for a change whose migration belongs to a *later* rung says so, which is the difference
   # between "not automated yet" and "not this rung's business".
-  def test_the_render_text_gap_names_the_spelling_and_the_rung_the_choice_belongs_to
+  def test_the_render_text_gap_names_the_rung_whose_rule_makes_the_choice
     gap = Rewrites.gap_for("render :text")
 
-    assert_includes gap, "`render :text => x` becomes `render text: x`"
-    assert_includes gap, "belongs to the 5.0 rung"
+    assert_includes gap, "4.1 deprecates `:text` without removing it"
+    assert_includes gap, "it is the 5.1 rung's rule that makes it"
   end
 
   # **A rule whose change has left the ladder is inert and said to be.** Applying it would be
@@ -460,6 +461,104 @@ class RewritesTest < Minitest::Test
       "a controller-testing helper declared at the top level is installed in production"
     assert_empty Rewrites.bridges([entry(subject: "MultiJson", text: "  x = MultiJson.dump(a)")])
     assert_includes Rewrites.inert([{ "subject" => "MultiJson" }]), "assigns / assert_template"
+  end
+
+  # **A setting the release deleted, and the line goes.** The notes are the licence — "the setting has
+  # no effect — delete the line", "Remove the line rather than setting it to `:zeitwerk`" — and the
+  # pattern is the setting *and* an assignment, so a line that mentions it in a comment, or sets it
+  # inside something else, is left. The edit empties the line rather than shifting it away, which is
+  # the shape `line_removed` writes for the same reason: a patch that renumbers a file is a patch
+  # nobody can read.
+  def test_a_deleted_setting_loses_its_line_and_a_mention_of_it_is_left
+    result = Rewrites.apply([
+      entry(subject: "config.active_record.identity_map",
+        text: "  config.active_record.identity_map = true", path: "config/application.rb"),
+      entry(subject: "config.active_record.identity_map",
+        text: "  # config.active_record.identity_map = true", path: "config/application.rb"),
+      entry(subject: "config.active_record.identity_map",
+        text: "  x = config.active_record.identity_map = true", path: "config/application.rb"),
+      entry(subject: "config.autoloader", text: "  config.autoloader = :zeitwerk",
+        path: "config/application.rb")
+    ])
+
+    assert_equal ["", ""], result.edits.map { |edit| edit["after"] },
+      "each deleted setting's whole line is emptied"
+    assert_equal 2, result.left.size, "the comment and the line that sets it inside something else"
+  end
+
+  # **A class method that becomes an instance method on its own argument.** The receiver disappears and
+  # the argument takes its place — and the *context* is what keeps it to a string, because
+  # `:User.constantize` is not a method: the private API took a name and the public one is on the
+  # String. The raw line is the only place that can be asked, since the mask blanks a string's
+  # contents. The other members of the private API have a different fix each, and are left.
+  def test_the_private_dependency_api_becomes_a_call_on_its_argument_and_a_symbol_is_left
+    result = Rewrites.apply([
+      entry(subject: "ActiveSupport::Dependencies private API",
+        text: %(  name = ActiveSupport::Dependencies.constantize("User")), path: "lib/x.rb"),
+      entry(subject: "ActiveSupport::Dependencies private API",
+        text: %(  name = ActiveSupport::Dependencies.safe_constantize("User")), path: "lib/x.rb"),
+      entry(subject: "ActiveSupport::Dependencies private API",
+        text: "  name = ActiveSupport::Dependencies.constantize(:User)", path: "lib/x.rb"),
+      entry(subject: "ActiveSupport::Dependencies private API",
+        text: "  ActiveSupport::Dependencies.mechanism = :load", path: "lib/x.rb")
+    ])
+
+    assert_equal [%(  name = "User".constantize), %(  name = "User".safe_constantize)],
+      result.edits.map { |edit| edit["after"] }
+    assert_equal ["ActiveSupport::Dependencies private API"] * 2, result.left
+  end
+
+  # **The guard is what makes an appending rule safe across two walks.** Without it the rule appends a
+  # second `.with_indifferent_access` on the next rung, and the failure is a line that parses and does
+  # something else. A two-argument call is left, because the note's replacement names the one-argument
+  # form and the arguments are part of what the call means.
+  def test_a_conversion_is_appended_to_the_call_and_never_twice
+    result = Rewrites.apply([
+      entry(subject: "config_for", text: "  smtp = Rails.application.config_for(:smtp)"),
+      entry(subject: "config_for",
+        text: "  smtp = Rails.application.config_for(:smtp).with_indifferent_access"),
+      entry(subject: "config_for",
+        text: %(  smtp = Rails.application.config_for(:smtp, env: "production")))
+    ])
+
+    assert_equal ["  smtp = Rails.application.config_for(:smtp).with_indifferent_access"],
+      result.edits.map { |edit| edit["after"] }
+    assert_equal ["config_for"] * 2, result.left
+  end
+
+  # **The 5.1 rung of the `render :text` story, where the choice has to be made.** 4.1 deprecates
+  # `:text` without removing it; here the deprecation has run out and the note's own answer is
+  # `plain:` — the safe one, because `:text` sent `text/html` and interpreted markup in the content.
+  # The pattern is anchored on the *call*, because `text:` appears in other calls' option hashes on the
+  # same line and a rule that matched the first one would rewrite the wrong option. A `:nothing` with a
+  # status is left, because the status names the `head` call and that is a different statement.
+  def test_render_text_becomes_plain_and_the_option_is_anchored_on_the_call
+    result = Rewrites.apply([
+      entry(subject: "render :text / render :nothing", text: %(    render :text => "hello"),
+        path: "app/controllers/posts_controller.rb"),
+      entry(subject: "render :text / render :nothing", text: "    render text: @body",
+        path: "app/controllers/posts_controller.rb"),
+      entry(subject: "render :text / render :nothing", text: %(    render(:text => "hello")),
+        path: "app/controllers/posts_controller.rb"),
+      entry(subject: "render :text / render :nothing", text: %(    render partial: "x", locals: { text: "y" }),
+        path: "app/views/posts/index.html.erb"),
+      entry(subject: "render :text / render :nothing", text: "    render plain: @body",
+        path: "app/controllers/posts_controller.rb"),
+      entry(subject: "render :text / render :nothing", text: "    render :nothing => true",
+        path: "app/controllers/posts_controller.rb"),
+      entry(subject: "render :text / render :nothing", text: "    render :nothing => true, status: :created",
+        path: "app/controllers/posts_controller.rb")
+    ])
+
+    assert_equal [
+      %(    render plain: "hello"),
+      "    render plain: @body",
+      %(    render(plain: "hello")),
+      "    head :ok"
+    ], result.edits.map { |edit| edit["after"] }
+    assert_equal 3, result.left.size,
+      "the option in another call's hash, the line already saying plain:, and a :nothing with a status"
+    assert_includes Rewrites.gap_for("render :text / render :nothing"), "is for a response that *is* markup"
   end
 
   # End to end through the applier: the write is the applier's, so the line re-check, the sealed

@@ -152,7 +152,8 @@ The pipeline has three stages that make the rest mean anything:
    ladder's caveat. Rules are *instances of families* (`name_moved`, `option_wrapped`,
    `line_removed`, `call_replaced`, `finder_moved`, `find_conditions`, `option_added`,
    `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`,
-   `query_materialised`, `superclass_moved`), so the next lighthouse writes an instance of
+   `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
+   `option_renamed`), so the next lighthouse writes an instance of
    an existing family, and every change no rule covers carries a **gap** saying what
    would close it — the residue is a queue with reasons, not a list. A rule may also need
    a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class

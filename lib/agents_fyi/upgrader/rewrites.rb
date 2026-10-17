@@ -71,7 +71,13 @@ module AgentsFyi
       # * `scaffold` — **a file the edit depends on.** A model cannot inherit from `ApplicationRecord`
       #   before that class exists, so the rule that renames the superclass carries the file that
       #   defines it.
-      Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, keyword_init: true) do
+      # * `already` — **the appendage's own guard.** A rule whose edit *adds* something (an option, a
+      #   conversion on a call's result) has to refuse a line that already has it, or a second walk
+      #   appends a second one. `already` is a pattern over the whole line that means "this edit is
+      #   made", and it is a field rather than a trick inside each pattern because it is the same
+      #   question every appending rule asks.
+      Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already,
+        keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
@@ -79,6 +85,8 @@ module AgentsFyi
         # the reason the mask preserves every byte's position: a pattern that matched inside a string
         # would rewrite a log message.
         def after(line, masked, lines: nil)
+          return nil if already && already.match?(line)
+
           found = pattern.match(masked)
           return nil if found.nil?
           # **A match that reaches into a comment is not a match.** `.` matches a blanked comment
@@ -88,7 +96,10 @@ module AgentsFyi
           # parses. Blanking the comment is not enough on its own; this is the other half.
           stop = Rewrites.comment_start(line)
           return nil if stop && found.end(0) > stop
-          return nil if context && !context.call(Array(lines), found)
+          # The context gets the file's lines, the match, and the **raw** line: a question about what a
+          # literal *is* (`ActiveSupport::Dependencies.constantize("User")` is not the same call with a
+          # symbol) cannot be asked of the masked one, where the string's contents are blanked.
+          return nil if context && !context.call(Array(lines), found, line)
 
           region = line[found.begin(0)...found.end(0)]
           written =
@@ -128,8 +139,12 @@ module AgentsFyi
       # rather than guessed at.
       Bridge = Struct.new(:subject, :gems, :group, :why, keyword_init: true)
 
-      # The changes whose note's own replacement is a gem. Each is here because the note names the
-      # gem *as* the fix — `sanitize / strip_tags` is not, because its note offers
+      # The changes whose note's own replacement is a gem, and where the gem is the **whole** of the
+      # fix: the call sites keep working and nothing else is owed. That distinction is what keeps
+      # `attr_accessible` out of this table — the note's own words are "the protected_attributes gem
+      # keeps the old list working as a bridge, and Rails 5 removes that bridge", so declaring it would
+      # silence a decision whose real work (moving each list into a controller) is the 5.0 rung's. Each
+      # is here because the note names the gem *as* the fix — `sanitize / strip_tags` is not, because its note offers
       # `rails-deprecated_sanitizer` only "if the difference matters", which is a decision about what
       # the application's HTML allows rather than a declaration a walker may make. That one stays a
       # gap, and so does `the protected_attributes gem`, which is a removal rather than an addition.
@@ -172,10 +187,12 @@ module AgentsFyi
       # sentence the residue carries so the next lighthouse — or the next agent — starts from what is
       # missing rather than from scratch. A subject with no entry here still gets a gap (the generic
       # one below), because "nobody has looked at this shape yet" is itself information.
-      GENERIC_GAP = "no rule yet: this shape is not one of the families here (name_moved, " \
+      GENERIC_GAP = "no rule yet: either this shape is not one of the families here (name_moved, " \
                     "option_wrapped, line_removed, call_replaced, finder_moved, option_added, " \
                     "argument_wrapped, block_value, value_moved, line_replaced, query_materialised, " \
-                    "superclass_moved), and it is carried as a located decision until one is written"
+                    "superclass_moved), or the change has no call site to match at all — a config " \
+                    "default, a file a generated application has and this one does not. It is carried " \
+                    "as a decision either way, and the change's own note is what says which"
 
       GAPS = {
         "default_scope" => "a rule would need the callers that chain conditions onto the scope, and " \
@@ -197,11 +214,19 @@ module AgentsFyi
         "serialize" => "the change is what a `nil` assignment *stores* — `NULL` rather than the " \
                        "encoded form — so a rule would need the attribute's queries, not its " \
                        "declaration",
-        "render :text" => "the 4.1 migration is the *spelling* — `render :text => x` becomes " \
-                          "`render text: x`, which is the same response — and the choice between " \
-                          "`plain:`, `html:` and `body:` belongs to the 5.0 rung, where `:text` is " \
-                          "gone. A rule here would be choosing a content type for a response that " \
-                          "still has one",
+        "config.action_view.raise_on_missing_translations" => "the setting moved rather than " \
+                                                              "disappearing — " \
+                                                              "`config.i18n.raise_on_missing_translations` " \
+                                                              "is where it lives — but the note names " \
+                                                              "a *custom I18n exception handler* as the " \
+                                                              "alternative, which is a decision about " \
+                                                              "how the application reports a missing " \
+                                                              "translation",
+        "render :text" => "4.1 deprecates `:text` without removing it, so the choice between " \
+                          "`plain:`, `html:` and `body:` is still open here — and it is the 5.1 " \
+                          "rung's rule that makes it, because there `:text` is gone and the note " \
+                          "answers `render plain:`. A rule at *this* rung would be choosing a " \
+                          "content type for a response that still has one",
         "ActiveRecord::Base as a model's superclass" => "the rule covers a model whose superclass is " \
                                                          "written on one line; a model that inherits " \
                                                          "from another model, or whose class line " \
@@ -252,6 +277,16 @@ module AgentsFyi
                                        "group, or at the top level when the gem belongs everywhere. " \
                                        "A Gemfile with no such block is left, because a test-only gem " \
                                        "appended to the end of the file is installed in production",
+        "ActionCable JavaScript adapters" => "the setting lives in the application's JavaScript " \
+                                              "(`ActionCable.WebSocket = ...`), and this tool " \
+                                              "scans `.rb`, `.rake`, `.erb`, `.yml` and `.ru` — so " \
+                                              "the ladder locates the line only when it appears in " \
+                                              "an ERB template, and the edit is in the JavaScript",
+        "Rails.application.secrets" => "the fix is to read a nested *string* key as a symbol " \
+                                        "(`secrets[:smtp][\"address\"]` is `secrets[:smtp][:address]`), " \
+                                        "and a rule cannot see a string's contents: the mask blanks " \
+                                        "them, which is the same property that stops a rule " \
+                                        "rewriting a log message",
         "to_xml" => "the bridge declares the gem; a Gemfile whose group blocks this tool cannot read " \
                     "(a string where the group name is, a block nested in one) is left",
         "content_tag_for / div_for" => "the bridge declares the gem — the behaviour-preserving half " \
@@ -271,6 +306,14 @@ module AgentsFyi
         "Active Storage variants" => "the bridge declares `image_processing`; which processor it " \
                                      "drives (`vips`, `mini_magick`) is the application's " \
                                      "configuration and stays a decision",
+        "render :text / render :nothing" => "`render :text` is a rule and it writes `plain:` — the " \
+                                              "note's own answer and the safe one, because `:text` " \
+                                              "sent `text/html` and interpreted markup in the " \
+                                              "content. `render html:` is for a response that *is* " \
+                                              "markup, which is a fact about the content. A " \
+                                              "`:nothing` carrying a status is left too: the status " \
+                                              "names the `head` call (`render :nothing => true, " \
+                                              "status: :created` is `head :created`)",
         "protect_from_forgery" => "the rule adds `prepend: true` unconditionally, because the line " \
                                   "does not show what runs before it: where a filter is declared " \
                                   "above the callback the option restores the order 5.0 changed, and " \
@@ -350,15 +393,22 @@ module AgentsFyi
         end
       end
 
+      # **The value shapes an option carries and whose end this tool can see**: a string, a symbol, an
+      # ivar, a global, or a dotted name. One constant, because `option_wrapped` and `option_renamed`
+      # ask the same question and a second copy of it is how the two would start disagreeing about
+      # what an option's value is. A call with arguments is deliberately not here: the end of
+      # `t(:x, count: 1)` is inside a parenthesis the pattern cannot see, and a rule that guessed it
+      # would cut the line in half.
+      OPTION_VALUE = /(?<value>"[^"]*"|'[^']*'|:[A-Za-z_]\w*|@@?[a-z_]\w*|\$[a-z_]\w*|[A-Za-z_]\w*(?:\.\w+)*)(?=\s*[,)]|\s*\z)/
+
       # An option that became a nested one: the value is captured, never guessed, and the lookahead
       # requires it to end where an argument ends — a comma, the call's closing parenthesis, or the
       # line. A first version of this pattern matched the `t` of `confirm: t(:x, count: 1)` and
       # produced `data: { confirm: t }(:x, count: 1)`, which is why the lookahead is here.
       def self.option_wrapped(subject:, option:, wrapper:)
         head = /(?::\s*#{Regexp.escape(option)}\s*=>|\b#{Regexp.escape(option)}:)\s*/
-        value = /(?<value>"[^"]*"|'[^']*'|:[A-Za-z_]\w*|[A-Za-z_]\w*(?:\.\w+)*)(?=\s*[,)]|\s*\z)/
         Rule.new(family: :option_wrapped, subject: subject,
-          pattern: Regexp.new("#{head.source}#{value.source}"), replace: wrapper)
+          pattern: Regexp.new("#{head.source}#{OPTION_VALUE.source}"), replace: wrapper)
       end
 
       # A whole line that is nothing but the call, removed: the edit *is* the line, so anything else
@@ -378,7 +428,7 @@ module AgentsFyi
       # keeps its keys, so the list is captured rather than enumerated. `receiver` names the receiver
       # the call must have, and it is captured rather than looked behind for the same reason
       # `name_moved`'s is: the region is what the write re-matches.
-      def self.call_replaced(subject:, from:, to:, args: 1, receiver: nil)
+      def self.call_replaced(subject:, from:, to:, args: 1, receiver: nil, already: nil)
         captured =
           if args.is_a?(String)
             "(?<a1>#{args})"
@@ -386,7 +436,7 @@ module AgentsFyi
             (1..args).map { |index| "(?<a#{index}>[^,()]+)" }.join("\\s*,\\s*")
           end
         head = receiver ? "(?<receiver>\\b#{Regexp.escape(receiver)})\\." : "\\b"
-        Rule.new(family: :call_replaced, subject: subject,
+        Rule.new(family: :call_replaced, subject: subject, already: already,
           pattern: Regexp.new("#{head}#{Regexp.escape(from)}\\s*\\(\\s*#{captured}\\s*\\)"),
           replace: receiver ? "\\k<receiver>.#{to}" : to)
       end
@@ -403,6 +453,42 @@ module AgentsFyi
           pattern: Regexp.new("\\A(?<indent>\\s*)(?!.*\\b#{key}:)(?<call>#{Regexp.escape(call)}\\b[^,()]*" \
                               "(?:\\s*,\\s*[a-z_]\\w*:\\s*[^,()]+)*)\\s*\\z"),
           replace: "\\k<indent>\\k<call>#{option}")
+      end
+
+      # **An option that changed its own name, on the call that takes it.** `render :text => x` is
+      # `render plain: x` — the value is carried, the key is not — and the pattern is anchored on the
+      # *call*, because `text:` appears in other calls' option hashes on the same line
+      # (`render partial: "x", locals: { text: y }`) and a rule that matched the first one would
+      # rewrite the wrong option. Only the call's own leading option is reached, which is why an
+      # option behind another (`render status: 200, text: "x"`) is left.
+      def self.option_renamed(subject:, call:, from:, to:)
+        Rule.new(family: :option_renamed, subject: subject,
+          pattern: Regexp.new("(?<head>\\b#{Regexp.escape(call)}\\s*\\(?\\s*)" \
+                              "(?::\\s*#{Regexp.escape(from)}\\s*=>|#{Regexp.escape(from)}:)\\s*" \
+                              "#{OPTION_VALUE.source}"),
+          replace: "\\k<head>#{to}\\k<value>")
+      end
+
+      # **A setting the release deleted, and the line that sets it is the whole edit.** "The identity
+      # map was removed from Active Record for its inconsistency with associations, so the setting has
+      # no effect — delete the line"; "The setting is deleted in 7.0 — there is no mode to choose.
+      # Remove the line rather than setting it to `:zeitwerk`." The pattern is the setting and an
+      # assignment, so a line that mentions it in a comment or passes it to something else does not
+      # match, and the edit empties the line rather than shifting it away — the same shape
+      # `line_removed` writes, because a patch that renumbers a file is a patch nobody can read.
+      def self.setting_removed(subject:, setting:)
+        Rule.new(family: :setting_removed, subject: subject,
+          pattern: /\A(?<indent>\s*)#{Regexp.escape(setting)}\s*=(?!=)\s*.*\z/, replace: "")
+      end
+
+      # **A class method that becomes an instance method on its own argument.** "`ActiveSupport::
+      # Dependencies.constantize("User")` becomes `"User".constantize`" — the receiver disappears and
+      # the argument takes its place, which is a different edit from a rename and the reason this is a
+      # family rather than a `call_replaced` with an empty receiver.
+      def self.call_inverted(subject:, receiver:, call:, to:, context: nil)
+        Rule.new(family: :call_inverted, subject: subject, context: context,
+          pattern: /\b#{Regexp.escape(receiver)}\.#{Regexp.escape(call)}\s*\(\s*(?<value>[^(),]*)\s*\)/,
+          replace: to)
       end
 
       # **A call whose own name carries its arguments.** `find_all_by_name(x)` is `where(name: x)`, and
@@ -603,7 +689,7 @@ module AgentsFyi
         # behaviour changed. A file the rule could not read answers "nothing validates it", which is the
         # safe direction — the edit is the behaviour-preserving one either way.
         option_added(subject: "belongs_to", call: "belongs_to", option: ", optional: true",
-          context: lambda do |lines, found|
+          context: lambda do |lines, found, _raw|
             association = found[:call][/:\K[a-z_]\w*/]
             # **`presence`, with no boundary around it**: `validates_presence_of` has no word
             # boundary after the `_`, so `\bpresence\b` matched nothing and the rule added
@@ -633,6 +719,50 @@ module AgentsFyi
           from: "ActiveJob::Base", to: "ApplicationJob", defines: "ApplicationJob",
           scaffold: Scaffold.new(path: "app/jobs/application_job.rb",
             content: "class ApplicationJob < ActiveJob::Base\nend\n")),
+
+        # **A setting the release deleted, and the line goes.** Three of these are one family, and the
+        # notes are the licence: "the setting has no effect — delete the line", "Remove the setting",
+        # "Remove the line rather than setting it to `:zeitwerk`".
+        setting_removed(subject: "config.active_record.identity_map",
+          setting: "config.active_record.identity_map"),
+        setting_removed(subject: "config.action_dispatch.best_standards_support",
+          setting: "config.action_dispatch.best_standards_support"),
+        setting_removed(subject: "config.autoloader", setting: "config.autoloader"),
+
+        # "`ActiveSupport::Dependencies.constantize("User")` becomes `"User".constantize`." The two
+        # members of the private API whose edit is that swap; the rest of the change
+        # (`mechanism`, `verbose=`, `hook!`, `depend_on`, `require_or_load`) has a different fix each,
+        # which is what its gap says.
+        #
+        # **The context is what keeps it to a string.** `:User.constantize` is not a method — the
+        # private API took a name and the public one is on the String — so a symbol argument is left,
+        # and the raw line is the only place that can be asked.
+        call_inverted(subject: "ActiveSupport::Dependencies private API",
+          receiver: "ActiveSupport::Dependencies", call: "constantize", to: "\\k<value>.constantize",
+          context: ->(_lines, _found, raw) { raw.match?(/#{Regexp.escape("constantize")}\(\s*["']/) }),
+        call_inverted(subject: "ActiveSupport::Dependencies private API",
+          receiver: "ActiveSupport::Dependencies", call: "safe_constantize",
+          to: "\\k<value>.safe_constantize",
+          context: ->(_lines, _found, raw) { raw.match?(/safe_constantize\(\s*["']/) }),
+
+        # "`Rails.application.config_for(:app).with_indifferent_access` keeps the call sites as they
+        # are." The conversion goes on the call, and the guard is what makes a second walk a no-op —
+        # without it the rule appends a second `.with_indifferent_access`.
+        call_replaced(subject: "config_for", from: "config_for",
+          to: 'config_for(\k<a1>).with_indifferent_access',
+          already: /config_for\([^()]*\)\.with_indifferent_access/),
+
+        # **The 5.1 rung of the `render :text` story, where the choice has to be made.** 4.1
+        # deprecates `:text` without removing it; here the deprecation has run out, and the note's own
+        # answer is `plain:` — the safe one, because `:text` sent `text/html` and interpreted markup
+        # in the content. `html:` is for a response that *is* markup, which is a fact about the
+        # content rather than about the line, and that is what the gap beside this rule says.
+        option_renamed(subject: "render :text / render :nothing", call: "render", from: "text",
+          to: "plain: "),
+        # "`head :ok` is the replacement for a response with no body" — and the statement is the whole
+        # edit, so a `:nothing` that carries anything else is left rather than half-rewritten.
+        line_replaced(subject: "render :text / render :nothing", from: "render :nothing => true",
+          to: "head :ok"),
 
         # "Permit first and convert: `params.permit([:a, :b]).to_h`" — the key list is captured rather
         # than enumerated, because `slice` takes as many as the call site wants.
