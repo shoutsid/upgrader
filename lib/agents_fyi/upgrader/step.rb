@@ -981,8 +981,16 @@ module AgentsFyi
         end
 
         File.write(path, updated)
-        stages << command(Record::PIN, ["bundle", "update", "rails"], chdir: @worktree.root,
-          env: @worktree.bundle_env)
+        # **`--conservative`, because a rung moves Rails and not the world.** The lighthouse
+        # proved what the alternative costs: the application pinned rake 10.0.4, the
+        # unconstrained update resolved 12.3.3 (railties 4.1 only asks `rake >= 0.8.7`), and
+        # Rails 4.1's own `rails:update` then died on `Rake::Application#last_comment`, which
+        # rake 11 removed — a rung that failed on a gem the move had no reason to touch, and
+        # a failure that reads as the application's. `--conservative` keeps the locked version
+        # of everything the resolution does not have to change, which is the same rule the
+        # routing states: what moves is what this rung requires.
+        stages << command(Record::PIN, ["bundle", "update", "rails", "--conservative"],
+          chdir: @worktree.root, env: @worktree.bundle_env)
         nil
       end
 

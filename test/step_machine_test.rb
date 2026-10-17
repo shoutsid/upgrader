@@ -230,6 +230,22 @@ class StepMachineTest < Minitest::Test
     assert_equal ["2.2"], tests.machines.map(&:era).uniq
   end
 
+  # **A rung moves Rails; it does not move the world.** `bundle update rails` resolves every
+  # dependency afresh, and the lighthouse showed what that costs: a 2013 application pinned
+  # rake 10.0.4, the unconstrained update pulled 12.3.3, and Rails 4.1's own `rails:update`
+  # then died on `Rake::Application#last_comment`, which rake 11 removed — the rung failed on
+  # a gem the move had no reason to touch. `--conservative` keeps the locked versions of
+  # everything the resolution does not have to change.
+  def test_the_pin_moves_rails_and_leaves_the_rest_of_the_bundle_where_it_was
+    record = step(app, machines: machines).run
+
+    pin = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+
+    assert pin, "the pin stage is not in the record"
+    # The era is whatever the fleet settles on; what is asserted is the command's own shape.
+    assert_equal "bundle update rails --conservative", pin.command.split(" ", 3).last
+  end
+
   # No interpreter can install this application's bundle. The verdict is `unverified` — the
   # machine could not make the measurement — and every attempt's reason travels, because the
   # fix (a missing system library, a newer era, a compiler in the image) is decided from them.
