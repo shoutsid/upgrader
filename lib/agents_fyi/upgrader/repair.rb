@@ -311,9 +311,32 @@ module AgentsFyi
           lines << ""
         end
         unless decisions.empty?
-          lines << "Changes the move would not make on its own — these are candidates, and one of"
-          lines << "them may be the failure:"
-          decisions.each { |decision| lines << "- #{decision.subject} (#{decision.kind}): #{decision.reason}" }
+          lines << "Changes the move would not make on its own, at the lines this application has:"
+          lines << "they are candidates, and one of them may be the failure."
+          decisions.each do |decision|
+            where = decision.path.to_s.empty? ? "" : "#{decision.path}:#{decision.line} — "
+            lines << "- #{where}#{decision.subject} (#{decision.kind}): #{decision.reason}"
+          end
+          lines << ""
+        end
+        # **The most specific thing in the brief.** These are changes this tool *has a rule for* and
+        # would not touch — a value whose end the rule cannot see, a line that is not only the call —
+        # so the model is being told where a mechanical attempt already stopped, which is a better
+        # starting point than any list of possibilities.
+        unapplied = Array(e[:unapplied_rules]).uniq
+        unless unapplied.empty?
+          lines << "This tool has a rule for these changes and would not touch the line — the shape is"
+          lines << "known and the value is not, which is the closest thing to a starting point here:"
+          unapplied.each { |subject| lines << "- #{subject}" }
+          lines << ""
+        end
+        # And the changes this rung carried that this application does not use at all, as a count:
+        # they are not work, and a brief that listed them would send the model looking for call
+        # sites that do not exist.
+        carried = e[:carried].to_i
+        if carried.positive?
+          lines << "#{carried} further change(s) this rung carried are not in this application at all,"
+          lines << "so there is nothing to find for them."
           lines << ""
         end
         lines << "The failure (the tail of the suite's own output):"

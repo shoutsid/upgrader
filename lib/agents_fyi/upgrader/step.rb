@@ -387,7 +387,14 @@ module AgentsFyi
             repository: @repository, from_version: step["from_version"],
             to_version: step["to_version"], suite_command: @suite_plan&.command,
             interpreter: @machine.interpreter, image: @machine.image,
-            applied: @applied, refused: @refused, decisions: @decisions,
+            applied: @applied, refused: @refused,
+            # **The residue, not the blanket.** A decision with a path and a line is a call site
+            # this application has; one without is a change this rung carried that the application
+            # does not use, and a brief that listed both equally taught the agent to hunt for
+            # sixteen things when three exist.
+            decisions: @decisions.select { |decision| !decision.path.to_s.empty? },
+            carried: @decisions.count { |decision| decision.path.to_s.empty? },
+            unapplied_rules: @unapplied_rules || [],
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
@@ -926,6 +933,10 @@ module AgentsFyi
         # applies stops being a decision, because it is no longer one.
         rules = Rewrites.apply(scan["manual"] || [])
         inert = Rewrites.inert(step["changes"] || [])
+        # A rule that *knows* the change and would not touch this line is the most specific thing
+        # anything downstream can be told, so it is kept rather than counted: the repair agent's
+        # brief carries it (`Repair#prompt_for`).
+        @unapplied_rules = rules.left
         result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
         decisions = decisions_for(step, scan).reject do |decision|
           rules.applied.include?(decision.subject.to_s)
@@ -950,6 +961,10 @@ module AgentsFyi
           rules.edits.any?
         parts << "#{inert.size} rule(s) name no change in this rung (#{inert.join(", ")})" if
           inert.any?
+        unless rules.left.empty?
+          parts << "#{rules.left.size} line(s) a rule knows and would not touch " \
+                   "(#{rules.left.uniq.join(", ")})"
+        end
         parts.join("; ")
       end
 

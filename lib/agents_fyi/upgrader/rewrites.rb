@@ -31,9 +31,14 @@ module AgentsFyi
     # **What is deliberately absent, and why** — measured on the ladder's 95 changes, not guessed
     # (77 of them are carried rather than rewritten; see `docs/upgrades.md`):
     #
-    # * `render :text` — the ladder's replacement (`render plain:`/`render html:`/`render body:`) is
-    #   the 5.1 spelling, and a rung that stops at 4.1 would not compile it. The rule waits until
-    #   the target spelling is checked against the release the rung moves to.
+    # * `render :text` — **checked against the release, and the answer is that this is a judgement
+    #   rather than a spelling problem.** `plain:`, `html:` and `body:` all exist at 4.1
+    #   (`RENDER_FORMATS_IN_PRIORITY` in that release's `rendering.rb` is
+    #   `[:body, :text, :plain, :html]`; 5.1 drops `:text`), so the ladder's replacement is valid on
+    #   the rung that carries it. What differs is *behaviour*: `:text` sent `text/html` unescaped,
+    #   `html:` escapes the content, `plain:` sends `text/plain`, `body:` sets no content type at
+    #   all — which is why the guide lists three and not one. A rule would be choosing a response's
+    #   content type for the application, so the change is located and left.
     # * mutator methods on a Relation — the scan's pattern matches `Array#map!` as well, and
     #   rewriting an array is not this change. Locate-only.
     # * `default_scope`, `store_accessor`, `set_callback`, `MultiJson`, `find_all_by_*`,
@@ -104,6 +109,16 @@ module AgentsFyi
           subject: "request.content_type",
           pattern: /\brequest\.content_type\b/,
           replace: "request.media_type"
+        ),
+        # **A removal, and the note is the licence**: "every use of it can be deleted". The pattern
+        # is a *whole line that is nothing but the call*, because the edit is the whole line: a
+        # `require_dependency "x"; do_something` or a line that merely mentions it would lose the
+        # rest, and both are left as decisions. The note's own follow-up (`bin/rails zeitwerk:check`)
+        # travels in the applied edit, because a deletion a reader cannot check is not a repair.
+        Rule.new(
+          subject: "require_dependency",
+          pattern: /\A\s*require_dependency\s*(\(?\s*["'][^"']*["']\s*\)?)?\s*\z/,
+          replace: ""
         )
       ].freeze
 

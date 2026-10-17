@@ -64,7 +64,8 @@ class RepairTest < Minitest::Test
     system(*argv, out: File::NULL, err: File::NULL)
   end
 
-  def evidence(output: "1) Failure:\n   NoMethodError: undefined method `attr_accessible'")
+  def evidence(output: "1) Failure:\n   NoMethodError: undefined method `attr_accessible'",
+               decisions: [], carried: 0, unapplied_rules: [])
     {
       repository: "https://github.com/acme/storefront", from_version: "4.0.0.rc1",
       to_version: "4.1.0", suite_command: "bundle exec rspec",
@@ -72,7 +73,8 @@ class RepairTest < Minitest::Test
       applied: [AgentsFyi::Upgrader::Preflight::Repair.new(path: "Gemfile", line: 3,
         text: %(gem "rails", "4.0.0.rc1"), after: %(gem "rails", "4.1.0"), subject: "rails",
         note: "the pin")],
-      refused: [], decisions: [], output_tail: output
+      refused: [], decisions: decisions, carried: carried, unapplied_rules: unapplied_rules,
+      output_tail: output
     }
   end
 
@@ -236,6 +238,35 @@ class RepairTest < Minitest::Test
     assert_equal ["partial-1.rb"], first.changed
     assert_includes first.output_tail, "killed after 900s"
     assert_equal 2, agent.calls.length, "a timeout must not end the loop"
+  end
+
+  # **The brief is the residue, not the blanket.** A change with a path and a line is a call site
+  # this application has; one this rung carried without a call site is not work at all, and a brief
+  # that listed both equally taught the model to hunt for sixteen things when three exist. And a
+  # change this tool *has a rule for* and would not touch — a value whose end the rule cannot see —
+  # is the closest thing to a starting point, so it is named rather than counted.
+  def test_the_brief_carries_the_located_findings_and_what_the_rules_refused
+    prompt = nil
+    agent = FakeAgent.new do |argv, _chdir, _n|
+      prompt = argv.last
+      [0, "done\n"]
+    end
+    located = AgentsFyi::Upgrader::Record::Decision.new(
+      path: "app/controllers/posts_controller.rb", line: 12, subject: "render :text",
+      kind: "renamed", reason: "the response's content type is the application's to choose"
+    )
+    Repair.new(
+      root: @root,
+      evidence: evidence(decisions: [located], carried: 13, unapplied_rules: ["require_dependency"]),
+      budget: budget(attempts: 1), env: {}, out: nil, runner: agent,
+      rerun: -> { FakeSuite.new(ok: true) }
+    ).run
+
+    assert_includes prompt, "app/controllers/posts_controller.rb:12 — render :text"
+    assert_includes prompt, "13 further change(s) this rung carried are not in this application"
+    assert_includes prompt, "This tool has a rule for these changes"
+    assert_includes prompt, "- require_dependency"
+    refute_includes prompt, "render :text — ", "the located finding must carry its line"
   end
 
   # The sentence a reader gets, because "did not run" for an agent that ran fifteen minutes is

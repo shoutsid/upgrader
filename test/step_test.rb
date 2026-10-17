@@ -599,6 +599,28 @@ class StepTest < Minitest::Test
     assert_includes evidence[:output_tail], "1 examples, 1 failure"
   end
 
+  # **The residue reaches the brief, not the blanket.** A change with a call site is work; a change
+  # this rung carried that the application does not use is not — and the two are handed over
+  # separately, so the agent is not sent looking for call sites that do not exist.
+  def test_the_repair_evidence_carries_the_located_findings_and_the_carried_count
+    dir = track(app)
+    with_source(dir, "app/models/post.rb", "class Post\nend\n")
+    located = { "path" => "app/models/post.rb", "line" => 2, "subject" => "attr_accessible",
+                "kind" => "removed", "source" => "4.0", "note" => "found here" }
+    carried = change(subject: "alias_attribute", kind: "default_changed", source: "7.2",
+      replacement: nil, note: "it reads the column directly")
+    corpus = FakeCorpus.new(payload: plan(changes: [carried]), manual: [located])
+
+    step(dir, corpus: corpus, tests: SequencedTests.new(results: [green, red, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    evidence = FakeRepair.last_evidence
+    assert_equal ["attr_accessible"], evidence[:decisions].map(&:subject)
+    assert_equal 1, evidence[:carried], "a change this application does not use is not work"
+    assert_equal ["attr_accessible"], evidence[:unapplied_rules],
+      "a line a rule knows and would not touch is the most specific thing the brief can carry"
+  end
+
   # **The application's own environment, when the deployment knows it.** A repository that
   # carries no secrets cannot boot its own suite — this walk's first real application reads
   # `ENV["RAILS_SECRET_TOKEN"]` from a git-ignored `config/application.yml`, and a fresh clone

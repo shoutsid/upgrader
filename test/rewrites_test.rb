@@ -87,6 +87,23 @@ class RewritesTest < Minitest::Test
     assert_equal 2, result.left.size
   end
 
+  # **A removal rule, and its whole-line safety.** The note says "every use of it can be deleted",
+  # and the edit is the whole line — so only a line that is nothing but the call is touched. A line
+  # with code after it, or one that merely mentions the name, is left: removing the line would take
+  # whatever else was on it.
+  def test_the_removal_rule_takes_a_whole_line_and_leaves_every_other_shape_alone
+    result = Rewrites.apply([
+      entry(subject: "require_dependency", text: %(require_dependency "app/models/post")),
+      entry(subject: "require_dependency", text: %(require_dependency "x"; Post.new)),
+      entry(subject: "require_dependency", text: %(  # require_dependency "x" was here))
+    ])
+
+    assert_equal 1, result.edits.size
+    assert_equal "", result.edits.first["after"], "the line should be emptied, not shifted away"
+    assert_equal ["require_dependency", "require_dependency"], result.left,
+      "the line with code after it and the comment are both left"
+  end
+
   # An edit that would change nothing is not an edit: a rule that fired on an already-correct line
   # would fill the patch with no-ops a reviewer has to read.
   def test_a_line_the_rule_would_not_change_is_not_an_edit
@@ -115,7 +132,8 @@ class RewritesTest < Minitest::Test
   def test_a_rule_that_names_no_change_in_this_rung_is_reported_rather_than_used
     inert = Rewrites.inert([{ "subject" => "request.content_type" }])
 
-    assert_equal [":confirm option on link_to", "HashWithIndifferentAccess"], inert
+    assert_equal [":confirm option on link_to", "HashWithIndifferentAccess", "require_dependency"],
+      inert
     assert_empty Rewrites.inert(Rewrites::RULES.map { |rule| { "subject" => rule.subject } })
   end
 
