@@ -27,6 +27,12 @@ module AgentsFyi
       # The stages, named, because "the step failed" is not actionable and "bundle
       # update failed" is. They are used as stage labels on a `Command`.
       PREPARE = "prepare"
+      # What an old application's Gemfile needs before it can be installed at all: a
+      # `git://` remote GitHub stopped accepting in 2022, a fork that no longer exists, a
+      # pin that cannot sit beside the framework. A stage rather than a silent
+      # normalisation, because "the bundle could not be installed" means something
+      # different once a preflight has already rewritten two lines of somebody's Gemfile.
+      PREFLIGHT = "preflight"
       # Choosing and starting the machine the application's commands run on — the era
       # container for an application whose floor this process's interpreter cannot serve,
       # this process itself when it can. A stage because the choice is a fact the record has
@@ -258,7 +264,13 @@ module AgentsFyi
           "applied" => @applied.map { |edit|
                          { "path" => edit.path, "line" => edit.line,
                                                "text" => edit.text, "after" => edit.after,
-                                               "subject" => edit.subject } },
+                                               "subject" => edit.subject,
+                                               # A preflight repair carries the digest's reason for
+                                               # the move; a scanned edit does not, because the
+                                               # ladder's note for it lives in the plan the step was
+                                               # driven from. Nil rather than absent, so a reader
+                                               # does not have to test for the key.
+                                               "note" => edit.respond_to?(:note) ? edit.note : nil } },
           "refused" => @refused.map { |edit|
                          { "path" => edit.path, "line" => edit.line,
                                                "text" => edit.text, "found" => edit.found,

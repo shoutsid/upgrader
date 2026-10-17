@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+require "json"
 require "optparse"
 
 module AgentsFyi
@@ -29,6 +31,8 @@ module AgentsFyi
 
         Usage:
           agents-fyi-upgrader plan  --repo PATH|URL [--ref REF] --to VERSION [--api URL]
+          agents-fyi-upgrader preflight --repo PATH|URL [--ref REF] [--api URL]
+                                    [--record DIR]
           agents-fyi-upgrader step  --repo PATH|URL [--ref REF] --to VERSION [--api URL]
                                     [--record DIR] [--work DIR]
           agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] --to VERSION [--api URL]
@@ -38,6 +42,12 @@ module AgentsFyi
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
                   crosses, and print it. Nothing is written to the source.
+          preflight
+                  the moves an old Gemfile needs before it can be installed at all: a
+                  `git://` remote GitHub stopped accepting in 2022, a fork that no longer
+                  exists, a pin that cannot sit beside the framework — from the service's
+                  gem-migrations digest. Writes into a working copy this tool owns and
+                  prints what it did; `step` runs the same preflight before it installs.
           step    do the *first* release of that move on a working copy this tool owns:
                   run the application's suite first, as a baseline; apply the changes
                   the service calls mechanical; rewrite the Rails pin; run
@@ -71,12 +81,13 @@ module AgentsFyi
 
         case options[:command]
         when "plan" then plan(options)
+        when "preflight" then preflight(options)
         when "step" then step(options)
         when "serve" then serve(options)
         else
           usage_error(
             "unknown command `#{options[:command]}` — the modes that exist are `plan`, " \
-            "`step` and `serve`"
+            "`preflight`, `step` and `serve`"
           )
         end
       rescue Corpus::Refused => e
@@ -114,6 +125,32 @@ module AgentsFyi
           ).to_s
         )
         EXIT_OK
+      end
+
+      # One working copy, preflighted: the repairs an old Gemfile needs before anything can
+      # be installed at all. `step` runs the same preflight as its first move; this mode
+      # exists because that half of a walk is worth being able to look at on its own —
+      # it is the half that cannot be established by installing anything.
+      #
+      # The service's digest is read, and a service that does not answer it is a *narrowed*
+      # preflight rather than a failure: the general repairs are facts about a protocol,
+      # and the record says which half was skipped.
+      def preflight(options)
+        return usage_error("preflight needs --repo PATH|URL") unless options[:repo]
+
+        source = Source.worktree(options[:repo], ref: options[:ref], home: options[:home],
+          run: run_id, reuse: false)
+        result = Preflight.new(root: source.root,
+          corpus: @corpus || Corpus.new(base: options[:api])).run
+        @out.puts(result.to_s)
+        if options[:record]
+          FileUtils.mkdir_p(options[:record])
+          File.write(File.join(options[:record], "preflight.json"),
+            "#{JSON.pretty_generate(result.to_h)}\n")
+        end
+        EXIT_OK
+      rescue Preflight::NotAnApplication => e
+        failure(e.message)
       end
 
       # One step, on a copy this tool owns. The exit status follows the record rather
@@ -214,6 +251,13 @@ module AgentsFyi
       def help
         @out.puts(USAGE)
         EXIT_OK
+      end
+
+      # One name per invocation, so two working copies from one process cannot collide —
+      # the shape `Step#run_id` has, repeated here because `preflight` is a mode of its
+      # own and a copy it makes is not a step's.
+      def run_id
+        @run_id ||= "#{Time.now.utc.strftime("%Y%m%d%H%M%S")}-#{Process.pid}"
       end
 
       def usage_error(message)

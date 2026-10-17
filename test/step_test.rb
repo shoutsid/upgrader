@@ -128,17 +128,28 @@ class StepTest < Minitest::Test
   end
 
   class FakeCorpus
-    def initialize(payload: nil, refuse: nil, edits: [], manual: [])
+    attr_reader :gem_requests
+
+    def initialize(payload: nil, refuse: nil, edits: [], manual: [], migrations: [])
       @payload = payload
       @refuse = refuse
       @edits = edits
       @manual = manual
+      @migrations = migrations
+      @gem_requests = []
     end
 
     def upgrade(from:, to:)
       raise AgentsFyi::Upgrader::Corpus::Refused, @refuse if @refuse
 
       @payload
+    end
+
+    def gem_migrations(gems:)
+      @gem_requests << gems
+      { "migrations" => @migrations.select { |migration| gems.include?(migration["gem"]) },
+        "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,
+        "next_step" => "the digest's own sentence" }
     end
 
     def scan(from:, to:, files:)
@@ -304,6 +315,36 @@ class StepTest < Minitest::Test
   # assertion is on the Gemfile the suite was handed rather than on a runner's call
   # list, because `Tests.run` spawns the suite itself: an injected runner never sees it,
   # so the call list could only ever have shown the *absence* of a suite that did run.
+  # The preflight is the step's first move, and the order is the reason: the machine choice
+  # *is* a `bundle install`, so a Gemfile that cannot be installed as it stands has to be
+  # repaired before an interpreter is picked — otherwise every era is rejected for the
+  # protocol's reason and the record blames the matrix for a `git://` remote.
+  def test_the_preflight_repairs_run_before_the_install_and_land_in_the_record
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "cancan", git: "git://github.com/moriz/cancan.git"
+    GEM
+    corpus = FakeCorpus.new(payload: plan, migrations: [
+      { "gem" => "cancan", "kind" => "replaced", "replacement" => "cancancan",
+        "requirement" => "~> 1.9", "mechanical" => true,
+        "note" => "the Rails-4 fork is gone", "source" => "the index" }
+    ])
+
+    record = step(dir, corpus: corpus).run
+
+    stages = record.stages.map(&:stage)
+    assert_operator stages.index("preflight"), :<, stages.index("bundle"),
+      "the install ran before the Gemfile was made installable"
+    assert_equal %w[cancan git://], record.applied.map(&:subject).sort,
+      "both repairs should be in the record"
+    assert_includes record.patch, %(gem "cancancan", "~> 1.9")
+    # The reason travels with the repair: a Gemfile line that moved without its reason in
+    # the record is a change nobody reading the record can account for.
+    assert_includes record.to_h["applied"].find { |edit| edit["subject"] == "git://" }["note"],
+      "2022"
+  end
+
   # The install is what makes the baseline a measurement. Without it the suite runs against
   # whatever the image happens to have and `bin/rails` fails to find a gem that was never
   # installed — measured on the fixture: a "baseline" that came back red in 0.09s carrying a

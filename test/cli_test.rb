@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "json"
 require "stringio"
 require "tmpdir"
 require "agents_fyi/upgrader"
@@ -59,15 +61,22 @@ class CliTest < Minitest::Test
   # A corpus client that answers from a value or raises a given error, so a test can
   # drive a refusal and an outage through the same path a real response takes.
   class StubCorpus
-    def initialize(payload: nil, error: nil)
+    def initialize(payload: nil, error: nil, migrations: [])
       @payload = payload
       @error = error
+      @migrations = migrations
     end
 
     def upgrade(from:, to:)
       raise @error if @error
 
       @payload
+    end
+
+    def gem_migrations(gems:)
+      { "migrations" => @migrations.select { |migration| gems.include?(migration["gem"]) },
+        "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,
+        "next_step" => "the digest's own sentence" }
     end
   end
 
@@ -167,6 +176,48 @@ class CliTest < Minitest::Test
     assert_includes out, "Usage:"
     assert_includes out, "agents-fyi-upgrader plan"
     assert_empty err
+  end
+
+  # The preflight mode: a mode of its own because it is the half of a walk that cannot be
+  # established by installing anything. Two assertions carry it — the caller's tree is
+  # still byte-for-byte what it was (the repair happens in a copy this tool owns), and the
+  # record written beside it names both repairs: the protocol, which needs no digest, and
+  # the digest's own move for the dead fork.
+  def test_preflight_repairs_a_copy_and_says_what_it_did_without_touching_the_source
+    Dir.mktmpdir do |dir|
+      home = File.join(dir, "home")
+      repo = File.join(dir, "app")
+      FileUtils.mkdir_p(repo)
+      File.write(File.join(repo, "Gemfile"), <<~GEM)
+        source "https://rubygems.org"
+        gem "rails", "4.0.0.rc1"
+        gem "cancan", git: "git://github.com/moriz/cancan.git"
+      GEM
+      File.write(File.join(repo, "Gemfile.lock"),
+        "GEM\n  remote: git://github.com/moriz/cancan.git\n  specs:\n    cancan (1.6.10)\n")
+      system("git", "init", "--quiet", repo, out: File::NULL, err: File::NULL)
+      system("git", "-C", repo, "add", "--all", out: File::NULL, err: File::NULL)
+      system("git", "-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t",
+        "commit", "--quiet", "-m", "fixture", out: File::NULL, err: File::NULL)
+      original = File.read(File.join(repo, "Gemfile"))
+      corpus = StubCorpus.new(migrations: [
+        { "gem" => "cancan", "kind" => "replaced", "replacement" => "cancancan",
+          "requirement" => "~> 1.9", "mechanical" => true,
+          "note" => "the fork is gone", "source" => "the index" }
+      ])
+      record = File.join(dir, "record")
+
+      code, out, err = run_cli(["preflight", "--repo", repo, "--home", home, "--record", record],
+        corpus: corpus)
+
+      assert_equal 0, code, err
+      assert_includes out, "preflight: 3 repair(s)"
+      assert_equal original, File.read(File.join(repo, "Gemfile")), "the caller's tree was written to"
+      written = JSON.parse(File.read(File.join(record, "preflight.json")))
+      assert_equal %w[Gemfile Gemfile Gemfile.lock], written["repairs"].map { |repair| repair["path"] }.sort
+      assert_includes written["repairs"].map { |repair| repair["after"] }.join,
+        %(gem "cancancan", "~> 1.9")
+    end
   end
 
   def test_an_unknown_command_says_which_modes_exist

@@ -16,14 +16,23 @@ disagreeing, which is the failure this project has paid for more than once.
 | Mode | What it does | Writes |
 |---|---|---|
 | `plan` | resolves the application, reads its Rails release, and prints the steps and the split between mechanical and manual changes | nothing |
+| `preflight` | makes an old Gemfile installable at all — the `git://` protocol GitHub stopped accepting in 2022, a fork that has been deleted, a pin that cannot sit beside the framework — from the service's gem-migrations digest, on a working copy this tool owns | a copy this tool owns, and `preflight.json` where `--record` says |
 | `step` | runs the *first* release of that move end to end on a working copy this tool owns, and prints the record | a patch and the record, where `--record` says — and nothing to the corpus |
 | `serve` | the service: a durable ledger, the service's queue, one step per repository per cycle | the run record and, for a failure, a report |
 
 The default is `plan`, on the miner's reasoning: a tool whose first run writes into a
 shared corpus is a tool that discovers its mistakes in the corpus.
 
+`preflight` is the half of a walk that cannot be established by installing anything: an
+application whose sources are dead fails its install for a reason no interpreter matrix
+can fix, and the digest it reads (`GET /gems/migrations`) is the *documented* half of gem
+upgrades — each entry a claim about an index and a repository, naming where it was read
+from. `step` runs the same preflight as its first move, before it chooses an interpreter,
+because the choice *is* a `bundle install`.
+
 ```console
 $ ./bin/agents-fyi-upgrader plan  --repo https://github.com/owner/application.git --to 7.1.0
+$ ./bin/agents-fyi-upgrader preflight --repo https://github.com/owner/application.git --record ./out
 $ ./bin/agents-fyi-upgrader step  --repo https://github.com/owner/application.git --to 7.1.0 --record ./out
 $ ./bin/agents-fyi-upgrader serve --repos owner/application@main --to 7.1.0 --interval 600
 $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . --to 5.0.0
@@ -97,35 +106,44 @@ The pipeline has three stages that make the rest mean anything:
 
 1. **inspect** — the Rails release from the application's own `Gemfile.lock`, the
    declared Ruby floor, the test command, and whether there is a suite at all.
-2. **machine** — which interpreter executes the application. An application old enough to
+2. **preflight** — the Gemfile made installable where a machine may: a `git://` remote
+   rewritten in both the Gemfile *and* the lockfile (Bundler reads the protocol out of the
+   lockfile's own `remote:` lines), and the service's gem-migrations digest applied —
+   a dead fork replaced by its release, a gem that cannot sit beside the framework
+   removed. A declaration it cannot rewrite in full (a comment, several lines, a
+   `require:` that changes behaviour) is skipped *with the reason*, and a digest entry for
+   a gem the application does not declare becomes a decision rather than an edit.
+3. **machine** — which interpreter executes the application. An application old enough to
    be interesting cannot be installed on the Ruby running this tool, so the step chooses:
    the era container for the step's floor when `UPGRADER_RUNTIME=docker`, this process
    when it is not and its interpreter meets the floor, and a recorded `unverified` verdict
    naming the floor when neither can. The choice *is* the install: `bundle install` is run
    through each candidate in turn (`Interpreters`, `Machine`) and the first interpreter
    that can install the application's bundle is the one that can run its suite.
-3. **baseline** — the suite on the **unmodified** copy, before anything is written.
+4. **baseline** — the suite on the copy as it arrived, before anything the *move* writes.
    Without it, "the upgrade broke the suite" and "the suite was already red" are one
    sentence, and the second files a report blaming a release for a pre-existing
-   breakage.
-4. **services**, **database** — PostgreSQL and Redis started inside the step's container
+   breakage. The preflight's repairs happened before this and are in the record under
+   their own stage: they are a precondition of measuring, not a change the move is judged
+   for.
+5. **services**, **database** — PostgreSQL and Redis started inside the step's container
    from the application's own `database.yml` (`images/services.sh`), then the schema the
    suite needs (`db:create db:test:prepare`, best-effort and named beside a suite failure
    rather than being one).
-5. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
+6. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
    edits, each with its line re-checked against the text the scan read. An edit whose
    line has moved is a refusal, not an edit.
-6. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
+7. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
    Only the meta-gem: an application that pins the framework as components has a
    different line for each one, and choosing which of them move together is a decision.
    That repository is refused, with a sentence saying what to do instead.
-7. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
+8. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
    application old enough to have a `Rakefile` and no `bin/rails`). Added files are
    adopted; a file the application
    already owns keeps the application's version and the conflict is recorded.
    `config.load_defaults` is therefore never flipped, and that falls out of the rule
    rather than being a special case.
-8. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
+9. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
    under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is

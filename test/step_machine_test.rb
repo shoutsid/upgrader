@@ -64,6 +64,11 @@ class StepMachineTest < Minitest::Test
         "next_step" => "one step" }
     end
 
+    def gem_migrations(gems:)
+      { "migrations" => [], "counts" => { "selected" => 0, "total" => 0 }, "stored" => false,
+        "next_step" => "the digest's own sentence" }
+    end
+
     def scan(from:, to:, files:)
       { "edits" => [], "manual" => [], "counts" => { "automatic" => 0, "manual" => 0 },
         "next_step" => "nothing" }

@@ -132,7 +132,15 @@ module AgentsFyi
 
         # The machine, before the bundle: `bundle install` is what decides whether the
         # interpreter can serve this application at all, so it is the probe and the install
-        # in one command (see `choose_machine`).
+        # in one command (see `choose_machine`). But first the *Gemfile* has to be
+        # installable at all, and that is the preflight's half — a `git://` remote GitHub
+        # no longer accepts, a fork that has been deleted, a pin that cannot sit beside the
+        # framework. Its repairs are edits this step made; everything it will not rewrite
+        # travels as a decision.
+        preflight = preflight_stage(stages)
+        @applied.concat(preflight.repairs)
+        @decisions.concat(preflight.decisions)
+
         choice = choose_machine(stages, step, preferred: entry&.era)
         return finish(choice) if choice.is_a?(Record)
 
@@ -153,9 +161,17 @@ module AgentsFyi
         database_stage(stages)
 
         # The baseline, on the unmodified copy, before anything is written.
+        # The baseline, on the unmodified copy, before anything is written — the
+        # *move's* edits, that is: the preflight above has already made the Gemfile
+        # installable, and that is a precondition of measuring anything rather than a
+        # change the move is being judged for. Both halves are in the record, under their
+        # own stages.
         @baseline = baseline(stages)
 
-        @applied, @refused, @decisions = apply(stages, step)
+        applied, refused, decisions = apply(stages, step)
+        @applied.concat(applied)
+        @refused.concat(refused)
+        @decisions.concat(decisions)
 
         pin = rewrite(stages, step)
         return finish(pin) if pin.is_a?(Record)
@@ -268,6 +284,30 @@ module AgentsFyi
         Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
           from_version: @from, to_version: @to,
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
+      end
+
+      # The application's own Gemfile, made installable where a machine may: the protocol
+      # GitHub stopped speaking and the moves the service's digest documents. One stage,
+      # because it is one action with one outcome, and the details travel in its tail —
+      # the repairs' before-and-after lines and the decisions' reasons.
+      #
+      # A repository with no Gemfile at all still gets a stage, saying so: `planned`
+      # requires a lockfile but not a Gemfile, and a preflight that silently did nothing
+      # would leave an install failure to report it in a sentence about gems.
+      def preflight_stage(stages)
+        corpus = @corpus || Corpus.new(base: @api)
+        result = Preflight.new(root: @worktree.root, corpus: corpus).run
+        stages << Record::Command.new(
+          stage: Record::PREFLIGHT, command: "preflight: #{result.summary}",
+          ran: true, exit_code: 0, seconds: 0.0,
+          output_tail: result.details.first(20).join("\n")
+        )
+        @out.puts("  preflight: #{result.summary}") if @out
+        result
+      rescue Preflight::NotAnApplication => e
+        stages << Record::Command.new(stage: Record::PREFLIGHT, command: e.message,
+          ran: false, exit_code: nil, seconds: 0.0, output_tail: e.message)
+        Preflight::Result.new(repairs: [], decisions: [], notes: [e.message])
       end
 
       # The machine this step will run on, and the install it performed while deciding.

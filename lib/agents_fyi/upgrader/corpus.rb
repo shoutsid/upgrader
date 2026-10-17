@@ -73,6 +73,19 @@ module AgentsFyi
         call(:get, "/rails/upgrade", params: { from_version: from, to_version: to })
       end
 
+      # The gem-migrations digest: the moves a machine may make to a Gemfile without
+      # reading the application's code.
+      #
+      # Bounded to the caller's own gems — the declared ones and the locked ones — because
+      # that is the question ("which of mine") rather than a browsing of the digest, and
+      # because the digest's answer is not a compatibility matrix: an entry is a claim
+      # about an index and a repository, and a gem it does not mention is not thereby
+      # fine.
+      def gem_migrations(gems: [])
+        names = Array(gems).reject { |gem| gem.to_s.empty? }.uniq
+        call(:get, "/gems/migrations", params: names.empty? ? {} : { gems: names.join(",") })
+      end
+
       # The call sites a move crosses, in the files the caller sent.
       #
       # A read that keeps nothing — the source is the caller's private code — and it is
