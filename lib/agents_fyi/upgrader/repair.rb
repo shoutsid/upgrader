@@ -1,0 +1,299 @@
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "timeout"
+
+module AgentsFyi
+  module Upgrader
+    # The one place a model changes somebody's application, and the reason it is bounded.
+    #
+    # A step has a shape that makes repair a *measurable* act rather than a hope: the suite
+    # was green before the move and red after it, so the failure is attributable, the brief
+    # is concrete, and the verdict afterwards is the suite's own. That is the whole reason
+    # this loop can exist at all — repairing a rung that was red before the move would be
+    # unmeasurable, and this class refuses that case in its caller (`Step#repair`).
+    #
+    # Four rules carry it, and each is a way an autonomous repair goes wrong:
+    #
+    # * **The model edits files; the harness runs the suite.** The application executes on an
+    #   era interpreter inside a container (Ruby 2.1 for a Rails 4.0.0.rc1 application), so a
+    #   shell in the agent's hand is a shell that cannot run the thing it is reasoning about —
+    #   and every attempt to try burns the budget. The agent gets read and edit; the suite is
+    #   run between attempts by the caller.
+    # * **Off unless a number says otherwise.** `UPGRADER_REPAIR_ATTEMPTS` is the switch, and
+    #   zero is the library's default: a step run by hand must not spend model calls because
+    #   a file was left in a directory. The deployment sets the number, which is the same
+    #   posture as publishing.
+    # * **Every attempt is evidence.** The command, the exit code, the seconds, the agent's
+    #   own closing words, and the files it touched — a repair nobody can audit is a change
+    #   nobody can review, and the record is the pull request's other half.
+    # * **A timeout is a kill, not a wait.** One attempt is a model call with a tool loop in
+    #   it; an agent that hangs must not hold a walk for ever, which is the same rule the
+    #   miner's installs and suites are held to.
+    class Repair
+      # The switch, the budget, and the agent. Named here and read by no other file.
+      ENV_ATTEMPTS = "UPGRADER_REPAIR_ATTEMPTS"
+      ENV_TIMEOUT = "UPGRADER_REPAIR_TIMEOUT"
+      ENV_MODEL = "UPGRADER_REPAIR_MODEL"
+      ENV_AGENT = "UPGRADER_REPAIR_AGENT"
+      ENV_BINARY = "UPGRADER_REPAIR_BINARY"
+
+      # Off, and ten minutes per attempt when it is not: one attempt is a model call with a
+      # tool loop around it, and a rung's suite is measured in minutes rather than seconds.
+      DEFAULT_ATTEMPTS = 0
+      DEFAULT_TIMEOUT = 600
+
+      # The agent this loop runs, declared in the config it writes. Named rather than left to
+      # the default because `opencode run` falls back to its `build` agent — which has a
+      # shell — when the name is unknown, and a shell is what this loop removes.
+      AGENT = "repair"
+
+      # Where opencode reads its project config. Written into the worktree for the length of
+      # one attempt and put back afterwards, because the application may have a file of its
+      # own under the same name.
+      CONFIG = "opencode.json"
+
+      # One attempt, as the record shows it.
+      Attempt = Struct.new(:number, :command, :ran, :exit_code, :seconds, :output_tail,
+        :changed, keyword_init: true) do
+        def ok? = ran && exit_code.to_i.zero?
+      end
+
+      Result = Struct.new(:attempts, :repaired, keyword_init: true) do
+        def to_s
+          return "no attempt was made" if attempts.empty?
+
+          "#{attempts.size} attempt(s), #{repaired ? "repaired" : "not repaired"}"
+        end
+      end
+
+      # The budget, or nil when this process does not repair at all. Read once per step; the
+      # default is off for the reason the class documents.
+      def self.budget(env = ENV)
+        attempts = env[ENV_ATTEMPTS].to_s.to_i
+        return nil if attempts <= 0
+
+        { attempts: attempts,
+          timeout: (env[ENV_TIMEOUT].to_s.empty? ? DEFAULT_TIMEOUT : env[ENV_TIMEOUT].to_i),
+          model: env[ENV_MODEL].to_s,
+          agent: env[ENV_AGENT].to_s.empty? ? AGENT : env[ENV_AGENT],
+          binary: env[ENV_BINARY].to_s.empty? ? "opencode" : env[ENV_BINARY] }
+      end
+
+      # The project config one attempt runs under: the agent, and nothing it may do beyond
+      # reading and editing this tree. `tools` is deny-first, because a capability opencode
+      # adds tomorrow must not arrive enabled.
+      def self.document(model:, agent: AGENT)
+        {
+          "$schema" => "https://opencode.ai/config.json",
+          "autoupdate" => false,
+          "snapshot" => false,
+          "model" => model.to_s.empty? ? nil : model,
+          "agent" => {
+            agent => {
+              "mode" => "primary",
+              "description" => "Repairs one rung of a Rails upgrade, with this directory's failure as its brief.",
+              "tools" => { "*" => false, "read" => true, "edit" => true, "write" => true,
+                           "glob" => true, "grep" => true, "list" => true }
+            }
+          }
+        }.compact
+      end
+
+      def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
+                     on_attempt: nil)
+        @root = root
+        @evidence = evidence
+        @attempts = budget.fetch(:attempts)
+        @timeout = budget.fetch(:timeout)
+        @model = budget.fetch(:model).to_s
+        @agent = budget.fetch(:agent)
+        @binary = budget.fetch(:binary)
+        @env = env
+        @out = out
+        # The agent's process, injectable so the suite can drive this loop's *shape* — an
+        # attempt ran, a suite came back red, another attempt followed — without a model.
+        @runner = runner
+        # The suite, again, after each attempt. A callable because running a suite is the
+        # caller's knowledge (the plan, the bundle, the machine) and this class's subject is
+        # the loop.
+        @rerun = rerun
+        # Where an attempt is recorded, called as it happens rather than at the end: a loop
+        # killed mid-flight must leave the evidence it had.
+        @on_attempt = on_attempt
+      end
+
+      def run
+        attempts = []
+        failure = @evidence[:output_tail].to_s
+        repaired = false
+        @attempts.times do |index|
+          attempt = attempt(index + 1, failure)
+          attempts << attempt
+          @on_attempt&.call(attempt)
+          @out.puts("  repair: attempt #{attempt.number} — #{describe(attempt)}") if @out
+          break unless attempt.ran
+
+          suite = @rerun&.call
+          break if suite.nil?
+
+          if suite.ok?
+            repaired = true
+            break
+          end
+          failure = suite.output_tail.to_s
+        end
+        Result.new(attempts: attempts, repaired: repaired)
+      end
+
+      private
+
+      def attempt(number, failure)
+        prompt = prompt_for(failure)
+        before = changed_files
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        exit_code, output = with_config { run_agent(prompt) }
+        Attempt.new(
+          number: number, command: command_label(prompt), ran: !exit_code.nil?,
+          exit_code: exit_code, seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
+          output_tail: tail(output), changed: changed_files - before
+        )
+      end
+
+      # The config is in place for exactly the length of one attempt, and whatever the
+      # application had under that name is restored afterwards: a file this tool wrote into
+      # a worktree is a file in the patch, and an application's own `opencode.json` is not
+      # this tool's to overwrite permanently.
+      def with_config
+        path = File.join(@root, CONFIG)
+        previous = File.file?(path) ? File.read(path, encoding: "utf-8") : nil
+        File.write(path, "#{JSON.pretty_generate(self.class.document(model: @model, agent: @agent))}\n")
+        yield
+      ensure
+        if previous.nil?
+          File.delete(path) if File.file?(path)
+        else
+          File.write(path, previous)
+        end
+      end
+
+      def run_agent(prompt)
+        argv = [@binary, "run", "--standalone", "--agent", @agent]
+        argv += ["--model", @model] unless @model.empty?
+        argv << prompt
+        return @runner.call(argv, chdir: @root, timeout: @timeout, env: @env) if @runner
+
+        collect(argv)
+      end
+
+      def collect(argv)
+        output = +""
+        status = nil
+        Open3.popen2e(@env, *argv, chdir: @root) do |stdin, stream, wait|
+          stdin.close
+          begin
+            Timeout.timeout(@timeout) { stream.each_line { |line| output << line } }
+          rescue Timeout::Error
+            begin
+              Process.kill("TERM", wait.pid)
+            rescue Errno::ESRCH
+              nil
+            end
+            return [nil, output + "\nthe repair agent was killed after #{@timeout}s"]
+          end
+          status = wait.value
+        end
+        [status.exitstatus, output]
+      rescue Errno::ENOENT => e
+        [nil, "the repair agent could not be started: #{e.message}"]
+      end
+
+      def command_label(prompt)
+        "#{@binary} run --agent #{@agent}#{@model.empty? ? "" : " --model #{@model}"} " \
+          "(prompt: #{prompt.bytesize} bytes)"
+      end
+
+      def describe(attempt)
+        return "did not run (#{attempt.output_tail.lines.first.to_s.strip})" unless attempt.ran
+
+        "exit #{attempt.exit_code} in #{attempt.seconds.round(1)}s" \
+          "#{attempt.changed.empty? ? ", no file changed" : ", #{attempt.changed.size} file(s) changed"}"
+      end
+
+      def tail(output)
+        text = output.to_s
+        lines = text.lines
+        lines.length > 60 ? lines.last(60).join : text
+      end
+
+      # Everything the worktree has changed since its base commit, as a sorted list. Both
+      # halves are needed: an edit to a tracked file is a `diff`, and a file an agent created
+      # is `status --porcelain` only.
+      def changed_files
+        porcelain, status = Open3.capture2e("git", "-C", @root, "status", "--porcelain")
+        return [] unless status&.success?
+
+        Open3.capture2e("git", "-C", @root, "add", "--intent-to-add", "--all")
+        names, _listing = Open3.capture2e("git", "-C", @root, "diff", "--name-only")
+        tracked = names.to_s.split("\n")
+        untracked = porcelain.to_s.split("\n").map { |line| line[3..].to_s }
+        (tracked + untracked).map(&:strip).reject(&:empty?).uniq.sort
+      end
+
+      # **The brief.** Composed from the step's own record, because a model told "the suite
+      # failed, fix it" writes a guess; a model told what the move changed, what the move
+      # refused, what needs a decision and the suite's own words writes a patch about this
+      # failure. The rules at the end are the ones an agent left alone gets wrong: editing
+      # the test, hand-editing the lockfile, and trying to run the suite it cannot run.
+      def prompt_for(failure)
+        e = @evidence
+        applied = Array(e[:applied]).first(30)
+        refused = Array(e[:refused]).first(20)
+        decisions = Array(e[:decisions]).first(30)
+
+        lines = []
+        lines << "You are repairing one step of an automated Rails upgrade. You are in a git"
+        lines << "worktree of #{e[:repository]} and the move is Rails #{e[:from_version]} -> #{e[:to_version]}."
+        lines << "The application's test suite was GREEN before this move and is RED now."
+        lines << ""
+        lines << "The suite command is: #{e[:suite_command]}"
+        lines << "It runs under #{e[:interpreter]}#{e[:image].to_s.empty? ? "" : " (#{e[:image]})"}, which you"
+        lines << "cannot run from your shell — the harness runs it after you finish, and tries again"
+        lines << "with your patch. Do not try to run it yourself."
+        lines << ""
+        unless applied.empty?
+          lines << "What the move has changed so far (from its own record):"
+          applied.each do |edit|
+            lines << "- #{edit.path}:#{edit.line}: `#{edit.text.to_s.strip}` -> `#{edit.after.to_s.strip}`"
+          end
+          lines << ""
+        end
+        unless refused.empty?
+          lines << "Edits the move refused, because the line it read had moved (nothing was written):"
+          refused.each { |edit| lines << "- #{edit.path}:#{edit.line}: #{edit.reason}" }
+          lines << ""
+        end
+        unless decisions.empty?
+          lines << "Changes the move would not make on its own — these are candidates, and one of"
+          lines << "them may be the failure:"
+          decisions.each { |decision| lines << "- #{decision.subject} (#{decision.kind}): #{decision.reason}" }
+          lines << ""
+        end
+        lines << "The failure (the tail of the suite's own output):"
+        lines << "```"
+        lines << failure.to_s.lines.last(80).join
+        lines << "```"
+        lines << ""
+        lines << "Rules, and they are not negotiable:"
+        lines << "- Fix the application for Rails #{e[:to_version]}. Do not edit the tests to make them"
+        lines << "  pass: a change that weakens a test is not a repair, and the record travels to a"
+        lines << "  reviewer who reads the diff."
+        lines << "- Do not hand-edit Gemfile.lock."
+        lines << "- Keep the change small. This is one rung of a ladder, reviewed on its own."
+        lines << "- Stop when you are done."
+        lines.join("\n")
+      end
+    end
+  end
+end

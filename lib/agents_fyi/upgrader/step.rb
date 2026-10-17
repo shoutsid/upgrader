@@ -59,7 +59,7 @@ module AgentsFyi
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
-        research: nil
+        research: nil, env: ENV, repair: nil
       )
         @repository = repository
         @to = to
@@ -100,6 +100,12 @@ module AgentsFyi
         # The research pass, injectable so the suite can drive the routing's `unknown` path
         # without fetching an index — the one thing in this file that reaches a third party.
         @research = research
+        # The repair loop, injectable for the same reason one layer out: a test of what a
+        # repaired step *does* must not spend a model call. `nil` is the real class, and the
+        # environment is where its budget lives (`Repair.budget`), so a deployment turns it
+        # on with a number and a step by hand stays off.
+        @repair = repair
+        @env = env
       end
 
       def run
@@ -189,6 +195,12 @@ module AgentsFyi
         update(stages)
         boot(stages)
         @suite = suite(stages)
+
+        # **The agentic half, and the last thing before the verdict.** A step that ran a green
+        # baseline and a red suite has a failure attributable to the move, which is what makes
+        # repair a measurement rather than a hope; the attempt(s) and the suite they were
+        # followed by are stages, so the record says how the rung was reached.
+        repair(stages, step)
 
         verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages)
         finish(build(step, stages, verdict, why))
@@ -294,6 +306,47 @@ module AgentsFyi
         Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
           from_version: @from, to_version: @to,
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
+      end
+
+      # The agentic half: a green-baseline/red-suite step gets a bounded number of attempts by
+      # a model in the worktree, with the failure as its brief, before the verdict is written.
+      #
+      # The preconditions are the whole of what makes it measurable. The baseline was green, so
+      # the failure is the move's rather than the application's; the suite actually ran, so
+      # there is a failure to repair at all; and the suite is red. A repaired step is still
+      # `passed` only because the *suite* says so afterwards — the model's word is never what
+      # passes a rung, and the attempt is in the record either way.
+      def repair(stages, step)
+        return nil if @baseline.nil? || !@baseline.ok? || @suite.nil? || !@suite.ran || @suite.ok?
+
+        repairer = @repair || Repair
+        budget = repairer.budget(@env)
+        return nil if budget.nil?
+
+        result = repairer.new(
+          root: @worktree.root,
+          evidence: {
+            repository: @repository, from_version: step["from_version"],
+            to_version: step["to_version"], suite_command: @suite_plan&.command,
+            interpreter: @machine.interpreter, image: @machine.image,
+            applied: @applied, refused: @refused, decisions: @decisions,
+            output_tail: @suite.output_tail
+          },
+          budget: budget, env: @env, out: @out,
+          rerun: -> { @suite = run_suite(stages, Record::SUITE) },
+          on_attempt: ->(attempt) { stages << repair_stage(attempt) }
+        ).run
+        @out.puts("  repair: #{result}") if @out && !result.attempts.empty?
+        result.attempts.empty? ? nil : @suite
+      end
+
+      def repair_stage(attempt)
+        tail = attempt.output_tail.to_s
+        unless attempt.changed.empty?
+          tail = "#{tail}\nfiles changed by this attempt: #{attempt.changed.join(", ")}"
+        end
+        Record::Command.new(stage: Record::REPAIR, command: attempt.command, ran: attempt.ran,
+          exit_code: attempt.exit_code, seconds: attempt.seconds, output_tail: tail)
       end
 
       # The application's own Gemfile, made installable where a machine may: the protocol

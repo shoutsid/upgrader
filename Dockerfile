@@ -70,6 +70,29 @@ RUN if [ "$WITH_BUILD_TOOLS" = "1" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# The repair agent, behind an argument for the same reason the compiler is: whether this
+# image may spend a model call is a fact about the *job*, and `plan`/`--help` on a machine
+# that will never repair should not carry a Node runtime and a model client.
+#
+# `opencode` ships as an npm package. It is the same client the harness measures models
+# through, so the repair loop and the probe speak one vocabulary.
+#
+# **The version is an argument and its default is `latest`, which is a decision rather than
+# an oversight**: this image cannot know which agent build an operator has authenticated
+# against, and a pinned name the deployment never tested is a pin that moves the failure to
+# a machine nobody is looking at. A deployment that wants a pin passes it
+# (`UPGRADER_REPAIR_AGENT_VERSION` in `.env.example`), and the deployment note in
+# `docker-compose.yml` says what a repair needs beyond the binary: an authenticated model.
+ARG WITH_REPAIR_AGENT=0
+ARG REPAIR_AGENT_VERSION=latest
+RUN if [ "$WITH_REPAIR_AGENT" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
+      && npm install -g --no-fund --no-audit "opencode-ai@${REPAIR_AGENT_VERSION}" \
+      && npm cache clean --force \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # The plan tool runs on one interpreter on purpose, and the matrix below it does not
 # exist yet. Reading a lockfile and asking the service a question are the same on
 # every Ruby this ladder's last two rungs support; *executing* a step is not, and

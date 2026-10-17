@@ -232,6 +232,44 @@ class StepTest < Minitest::Test
     end
   end
 
+  # A repair loop, as much of it as a step touches: it is built with the evidence, records
+  # one attempt as the caller's `on_attempt` sees it, runs the suite again through `rerun`,
+  # and answers whether that suite came back green. The loop's own subject is `repair_test.rb`.
+  class FakeRepair
+    Attempt = Struct.new(:number, :command, :ran, :exit_code, :seconds, :output_tail, :changed,
+      keyword_init: true)
+    Result = Struct.new(:attempts, :repaired)
+
+    # The budget is the *step's* to read, and this double reads the same knob the real one
+    # does, so "off unless asked for" is asserted through the same path a deployment uses.
+    def self.budget(env)
+      attempts = env["UPGRADER_REPAIR_ATTEMPTS"].to_s.to_i
+      return nil unless attempts.positive?
+
+      { attempts: attempts, timeout: 10, model: "", agent: "repair", binary: "opencode" }
+    end
+
+    class << self
+      attr_accessor :last_evidence
+    end
+
+    def initialize(evidence:, rerun: nil, on_attempt: nil, **kwargs)
+      @kwargs = kwargs
+      @rerun = rerun
+      @on_attempt = on_attempt
+      self.class.last_evidence = evidence
+    end
+
+    def run
+      attempt = Attempt.new(number: 1, command: "opencode run --agent repair (prompt: 900 bytes)",
+        ran: true, exit_code: 0, seconds: 1.5, output_tail: "I moved the attribute list.",
+        changed: ["app/models/user.rb"])
+      @on_attempt&.call(attempt)
+      suite = @rerun&.call
+      Result.new(attempts: [attempt], repaired: suite&.ok? || false)
+    end
+  end
+
   # Records what was written to the corpus, so a test can assert both that the loop's step
   # writes and that a hand-run one does not.
   class RecordingCorpus < FakeCorpus
@@ -322,14 +360,14 @@ class StepTest < Minitest::Test
   end
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
-           reuse: false, source: nil, out: nil, research: nil)
+           reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
-      reuse: reuse, research: research
+      reuse: reuse, research: research, env: env, repair: repair
     )
   end
 
@@ -443,6 +481,62 @@ class StepTest < Minitest::Test
     assert_includes record.stages.map(&:stage), "research"
     refute(record.decisions.any? { |decision| decision.subject.include?("who-knows") },
       "a closed unknown should not also be a decision")
+  end
+
+  # **The agentic half, from the pipeline's side.** A green baseline and a red suite is the
+  # one shape a repair may be attempted on — the failure is then attributable to the move —
+  # and the verdict afterwards is the *suite's* again: a repaired step passes because the
+  # suite says so, never because a model said it fixed something.
+  def test_a_red_suite_after_a_green_baseline_is_repaired_and_the_suite_decides
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [green, red, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict
+    assert_includes record.why, "1 agent repair attempt(s)"
+    repair_stage = record.stages.find { |stage| stage.stage == "repair" }
+    refute_nil repair_stage, "the attempt is not in the record"
+    assert_includes repair_stage.output_tail, "app/models/user.rb"
+    assert_operator record.stages.count { |stage| stage.stage == "suite" }, :>=, 2,
+      "the suite must be run again after the attempt"
+  end
+
+  # The switch. Off is the default for a step run by hand, and the deployment turns it on
+  # with a number — so the same fixture, without the number, is a failed step with no model.
+  def test_repair_is_off_unless_the_environment_asks_for_attempts
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [green, red]), repair: FakeRepair,
+      env: {}).run
+
+    assert_equal "failed", record.verdict
+    refute_includes record.stages.map(&:stage), "repair"
+    refute_includes record.why, "repair"
+  end
+
+  # And the preconditions: a baseline that was already red is not a failure the move caused,
+  # so there is nothing here to repair — the step is `unverified`, with no model call at all.
+  def test_a_red_baseline_is_never_repaired
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [red, red]), repair: FakeRepair,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "2" }).run
+
+    assert_equal "unverified", record.verdict
+    refute_includes record.stages.map(&:stage), "repair"
+  end
+
+  # The brief is the step's own record, which is what makes the attempt a repair of *this*
+  # failure rather than a guess: the evidence handed over names the move, the suite command
+  # and the output it failed with.
+  def test_the_repair_evidence_is_the_step_s_own_record
+    dir = track(app)
+    step(dir, tests: SequencedTests.new(results: [green, red, green]), repair: FakeRepair,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    evidence = FakeRepair.last_evidence
+    assert_equal "4.2.11", evidence[:from_version]
+    assert_equal "5.0.0", evidence[:to_version]
+    assert_equal "bundle exec rspec", evidence[:suite_command]
+    assert_includes evidence[:output_tail], "1 examples, 1 failure"
   end
 
   # The install is what makes the baseline a measurement. Without it the suite runs against

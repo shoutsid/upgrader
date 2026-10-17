@@ -53,6 +53,7 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 | `--interval SECONDS` | how long `serve` waits between cycles |
 | `--walk` | `serve` only: chain rungs inside a cycle, and read an empty `--to` as the top of the service's ladder |
 | `--rungs N` | `serve --walk` only: how many rungs one cycle chains (default 3 — one rung is a bundle install and a suite, and a cycle that never returned would leave the heartbeat untouched for a day) |
+| `UPGRADER_REPAIR_ATTEMPTS` | the repair budget, and the only setting here that spends money. Empty or 0 is off (the library's default); a deployment turns it on with a number, and an agent working in the step's tree gets that many attempts. It needs an authenticated model — the agent uses opencode's own configuration (`UPGRADER_REPAIR_MODEL` pins which model is asked) |
 | `--publish` | `step`/`serve`: a passed rung becomes a branch and a pull request chained to the rung before it. Needs `UPGRADER_GITHUB_TOKEN` (a token with `contents: write` and `pull_requests: write`); the token is never written down, and every message on the way out has it replaced |
 | `--step-timeout SECONDS` | how long one suite may run |
 | `--cycles N` | stop `serve` after N cycles; the default is never |
@@ -154,7 +155,15 @@ The pipeline has three stages that make the rest mean anything:
    `config.load_defaults` is therefore never flipped, and that falls out of the rule
    rather than being a special case.
 10. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
-   under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
+    under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
+11. **repair** *(off unless `UPGRADER_REPAIR_ATTEMPTS` says otherwise)* — a step whose
+    baseline was green and whose suite went red gets that many attempts by an agent in the
+    worktree, each followed by the suite again. The agent may read and edit and nothing
+    else: the application executes on an era interpreter inside a container, so a shell in
+    its hand cannot run what it reasons about. **The verdict is still the suite's** — a
+    repaired step passes because the suite says so afterwards, never because a model said
+    it fixed something — and every attempt is a stage: the command, its exit code, the
+    agent's own closing words and the files it touched.
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is
 its own.

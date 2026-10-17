@@ -56,6 +56,13 @@ module AgentsFyi
       # the declaration one this class will not rewrite.
       SOURCE_OPTIONS = %w[git github branch ref tag path source submodules glob].freeze
 
+      # Bundler's `github:` shorthand. It is the *second* spelling of the dead protocol and
+      # the one this class nearly missed: Bundler 1.x expands `github: "owner/name"` to
+      # `git://github.com/owner/name.git`, which is why every 2013 Gemfile that pinned a fork
+      # broke at once — and why rewriting only the literal `git://` left the first real
+      # application's install stuck cloning over a protocol GitHub stopped accepting.
+      GITHUB_OPTION = /github:\s*(["'])([^"']+)\1/
+
       # One repair that was written: the line before, the line after, and the gem it is
       # about. The field names are `Applier::Applied`'s so a record can show a preflight
       # repair and a scanned edit the same way.
@@ -121,7 +128,7 @@ module AgentsFyi
             "preflight — this tool moves Rails applications"
         end
 
-        repairs = git_protocol_repairs
+        repairs = protocol_repairs
         decisions = []
         notes = []
         digest(notes).each do |entry|
@@ -132,10 +139,11 @@ module AgentsFyi
 
       private
 
-      # `git://` was accepted until GitHub turned it off in 2022, and every 2013 Gemfile
-      # that pinned a fork carries one. The rewrite is a scheme swap and nothing else:
-      # the host and the path are the application's, and only the protocol is dead.
-      def git_protocol_repairs
+      # `git://` was accepted until GitHub turned it off in 2022, and every 2013 Gemfile that
+      # pinned a fork carries it — literally, or through Bundler's `github:` shorthand. Both
+      # spellings are repaired here, in both files: the lockfile's own `remote:` lines carry
+      # the expanded URL, and the Gemfile carries whichever spelling the application wrote.
+      def protocol_repairs
         repairs = []
         SOURCES.each do |name|
           path = File.join(@root, name)
@@ -144,20 +152,44 @@ module AgentsFyi
           lines = File.binread(path).split("\n", -1)
           changed = false
           lines.each_with_index do |line, index|
-            next unless line.include?("git://")
+            after, subject, note = protocol_line(line)
+            next if after.nil?
 
-            after = line.gsub("git://", "https://")
             lines[index] = after
             changed = true
-            repairs << Repair.new(
-              path: name, line: index + 1, text: line, after: after, subject: "git://",
-              note: "GitHub stopped accepting the git:// protocol in 2022; https:// is the " \
-                    "same source over the protocol it still speaks"
-            )
+            repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+              subject: subject, note: note)
           end
           File.binwrite(path, lines.join("\n")) if changed
         end
         repairs
+      end
+
+      # One line, repaired for the protocol, or nil when it needs nothing.
+      #
+      # The two spellings become one answer: an explicit `git:` remote over `https://`. The
+      # shorthand is *expanded* rather than swapped, because there is no scheme to swap — and
+      # the line's own quoting and every other option it carries (a `branch:`, most often)
+      # are kept exactly as written; only the source is rewritten.
+      def protocol_line(line)
+        if line.include?("git://")
+          return [line.gsub("git://", "https://"), "git://",
+            "GitHub stopped accepting the git:// protocol in 2022; https:// is the same " \
+            "source over the protocol it still speaks"]
+        end
+        return [nil, nil, nil] unless line.include?("github:")
+
+        after = line.sub(GITHUB_OPTION) do
+          quote = Regexp.last_match(1)
+          remote = Regexp.last_match(2).strip.delete_suffix(".git")
+          %(git: #{quote}https://github.com/#{remote}.git#{quote})
+        end
+        return [nil, nil, nil] if after == line
+
+        [after, "github:",
+          "Bundler expands github: to git://github.com/... — the same protocol GitHub " \
+          "stopped accepting in 2022 — so the shorthand becomes the git: remote it stands " \
+          "for, over https://"]
       end
 
       # How many names one digest question may carry. Mirrored from the route

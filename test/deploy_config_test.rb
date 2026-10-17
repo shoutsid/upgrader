@@ -231,6 +231,33 @@ class DeployConfigTest < Minitest::Test
     end
   end
 
+  # The repair agent, and the two halves that fail differently: an image without the binary
+  # cannot repair at all (it says so, once, per attempt), and a setting the container never
+  # receives is a budget nothing reads. Both are asserted here because both fail *quietly* —
+  # the loop reports a failed step either way.
+  def test_the_service_that_repairs_carries_the_agent_and_the_budget
+    assert_includes config("upgrader"), "WITH_REPAIR_AGENT: 1",
+      "the service is built without the repair agent, so every red suite is the end of the rung"
+
+    instructions = uncommented(dockerfile)
+    assert_includes instructions, "ARG WITH_REPAIR_AGENT=0",
+      "the default build would carry a model client that only the loop needs"
+    assert_includes instructions, "opencode-ai", "the agent is never installed"
+    assert_match(/if \[ "\$WITH_REPAIR_AGENT" = "1" \]/, instructions,
+      "the argument is declared but nothing is installed when it is set")
+
+    block = config("upgrader")
+    %w[UPGRADER_REPAIR_ATTEMPTS UPGRADER_REPAIR_TIMEOUT UPGRADER_REPAIR_MODEL
+       UPGRADER_REPAIR_AGENT].each do |setting|
+      assert_match(/^\s+#{setting}: \$\{#{setting}:-\}/, block,
+        "#{setting} is not forwarded to the container")
+      assert_includes env_example, "#{setting}=",
+        "#{setting} is not in .env.example, so an operator cannot set it"
+    end
+    assert_includes env_example, "UPGRADER_REPAIR_AGENT_VERSION=",
+      "the agent version is not settable from the environment"
+  end
+
   # **A step on an old application executes in an era container, so the deployment has to
   # let this container start one.** The socket is the trust decision the compose file states
   # in its own comment; the runtime setting is what makes the machine explicit, because a

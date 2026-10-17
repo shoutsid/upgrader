@@ -159,11 +159,8 @@ class ServeTest < Minitest::Test
 
   # Publishing, as much of it as the loop touches: it records every record it was handed.
   class FakePublish
-    class << self
-      attr_reader :published
-
-      def reset! = @published = []
-    end
+    def self.published = @published ||= []
+    def self.reset! = @published = []
 
     def initialize(**kwargs)
       @kwargs = kwargs

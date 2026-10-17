@@ -110,13 +110,53 @@ class PreflightTest < Minitest::Test
     dir = app
     result = preflight(dir)
 
-    assert_includes read(dir, "Gemfile"), %(github: "moriz/cancan")
+    assert_includes read(dir, "Gemfile"),
+      %(gem "cancan", git: "https://github.com/moriz/cancan.git", branch: "rails4"),
+      "the Gemfile's own shorthand is the other spelling of the same dead protocol"
     assert_includes read(dir, "Gemfile.lock"), "remote: https://github.com/moriz/cancan.git"
     refute_includes read(dir, "Gemfile.lock"), "git://"
+    refute_includes read(dir, "Gemfile"), "github:"
 
     lock_repair = result.repairs.find { |repair| repair.path == "Gemfile.lock" }
     assert_equal 2, lock_repair.line, "the remote line's number is the file's, not the section's"
     assert_includes lock_repair.note, "2022"
+  end
+
+  # **The other spelling of the dead protocol.** Bundler 1.x expands `github: "owner/name"`
+  # to `git://github.com/owner/name.git`, which is why every 2013 Gemfile that pinned a fork
+  # broke at once — and rewriting only the literal `git://` left the first real application
+  # stuck cloning over a protocol GitHub stopped accepting. The shorthand is expanded into the
+  # `git:` remote it stands for, over https, keeping the line's quoting and its other options.
+  def test_a_github_shorthand_is_expanded_to_an_https_git_remote
+    dir = app(gemfile: <<~GEM, lockfile: PLAIN_LOCKFILE)
+      source "https://rubygems.org"
+      gem "rails", "4.0.0.rc1"
+      gem 'simple_form', github: 'plataformatec/simple_form'
+      gem "devise", github: "plataformatec/devise", branch: "rails4"
+      gem "rmagick", github: "rmagick/rmagick.git"
+    GEM
+    corpus = FakeCorpus.new
+    result = preflight(dir, corpus: corpus)
+
+    gemfile = read(dir, "Gemfile")
+    assert_includes gemfile, %(gem 'simple_form', git: 'https://github.com/plataformatec/simple_form.git')
+    assert_includes gemfile, %(gem "devise", git: "https://github.com/plataformatec/devise.git", branch: "rails4")
+    assert_includes gemfile, %(gem "rmagick", git: "https://github.com/rmagick/rmagick.git"),
+      "a value that already ends in .git must not gain a second one"
+    refute_includes gemfile, "github:"
+    assert_equal 3, result.repairs.count { |repair| repair.subject == "github:" }
+    assert_equal 0, result.repairs.count { |repair| repair.subject == "git://" }
+  end
+
+  def test_a_valid_github_line_is_left_alone_when_the_protocol_rule_cannot_apply
+    # A `path:` source is not the library's to reinterpret, and a line with no dead protocol
+    # is not touched at all.
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "x", path: "../x"\ngem "rails", "4.0.0.rc1"\n),
+      lockfile: PLAIN_LOCKFILE)
+    result = preflight(dir, corpus: FakeCorpus.new)
+
+    assert_empty result.repairs
+    assert_empty result.notes
   end
 
   # A digest entry whose declaration carries source options is rewritten to the released
@@ -134,12 +174,16 @@ class PreflightTest < Minitest::Test
     assert_includes gemfile, %(gem "devise", "~> 3.0")
     refute_includes gemfile, "plataformatec/devise"
     refute_includes gemfile, %(gem "turbo-sprockets-rails3")
-    assert_includes gemfile, %(gem "cancan", github: "moriz/cancan") # not in the digest
+    assert_includes gemfile, %(gem "cancan", git: "https://github.com/moriz/cancan.git") # not in the digest
 
-    assert_equal %w[devise turbo-sprockets-rails3], result.repairs.map(&:subject)
-    devise = result.repairs.first
+    assert_equal %w[devise turbo-sprockets-rails3],
+      result.repairs.map(&:subject).reject { |subject| subject == "github:" }
+    devise = result.repairs.find { |repair| repair.subject == "devise" }
     assert_equal 6, devise.line
-    assert_equal %(gem "devise", github: "plataformatec/devise", branch: "rails4"), devise.text.strip
+    # The protocol pass runs first, so the digest repair's "before" is the expanded line —
+    # which is what the file held when the digest pass read it.
+    assert_equal %(gem "devise", git: "https://github.com/plataformatec/devise.git", branch: "rails4"),
+      devise.text.strip
     assert_equal %(gem "devise", "~> 3.0"), devise.after.strip
   end
 
@@ -181,7 +225,8 @@ class PreflightTest < Minitest::Test
         "components with it")])
     result = preflight(dir, corpus: corpus)
 
-    assert_empty result.repairs
+    refute(result.repairs.any? { |repair| repair.subject == "rails" },
+      "a non-mechanical digest entry must not be rewritten")
     assert_equal "rails", result.decisions.first.subject
     assert_equal 3, result.decisions.first.line
     assert_includes read(dir, "Gemfile"), %(gem "rails", "4.0.0.rc1")
@@ -204,7 +249,8 @@ class PreflightTest < Minitest::Test
         requirement: "~> 3.0")])
       result = preflight(dir, corpus: corpus)
 
-      assert_empty result.repairs, "#{description} was rewritten"
+      refute(result.repairs.any? { |repair| repair.subject == "devise" },
+        "#{description} was rewritten by the digest rule")
       assert_equal 1, result.notes.size, "#{description} was skipped without a note"
       assert_includes result.notes.first, "devise"
       assert_includes read(dir, "Gemfile"), declaration.lines.first.strip
@@ -255,8 +301,8 @@ class PreflightTest < Minitest::Test
     dir = app
     result = preflight(dir, corpus: FakeCorpus.new(refuse: "404, and no route for it"))
 
-    assert_equal 1, result.repairs.size
-    assert_equal "Gemfile.lock", result.repairs.first.path
+    assert_equal 3, result.repairs.size, "the general repairs are the blank's and the two shorthands'"
+    assert_equal 1, result.repairs.count { |repair| repair.path == "Gemfile.lock" }
     assert_equal 1, result.notes.size
     assert_includes result.notes.first, "the gem-migrations digest was not read"
     assert_includes result.notes.first, "only the general preflight repairs"
@@ -321,10 +367,10 @@ class PreflightTest < Minitest::Test
     corpus = FakeCorpus.new(entries: [entry(gem: "devise", replacement: "devise", requirement: "~> 3.0")])
     result = preflight(dir, corpus: corpus)
 
-    assert_includes result.summary, "1 repair(s), 0 decision(s)"
+    assert_includes result.summary, "3 repair(s), 0 decision(s)"
     assert(result.details.any? { |line| line.include?("Gemfile:6") })
-    assert_equal 1, result.to_h["repairs"].size
-    assert_equal "devise", result.to_h["repairs"].first["subject"]
+    assert_equal 3, result.to_h["repairs"].size
+    assert_equal %w[devise github: github:], result.to_h["repairs"].map { |row| row["subject"] }.sort
     assert_empty result.to_h["decisions"]
   end
 end

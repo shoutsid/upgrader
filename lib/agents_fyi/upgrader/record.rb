@@ -59,6 +59,10 @@ module AgentsFyi
       # index declares. A stage of its own so a walk can be read for how much it had to learn
       # before it could move.
       RESEARCH = "research"
+      # One agent attempt at a suite that went red after a green baseline: the model's command,
+      # its exit code, and the files it touched. A stage per attempt, because "the suite went
+      # green after two repairs" and "it went green on the first try" are different records.
+      REPAIR = "repair"
       BASELINE = "baseline"
       # The application's own database preparation (`db:create`, `db:test:prepare`), run
       # before the baseline. Deliberately *not* required: a suite that manages its own
@@ -162,10 +166,24 @@ module AgentsFyi
                               "so what it says afterwards cannot be attributed to the move#{database_note(stages)}"]
         end
 
-        return [PASSED, "the suite was green before this step and green after it"] if suite.ok?
+        if suite.ok?
+          repairs = stages.count { |stage| stage.stage == REPAIR && stage.ran }
+          return [PASSED, "the suite was green before this step and green after it"] if repairs.zero?
+
+          return [PASSED, "the suite was green before this step and green after #{repairs} agent " \
+                          "repair attempt(s); the attempt(s) are in the record"]
+        end
 
         [FAILED, "the suite was green before this step and failed after it " \
-                 "(exit #{suite.exit_code})#{database_note(stages)}"]
+                 "(exit #{suite.exit_code})#{repair_note(stages)}#{database_note(stages)}"]
+      end
+
+      # The repair attempts a failed step carries, as a clause, or "" when there were none.
+      def self.repair_note(stages)
+        attempts = stages.count { |stage| stage.stage == REPAIR && stage.ran }
+        return "" if attempts.zero?
+
+        " — and #{attempts} agent repair attempt(s) did not fix it"
       end
 
       # The database stage's failure, as a clause for a suite-shaped verdict, or "" when
