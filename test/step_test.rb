@@ -368,13 +368,13 @@ class StepTest < Minitest::Test
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
-           suite_env: nil)
+           suite_env: nil, applier: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
-      applier: FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
+      applier: applier || FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
       reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env
     )
   end
@@ -994,6 +994,40 @@ class StepTest < Minitest::Test
     assert_includes decision.reason, "renamed in Rails 5.0"
     assert_includes decision.reason, "found here as"
     assert_equal 1, record.decisions.size, "the located change was counted twice"
+  end
+
+  # **A rule makes the edit the service would not.** The scan locates the call site and stops —
+  # its contract is a statement about the *ladder* — and this tool's own rules (`Rewrites`) apply
+  # to what it located, through the same line-checked write as the service's own edits. A change a
+  # rule applies stops being a decision, because it is no longer one, and the record says which
+  # rules did the work.
+  def test_a_rule_applies_a_located_change_and_withdraws_its_decision
+    dir = track(app)
+    with_source(dir, "app/controllers/posts_controller.rb",
+      "class PostsController\n  def create\n    type = request.content_type\n  end\nend\n")
+    located = { "path" => "app/controllers/posts_controller.rb", "line" => 3,
+                "text" => "    type = request.content_type", "after" => nil,
+                "subject" => "request.content_type", "kind" => "default_changed",
+                "replacement" => "request.media_type", "source" => "6.0",
+                "note" => "media_type is the old value", "automatic" => false }
+    payload = plan(changes: [change(subject: "request.content_type", kind: "default_changed",
+      source: "6.0", replacement: "request.media_type", note: "media_type is the old value")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    # The real applier: the write is half of what is being asserted, and the fake one is a stub
+    # that never touches a file.
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    applied = record.stages.find { |stage| stage.stage == "apply" }
+    assert_includes applied.output_tail, "by this tool's own rules (request.content_type)"
+    assert_equal 1, record.applied.size, "the rule's edit is not in the record"
+    assert_equal "request.content_type", record.applied.first.subject
+    assert_equal "rule", record.applied.first.origin
+    assert_empty record.decisions, "a change a rule applied is not a decision any more"
+    assert_includes File.read(File.join(dir, "app/controllers/posts_controller.rb")),
+      "type = request.media_type"
+    assert_includes record.to_s, "1 of those edit(s) were made by this tool's own rules"
   end
 
   # A manual call site the plan does not name is the most useful thing a refusal can

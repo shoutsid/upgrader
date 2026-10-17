@@ -389,8 +389,18 @@ module AgentsFyi
         end
         lines << "   baseline: #{describe(@baseline)}"
         stages.each { |stage| lines << "   #{stage.stage}: #{describe(stage)}" }
+        # **A decision with a line to look at and a decision with nothing to look at are different
+        # work.** The first is a call site this application has; the second is a change this rung
+        # carried that the application does not use — a reviewer reads the first and ticks the
+        # second. Counting them together is how "16 need a decision" reads as sixteen edits when it
+        # is three.
+        located = @decisions.count { |decision| !decision.path.to_s.empty? }
+        carried = @decisions.size - located
         lines << "   applied #{@applied.size} edit(s), refused #{@refused.size}, " \
-                 "#{@decisions.size} need(s) a decision"
+                 "#{@decisions.size} need(s) a decision" \
+                 "#{@decisions.empty? ? "" : " (#{located} located, #{carried} carried)}"}"
+        by_rule = @applied.count { |edit| edit.origin.to_s == "rule" }
+        lines << "   #{by_rule} of those edit(s) were made by this tool's own rules" if by_rule.positive?
         @refused.first(5).each { |edit| lines << "     refused: #{edit.path}:#{edit.line} — #{edit.reason}" }
         @decisions.first(5).each { |change| lines << "     decide: #{change.subject} — #{change.reason}" }
         lines << "   patch: #{@patch.empty? ? "no diff" : "#{@patch.lines.size} line(s)"}"

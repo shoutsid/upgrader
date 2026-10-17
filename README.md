@@ -142,7 +142,13 @@ The pipeline has three stages that make the rest mean anything:
    rather than being one).
 6. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
    edits, each with its line re-checked against the text the scan read. An edit whose
-   line has moved is a refusal, not an edit.
+   line has moved is a refusal, not an edit. **Then this tool's own rules**
+   (`lib/agents_fyi/upgrader/rewrites.rb`): the scan locates a call site and deliberately
+   stops — its contract is a statement about the ladder — and a rule that edits code is
+   this tool's, applied to what the scan located, through the same line-checked write.
+   A change a rule applies stops being a decision, and the record says which rules did
+   it. `docs/upgrades.md` has the policy and the list of what is deliberately not
+   rewritten.
 7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer

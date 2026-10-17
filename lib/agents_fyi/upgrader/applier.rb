@@ -28,7 +28,12 @@ module AgentsFyi
     class Applier
       # One edit that was written, with the line before and the line after, so a
       # record can show both without re-reading the file it changed.
-      Applied = Struct.new(:path, :line, :text, :after, :subject, keyword_init: true)
+      #
+      # `origin` is who asked for it: nil for the service's own edit (it called the change
+      # mechanical), `"rule"` for one of this tool's own rewrites (`Rewrites`), which the service
+      # deliberately does not make. A reader of the patch can tell the two apart, and the guard
+      # below is why the distinction has to be explicit rather than inferred.
+      Applied = Struct.new(:path, :line, :text, :after, :subject, :origin, keyword_init: true)
 
       # One edit that was not written, and what was actually found. `found` is the
       # line that is there when there is one: "refused" on its own sends a reader to
@@ -145,7 +150,7 @@ module AgentsFyi
           dirty[full] = true
           applied << Applied.new(
             path: path, line: edit["line"], text: edit["text"], after: edit["after"],
-            subject: edit["subject"]
+            subject: edit["subject"], origin: edit["origin"]
           )
         end
 

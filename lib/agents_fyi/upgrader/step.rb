@@ -918,16 +918,39 @@ module AgentsFyi
           @out.puts("  scan: nothing to apply here — #{scan["next_step"]}") if found.zero? && scan["next_step"]
         end
 
-        result = @applier.new(@worktree.root).apply(scan["edits"] || [])
-        decisions = decisions_for(step, scan)
+        # **This tool's own rules, applied to the call sites the service located and stopped at.**
+        # The service's contract is a statement about the ladder; a rule that edits code is this
+        # tool's (`Rewrites`), and it goes through the same line-checked write as the service's own
+        # edits — the scan's `text` is what the applier compares against, so a line that moved
+        # between the read and the write is refused rather than half-rewritten. A change a rule
+        # applies stops being a decision, because it is no longer one.
+        rules = Rewrites.apply(scan["manual"] || [])
+        inert = Rewrites.inert(step["changes"] || [])
+        result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
+        decisions = decisions_for(step, scan).reject do |decision|
+          rules.applied.include?(decision.subject.to_s)
+        end
         stages << Record::Command.new(
           stage: Record::APPLY,
           command: "apply #{scan["edits"].to_a.size} edit(s) to #{files.size} scanned file(s)",
           ran: true, exit_code: 0, seconds: 0.0,
-          output_tail: "applied #{result.applied.size}, refused #{result.refused.size}, " \
-                       "#{decisions.size} change(s) need a decision"
+          output_tail: apply_summary(result, decisions, rules, inert)
         )
         [result.applied, result.refused, decisions]
+      end
+
+      # What the apply stage's tail says: the counts, then what this tool's own rules did, then the
+      # rules that name no change in this rung. The last two are evidence rather than decoration —
+      # a rule that applied nothing and a rule whose change has left the ladder look identical from
+      # the outside, which is the shape `AGENTS.md` keeps paying for.
+      def apply_summary(result, decisions, rules, inert)
+        parts = ["applied #{result.applied.size}, refused #{result.refused.size}, " \
+                 "#{decisions.size} change(s) need a decision"]
+        parts << "#{rules.edits.size} by this tool's own rules (#{rules.applied.uniq.join(", ")})" if
+          rules.edits.any?
+        parts << "#{inert.size} rule(s) name no change in this rung (#{inert.join(", ")})" if
+          inert.any?
+        parts.join("; ")
       end
 
       # Every change this rung carries that no machine may make, located where the

@@ -173,4 +173,41 @@ class RecordTest < Minitest::Test
     assert_equal "find_by_email", body["decisions"].first["subject"]
     assert_includes record.to_s, "1 need(s) a decision"
   end
+
+  # **A decision with a line to look at and one with nothing to look at are different work.** The
+  # first is a call site this application has; the second is a change this rung carried that the
+  # application does not use. Counting them together is how "16 need a decision" reads as sixteen
+  # edits when it is three.
+  def test_the_summary_counts_located_and_carried_decisions_apart
+    decision = lambda do |path, line, subject|
+      AgentsFyi::Upgrader::Record::Decision.new(path: path, line: line, subject: subject,
+        reason: "the reason")
+    end
+    record = AgentsFyi::Upgrader::Record.new(
+      repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
+      verdict: "unverified", why: "no suite",
+      decisions: [decision.call("app/models/user.rb", 12, "find_by_email"),
+                  decision.call(nil, nil, "alias_attribute")]
+    )
+
+    assert_includes record.to_s, "2 need(s) a decision (1 located, 1 carried)"
+  end
+
+  # An edit this tool's own rules made is legible as one: a reviewer reading the patch can tell the
+  # service's mechanical rewrites from the walker's own (`Rewrites`), which the service deliberately
+  # does not make.
+  def test_edits_made_by_this_tool_s_own_rules_are_counted_apart
+    record = AgentsFyi::Upgrader::Record.new(
+      repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
+      verdict: "passed", why: "green before and after",
+      applied: [AgentsFyi::Upgrader::Applier::Applied.new(
+        path: "app/models/user.rb", line: 12,
+        text: "  x = HashWithIndifferentAccess.new",
+        after: "  x = ActiveSupport::HashWithIndifferentAccess.new",
+        subject: "HashWithIndifferentAccess", origin: "rule"
+      )]
+    )
+
+    assert_includes record.to_s, "1 of those edit(s) were made by this tool's own rules"
+  end
 end
