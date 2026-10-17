@@ -226,6 +226,30 @@ class DeployConfigTest < Minitest::Test
     end
   end
 
+  # **A step on an old application executes in an era container, so the deployment has to
+  # let this container start one.** The socket is the trust decision the compose file states
+  # in its own comment; the runtime setting is what makes the machine explicit, because a
+  # loop that fell back to "whatever Ruby this image has" would report healthy and complete
+  # no step of a 2013 application. Three facts, and each fails silently on its own: the
+  # setting, the mount, and the group that may use the socket.
+  def test_the_walker_may_start_the_era_containers_it_executes_on
+    block = config("upgrader")
+
+    assert_includes block, "UPGRADER_RUNTIME:", "the service does not choose a machine"
+    assert_match(/UPGRADER_RUNTIME:\s*\$\{UPGRADER_RUNTIME:-docker\}/, block,
+      "the deployment's default machine is not the era containers")
+    assert_includes block, "/var/run/docker.sock:/var/run/docker.sock",
+      "the walker cannot start the containers it executes steps on"
+    assert_match(/group_add:\s*\n\s+-\s*"\$\{UPGRADER_DOCKER_GID/, block,
+      "the socket is mounted without the group that may use it")
+    # The runtime is read by the step from the environment (`Step::RUNTIME_ENV`), not
+    # passed as a flag: it is a property of the deployment rather than of one invocation,
+    # and the entrypoint's flag contract is checked by the test above.
+    assert_includes File.read(CLI_PATH.gsub("cli.rb", "step.rb"), encoding: "utf-8"),
+      'RUNTIME_ENV = "UPGRADER_RUNTIME"',
+      "the step no longer reads the runtime the compose file sets"
+  end
+
   def test_the_step_is_given_the_same_time_to_finish_as_the_miners
     # A step may be inside an application's test suite. The period only has to cover one
     # step's tail, because the loop checkpoints after each step and a restart resumes —

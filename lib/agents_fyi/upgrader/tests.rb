@@ -124,16 +124,24 @@ module AgentsFyi
       # accidentally run a Rails suite without `RAILS_ENV`. The output is kept as a
       # *tail* (`tail_bytes`): a suite can print hundreds of megabytes, this text goes
       # into a durable record, and the last screen of output is what a reader needs.
-      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: 4000)
+      #
+      # `machine` is where the suite runs — this process, or an era container the step
+      # owns (`Machine`). The command is *stated* by the application (`bundle exec rspec`)
+      # and the machine wraps it: a container run reaches the suite through `sh -lc`, and
+      # the environment travels as `-e` flags rather than being inherited, because the
+      # walker's own environment names paths on the host. `nil` is the native machine, kept
+      # so a caller that has no machine does not have to say so twice.
+      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: 4000, machine: nil)
         # First, so the rescue below can always measure: a run that fails to start is
         # still a run that has a duration, and the record keeps it.
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         command = suite.respond_to?(:command) ? suite.command.to_s : suite.to_s
         environment = (rails_suite?(suite) ? machine_test_env : {}).merge(env)
+        argv, process_env = spawn_argv(command, root: root, env: environment, machine: machine)
 
         reader, writer = IO.pipe
         pid = Process.spawn(
-          environment, command,
+          process_env, *argv,
           chdir: root, pgroup: true, in: File::NULL, out: writer, err: writer
         )
         writer.close
@@ -206,6 +214,16 @@ module AgentsFyi
 
       def self.rails_suite?(suite)
         %i[rails rake].include?(suite.respond_to?(:kind) ? suite.kind : nil)
+      end
+
+      # [argv, process_env] for `Process.spawn`, through the machine when there is one.
+      # Its own method because it is the one place the *shape* of a spawn is decided: every
+      # other line in `run` would read the same for a suite on this host and a suite in a
+      # container, and that is the difference this parameter exists to hold.
+      def self.spawn_argv(command, root:, env:, machine:)
+        return [[command], env] if machine.nil?
+
+        machine.script(command, chdir: root, env: env)
       end
 
       # Reads the child's output on a thread of its own and keeps only the last

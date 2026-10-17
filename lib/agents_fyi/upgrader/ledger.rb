@@ -59,7 +59,7 @@ module AgentsFyi
 
       Entry = Struct.new(
         :repo, :commit, :from_version, :to_version,
-        :verdict, :baseline, :image, :machine, :attempts, :note, :recorded_at,
+        :verdict, :baseline, :image, :machine, :era, :attempts, :note, :recorded_at,
         keyword_init: true
       )
 
@@ -79,7 +79,11 @@ module AgentsFyi
         image.empty? ? stamp : "#{stamp} (#{image})"
       end
 
-      attr_reader :path
+      # The stamp this ledger's entries are written with when a caller does not name one.
+      # Public because the *step* has to ask the same question before it runs anything: "is
+      # what this ledger already holds a verdict from the machine I am about to use", and the
+      # ledger is the one place this process's own identity is decided.
+      attr_reader :path, :machine
 
       def initialize(path:, machine: self.class.machine)
         @path = path.to_s
@@ -139,10 +143,18 @@ module AgentsFyi
 
       # Whether this step should be left alone, now or forever. One answer, so the
       # planner asks rather than re-deriving it.
-      def settled?(repo:, commit:, from_version:, to_version:)
+      #
+      # `machine` is the stamp the caller *expects* the step to be produced under — the era
+      # the interpreter selection would pick first, or this process for a native run. It is
+      # a parameter rather than `@machine` because the steps a walk records are not all
+      # produced by the process doing the walking: an application walked as Rails 5.0 on
+      # Ruby 2.2 and then read by a process on 3.3 has a stamp this ledger's own identity
+      # cannot speak for, and comparing the wrong two stamps settles work that would be
+      # re-derived (or, worse, re-opens every cycle).
+      def settled?(repo:, commit:, from_version:, to_version:, machine: nil)
         entry = find(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
         return false if entry.nil?
-        return false unless same_machine?(entry.machine)
+        return false unless same_machine?(entry.machine, machine.nil? ? @machine : machine)
 
         SETTLED_VERDICTS.include?(entry.verdict) || entry.attempts.to_i >= MAX_ATTEMPTS
       end
@@ -159,7 +171,8 @@ module AgentsFyi
       # is stopped mid-cycle, and the work it describes is an hour of installing gems.
       # `save!` is still public — it is the one write, and a caller that changed
       # something else can flush it.
-      def record(repo:, commit:, from_version:, to_version:, verdict:, baseline: nil, image: nil, note: "")
+      def record(repo:, commit:, from_version:, to_version:, verdict:, baseline: nil, image: nil,
+                 machine: nil, era: nil, note: "")
         identifier = key(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
         previous = @entries[identifier]
         entry = Entry.new(
@@ -167,7 +180,8 @@ module AgentsFyi
           verdict: verdict.to_s,
           baseline: baseline,
           image: image,
-          machine: @machine,
+          machine: machine.to_s.empty? ? @machine : machine,
+          era: era,
           attempts: (previous.nil? ? 0 : previous.attempts.to_i) + 1,
           note: note.to_s,
           recorded_at: Time.now.utc.iso8601
@@ -218,10 +232,10 @@ module AgentsFyi
         nil
       end
 
-      def same_machine?(stamp)
+      def same_machine?(stamp, expected)
         # No stamp is not a claim: a record from before the stamp existed says nothing
         # about a machine, so there is nothing in it to contradict.
-        stamp.to_s.empty? || stamp == @machine
+        stamp.to_s.empty? || stamp == expected
       end
 
       def store(entry)
@@ -236,6 +250,7 @@ module AgentsFyi
           baseline: entry["baseline"],
           image: entry["image"],
           machine: entry["machine"].to_s,
+          era: entry["era"].to_s,
           attempts: entry["attempts"].to_i,
           note: entry["note"].to_s,
           recorded_at: entry["recorded_at"].to_s
@@ -290,6 +305,7 @@ module AgentsFyi
           "baseline" => entry.baseline,
           "image" => entry.image,
           "machine" => entry.machine,
+          "era" => entry.era,
           "attempts" => entry.attempts,
           "note" => entry.note,
           "recorded_at" => entry.recorded_at

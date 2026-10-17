@@ -149,9 +149,12 @@ class StepTest < Minitest::Test
   end
 
   class FakeTests
+    attr_reader :machines
+
     def initialize(suite: :default, result: nil)
       @suite = suite
       @result = result
+      @machines = []
     end
 
     def detect(_root)
@@ -162,7 +165,11 @@ class StepTest < Minitest::Test
 
     def no_suite_reason(_root) = "no test directory, no spec directory and no Rakefile"
 
-    def run(_root, _suite, timeout:, env:)
+    def run(_root, _suite, timeout:, env:, machine: nil)
+      # Recorded rather than ignored: "the suite ran through the machine the step chose" is
+      # the wiring the selection tests exist for, and a double that dropped the argument
+      # would let the pipeline stop passing it without a red test.
+      @machines << machine
       @result || AgentsFyi::Upgrader::Tests::Result.new(
         command: "bundle exec rspec", ran: true, passed: true, exit_code: 0,
         seconds: 0.2, output_tail: "3 examples, 0 failures", timed_out: false
@@ -184,7 +191,8 @@ class StepTest < Minitest::Test
       @seen = []
     end
 
-    def run(root, _suite, timeout:, env:)
+    def run(root, _suite, timeout:, env:, machine: nil)
+      @machines << machine
       @seen << File.read(File.join(root, "Gemfile"))
       @results.shift || @results.last
     end
@@ -248,11 +256,11 @@ class StepTest < Minitest::Test
       @calls_when_it_ran = []
     end
 
-    def run(root, _suite, timeout:, env:)
+    def run(root, _suite, timeout:, env:, machine: nil)
       @seen << File.read(File.join(root, "Gemfile"))
       @envs << env
       @calls_when_it_ran << (@runner && @runner.calls.dup)
-      super
+      super(root, _suite, timeout: timeout, env: env, machine: machine)
     end
   end
 

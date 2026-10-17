@@ -27,24 +27,44 @@ module AgentsFyi
       # The stages, named, because "the step failed" is not actionable and "bundle
       # update failed" is. They are used as stage labels on a `Command`.
       PREPARE = "prepare"
+      # Choosing and starting the machine the application's commands run on — the era
+      # container for an application whose floor this process's interpreter cannot serve,
+      # this process itself when it can. A stage because the choice is a fact the record has
+      # to carry: "the bundle could not be installed" means something different on Ruby 2.1
+      # than on 3.3, and a record that dropped which machine tried it cannot be read.
+      INTERPRETER = "interpreter"
       # The application's own bundle, installed on the unmodified checkout before anything
       # is measured. It is a stage rather than an implementation detail because it is the
       # step that can fail for reasons that are not about the move at all — a gem that will
       # not build on this interpreter, an index that is unreachable — and a record that
       # hid it would report a red baseline with no way to tell why.
       BUNDLE = "bundle"
+      # The services a Rails suite expects — PostgreSQL, Redis — started inside the step's
+      # own container. A required stage: a suite that ran without its database failed for a
+      # reason nobody reading the record could see, and "the suite was green before and red
+      # after" is then a finding about the wrong thing.
+      SERVICES = "services"
       BASELINE = "baseline"
+      # The application's own database preparation (`db:create`, `db:test:prepare`), run
+      # before the baseline. Deliberately *not* required: a suite that manages its own
+      # schema is a normal application, and this stage failing is mentioned beside a failure
+      # rather than being one itself (`verdict`).
+      DATABASE = "database"
       APPLY = "apply"
       PIN = "pin"
       RAILS_UPDATE = "rails:update"
       BOOT = "boot"
       SUITE = "suite"
 
-      # The stages a step cannot continue past, in the order they happen. Two absences are
+      # The stages a step cannot continue past, in the order they happen. Three absences are
       # deliberate.
       #
       # `apply` is not here because an edit the applier refused is an *output* of this tool,
       # not a reason to stop, and the plan already says which changes no machine can make.
+      #
+      # `interpreter` is not here because it is a selection rather than a step: its failures
+      # end the step before this list is consulted (there is no machine to run anything on),
+      # and the successful starts that a walk records are commands like any other.
       #
       # `baseline` is not here either, and that one was a bug found by asking what a
       # repository with no suite records. A baseline that could not be run is stored as a
@@ -53,7 +73,7 @@ module AgentsFyi
       # step with no suite came back `failed` where the rule is `unverified`. The suite's
       # outcome, including its absence, is judged by `verdict` itself, below; being
       # ungated here is what lets it be.
-      REQUIRED = [PREPARE, PIN, RAILS_UPDATE, BOOT].freeze
+      REQUIRED = [PREPARE, SERVICES, PIN, RAILS_UPDATE, BOOT].freeze
 
       # A change this step carries that no machine may apply: the service's `manual`
       # half, with the reason it gave. Its own list rather than a flag on a refusal,
@@ -95,35 +115,53 @@ module AgentsFyi
       #
       # `suite` is the run *after* the step, `baseline` the one before it; either may
       # be nil, and nil means "there was nothing to run", never "it passed".
+      #
+      # Every branch that turns the *suite* into a verdict also names a failed database
+      # preparation when there was one, because the two are indistinguishable in the suite's
+      # own exit code and a reader acts on them differently: a red suite after a green
+      # baseline is a finding about the move, unless the command that loads the test schema
+      # never worked, in which case nothing about the move was measured at all.
       def self.verdict(baseline:, suite:, stages:)
         failed = stages.select { |stage| REQUIRED.include?(stage.stage) && !stage.ok? }
         unless failed.empty?
           first = failed.first
           return [FAILED, "#{first.stage} did not succeed: `#{first.command}` " \
-                          "#{first.ran ? "exited #{first.exit_code}" : 'did not run'}"]
+                          "#{first.ran ? "exited #{first.exit_code}" : 'did not run'}#{database_note(stages)}"]
         end
 
         if suite.nil?
           return [UNVERIFIED, "no test suite was found in this application, so this step is " \
                               "unverified rather than passed: the ladder's changes were applied " \
-                              "and nothing checked them"]
+                              "and nothing checked them#{database_note(stages)}"]
         end
 
         unless suite.ran
           return [UNVERIFIED, "the suite did not run (#{suite.exit_code || "no exit code"}), so " \
-                              "nothing is established about this step: #{first_line(suite.output_tail)}"]
+                              "nothing is established about this step: #{first_line(suite.output_tail)}" \
+                              "#{database_note(stages)}"]
         end
 
         unless baseline&.ok?
           return [UNVERIFIED, "the suite was not green before this step " \
                               "(#{baseline&.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
-                              "so what it says afterwards cannot be attributed to the move"]
+                              "so what it says afterwards cannot be attributed to the move#{database_note(stages)}"]
         end
 
         return [PASSED, "the suite was green before this step and green after it"] if suite.ok?
 
         [FAILED, "the suite was green before this step and failed after it " \
-                 "(exit #{suite.exit_code})"]
+                 "(exit #{suite.exit_code})#{database_note(stages)}"]
+      end
+
+      # The database stage's failure, as a clause for a suite-shaped verdict, or "" when
+      # there is nothing to say. Written once so every branch says it the same way.
+      def self.database_note(stages)
+        stage = stages.find { |command| command.stage == DATABASE }
+        return "" if stage.nil? || stage.ok?
+
+        " — and the database preparation failed (`#{stage.command}` " \
+          "#{stage.ran ? "exited #{stage.exit_code}" : 'did not run'}: " \
+          "#{first_line(stage.output_tail)}), which may be why"
       end
 
       def self.first_line(text)
@@ -131,13 +169,13 @@ module AgentsFyi
       end
 
       attr_reader :repository, :commit, :worktree, :from_version, :to_version, :name,
-        :requires_ruby, :interpreter, :image, :stages, :applied, :refused, :decisions,
-        :patch, :verdict, :why, :baseline, :suite, :recorded_at
+        :requires_ruby, :interpreter, :image, :machine, :era, :stages, :applied, :refused,
+        :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at
 
       def initialize(repository:, from_version:, to_version:, verdict:, why:, commit: nil,
                      worktree: nil, name: nil, requires_ruby: nil, interpreter: nil, image: nil,
-                     stages: [], applied: [], refused: [], decisions: [], patch: "",
-                     baseline: nil, suite: nil, recorded_at: nil)
+                     machine: nil, era: nil, stages: [], applied: [], refused: [], decisions: [],
+                     patch: "", baseline: nil, suite: nil, recorded_at: nil)
         @repository = repository
         @commit = commit
         @worktree = worktree
@@ -147,6 +185,12 @@ module AgentsFyi
         @requires_ruby = requires_ruby
         @interpreter = interpreter
         @image = image
+        # The machine's identity as the ledger compares it (interpreter, image ref, image
+        # digest) and the era's own name, which is what a later cycle reads to try the same
+        # interpreter first. The two are not one field: a stamp can name a machine whose era
+        # this matrix no longer carries, and that is a fact the selection has to survive.
+        @machine = machine
+        @era = era
         @stages = stages
         @applied = applied
         @refused = refused
@@ -176,11 +220,16 @@ module AgentsFyi
       # it is not the application refusing; it is no baseline, which makes every later
       # observation uninterpretable (`AGENTS.md`: a probe that could not be made is not
       # evidence about anything).
+      #
+      # `machine` and `era` are carried by the two unverified records that are *about* their
+      # machine rather than about the application: a step no interpreter could be built for
+      # is a verdict that must be re-opened when the matrix grows one, and the stamp it
+      # carries is what says so.
       def self.unverified(repository:, from_version:, to_version:, why:, commit: nil,
-                          worktree: nil, stages: [])
+                          worktree: nil, stages: [], machine: nil, era: nil)
         new(repository: repository, commit: commit, worktree: worktree,
           from_version: from_version, to_version: to_version,
-          verdict: UNVERIFIED, why: why, stages: stages)
+          verdict: UNVERIFIED, why: why, stages: stages, machine: machine, era: era)
       end
 
       def passed? = @verdict == PASSED
@@ -199,6 +248,8 @@ module AgentsFyi
           "requires_ruby" => @requires_ruby,
           "interpreter" => @interpreter,
           "image" => @image,
+          "machine" => @machine,
+          "era" => @era,
           "verdict" => @verdict,
           "why" => @why,
           "baseline" => @baseline&.to_h,

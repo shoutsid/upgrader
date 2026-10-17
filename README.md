@@ -93,32 +93,86 @@ itself.
 
 ## What one step does
 
-The pipeline has two stages that make the rest mean anything:
+The pipeline has three stages that make the rest mean anything:
 
 1. **inspect** — the Rails release from the application's own `Gemfile.lock`, the
    declared Ruby floor, the test command, and whether there is a suite at all.
-2. **baseline** — the suite on the **unmodified** copy, before anything is written.
+2. **machine** — which interpreter executes the application. An application old enough to
+   be interesting cannot be installed on the Ruby running this tool, so the step chooses:
+   the era container for the step's floor when `UPGRADER_RUNTIME=docker`, this process
+   when it is not and its interpreter meets the floor, and a recorded `unverified` verdict
+   naming the floor when neither can. The choice *is* the install: `bundle install` is run
+   through each candidate in turn (`Interpreters`, `Machine`) and the first interpreter
+   that can install the application's bundle is the one that can run its suite.
+3. **baseline** — the suite on the **unmodified** copy, before anything is written.
    Without it, "the upgrade broke the suite" and "the suite was already red" are one
    sentence, and the second files a report blaming a release for a pre-existing
    breakage.
-3. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
+4. **services**, **database** — PostgreSQL and Redis started inside the step's container
+   from the application's own `database.yml` (`images/services.sh`), then the schema the
+   suite needs (`db:create db:test:prepare`, best-effort and named beside a suite failure
+   rather than being one).
+5. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
    edits, each with its line re-checked against the text the scan read. An edit whose
    line has moved is a refusal, not an edit.
-4. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
+6. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
    Only the meta-gem: an application that pins the framework as components has a
    different line for each one, and choosing which of them move together is a decision.
    That repository is refused, with a sentence saying what to do instead.
-5. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
+7. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
    application old enough to have a `Rakefile` and no `bin/rails`). Added files are
    adopted; a file the application
    already owns keeps the application's version and the conflict is recorded.
    `config.load_defaults` is therefore never flipped, and that falls out of the rule
    rather than being a special case.
-6. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
+8. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
    under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is
 its own.
+
+## The machine a step runs on
+
+**A Rails move is a sequence of Rubies.** Rails 4.2 wants 1.9.3, 5.0 wants 2.2.2, 6.0
+wants 2.5, 7.0 wants 2.7, 8.0 wants 3.2 — and this tool runs on one interpreter, chosen
+for reading lockfiles and asking the service questions. A step, though, installs a real
+application's bundle and boots it, and `json 1.7.7` does not compile on Ruby 3. So each
+era is its own container, described by a matrix rather than by code:
+
+* `lib/agents_fyi/upgrader/data/interpreters.json` is the matrix — one row per era, each
+  base pinned by digest, with the era's own Ruby version, its Bundler, and how its Debian
+  release is reached (jessie, stretch and buster have moved to `archive.debian.org`).
+* `images/Dockerfile` builds every era from one recipe, parameterised by the matrix; the
+  `scripts/upgrader-images.sh build` script (also `./scripts/dev.sh ruby-images`) turns
+  each row into an image and prints its digest. `UPGRADER_INTERPRETER_IMAGES` pins those
+  digests, so a rebuilt image is a deliberate change rather than a quiet one.
+* Each image carries what a Rails suite of its era needs beyond the interpreter:
+  PostgreSQL and Redis **inside the container** (a 2013 `database.yml` says `localhost`,
+  and a service on a Docker network is not localhost — so nothing about the application's
+  configuration has to be edited to make its suite run), a compiler and the usual `-dev`
+  headers for native gems, ImageMagick, Node for `execjs`, and a fresh CA bundle.
+
+**Selection is probed, not declared.** `Interpreters.candidates` orders the eras that meet
+the step's floor — starting from the interpreter the application's own `ruby` line or
+`RUBY VERSION` names, preferring the era a previous attempt actually used — and the step
+runs `bundle install` in them in that order. The first one that can install the bundle is
+the machine; every attempt, with its reason, travels in the record. No candidate at all is
+`unverified` with the floor named, never a silent fallback.
+
+**What the container is.** One `docker run -d … sleep infinity` per step, with commands
+sent in by `docker exec` — one container per *step* and not one per command, because the
+services the suite needs live inside it and would die with a per-command container. The
+walker's home is mounted at `/agents-fyi`; a containerised walker joins the same *named
+volume* it is itself on (discovered from the daemon; `UPGRADER_DOCKER_VOLUME` overrides),
+because a bind mount written from inside a container names a host path the daemon would
+create empty. Containerised commands run as the walker's uid — named by `images/start.sh`,
+since `initdb` and libpq's default username both resolve through a passwd entry a bare uid
+does not have — and the container itself is removed when the step is done with it.
+
+A step executed this way needs Docker at runtime. A deployment that runs the loop in a
+container (see `docker-compose.yml`) mounts `/var/run/docker.sock` and sets
+`UPGRADER_DOCKER_GID` to the socket's group; a hand-run `step` on a host needs neither, and
+can instead run natively on an interpreter that suits the application.
 
 ## What a run writes, and when
 

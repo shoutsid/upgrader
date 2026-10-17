@@ -1,0 +1,59 @@
+{
+  "note": "The interpreters a step may execute on, read by Interpreters and by scripts/upgrader-images.sh. `ruby` is the interpreter's own version *inside the image*, and it is compared against a step's `requires_ruby` floor — so it must be the image's version rather than the era a person names. Each `base` is pinned by the manifest digest that was pulled on 2026-10-17 and its runtime version was read back with `docker run --rm <base> ruby -v`; the digest is what makes the pin real, and the version string is what makes the floor arithmetic honest. `image` is the reference the walker runs and the deployment may override by digest (UPGRADER_INTERPRETER_IMAGES). `os` and `archive` decide how the image's build reaches its own Debian release: jessie, stretch and buster have moved to archive.debian.org, bookworm has not. `bundler` is the version installed into the image, chosen per era because Bundler 2.x cannot run on 2.1/2.2 at all and 1.x cannot read the lockfiles of the releases the later eras exist for.",
+  "interpreters": [
+    {
+      "name": "2.1",
+      "ruby": "2.1.10",
+      "base": "ruby:2.1@sha256:568664cfb53cd74147590cc86e356c4e352e00e28a0011ea1443e8664ca5bad5",
+      "image": "agentsfyi-upgrader-ruby-2.1:dev",
+      "os": "jessie",
+      "archive": true,
+      "bundler": "1.17.3"
+    },
+    {
+      "name": "2.2",
+      "ruby": "2.2.10",
+      "base": "ruby:2.2@sha256:4987b5e2f03b7086c493208ef616b711fe73228391a80faf451975f9e0195236",
+      "image": "agentsfyi-upgrader-ruby-2.2:dev",
+      "os": "jessie",
+      "archive": true,
+      "bundler": "1.17.3"
+    },
+    {
+      "name": "2.5",
+      "ruby": "2.5.9",
+      "base": "ruby:2.5@sha256:ecc3e4f5da13d881a415c9692bb52d2b85b090f38f4ad99ae94f932b3598444b",
+      "image": "agentsfyi-upgrader-ruby-2.5:dev",
+      "os": "stretch",
+      "archive": true,
+      "bundler": "2.3.26"
+    },
+    {
+      "name": "2.7",
+      "ruby": "2.7.8",
+      "base": "ruby:2.7@sha256:2347de892e419c7160fc21dec721d5952736909f8c3fbb7f84cb4a07aaf9ce7d",
+      "image": "agentsfyi-upgrader-ruby-2.7:dev",
+      "os": "buster",
+      "archive": true,
+      "bundler": "2.4.22"
+    },
+    {
+      "name": "3.2",
+      "ruby": "3.2.11",
+      "base": "ruby:3.2@sha256:d3bcbd845d26ae1efafcc987f641aa9ac796267b9b857e0f196a2b05070c8330",
+      "image": "agentsfyi-upgrader-ruby-3.2:dev",
+      "os": "bookworm",
+      "archive": false,
+      "bundler": "2.4.22"
+    },
+    {
+      "name": "3.3",
+      "ruby": "3.3.12",
+      "base": "ruby:3.3@sha256:0a5633bcfe247d312edbc1e1c4a048ae3f5a99bea482af2d484b036c09cbd5a4",
+      "image": "agentsfyi-upgrader-ruby-3.3:dev",
+      "os": "bookworm",
+      "archive": false,
+      "bundler": "2.6.9"
+    }
+  ]
+}

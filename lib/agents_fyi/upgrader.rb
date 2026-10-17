@@ -24,6 +24,7 @@
 # sequence of steps and a tree thrown away after each one could never reach the second
 # rung (`Checkpoint`).
 require "agents_fyi/upgrader/version"
+require "agents_fyi/upgrader/shell"
 require "agents_fyi/upgrader/lockfile"
 require "agents_fyi/upgrader/corpus"
 require "agents_fyi/upgrader/source"
@@ -31,6 +32,8 @@ require "agents_fyi/upgrader/tests"
 require "agents_fyi/upgrader/applier"
 require "agents_fyi/upgrader/ledger"
 require "agents_fyi/upgrader/record"
+require "agents_fyi/upgrader/interpreters"
+require "agents_fyi/upgrader/machine"
 require "agents_fyi/upgrader/checkpoint"
 require "agents_fyi/upgrader/filing"
 require "agents_fyi/upgrader/plan"
