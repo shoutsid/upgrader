@@ -58,7 +58,8 @@ module AgentsFyi
         repository:, to:, ref: nil, api: nil, home:, out: $stdout,
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
-        contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil
+        contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
+        research: nil
       )
         @repository = repository
         @to = to
@@ -96,6 +97,9 @@ module AgentsFyi
         @machine = machine
         @machine_factory = machine_factory
         @runtime_mode = runtime
+        # The research pass, injectable so the suite can drive the routing's `unknown` path
+        # without fetching an index — the one thing in this file that reaches a third party.
+        @research = research
       end
 
       def run
@@ -172,6 +176,12 @@ module AgentsFyi
         @applied.concat(applied)
         @refused.concat(refused)
         @decisions.concat(decisions)
+
+        # The gems that have to move with this rung, before the Rails pin is rewritten: the
+        # routing's `move` verdicts are what a `bundle update rails` cannot work out for
+        # itself, and applying them first is what makes the pin's failure (if it fails) be
+        # about Rails.
+        gem_moves(stages, step)
 
         pin = rewrite(stages, step)
         return finish(pin) if pin.is_a?(Record)
@@ -449,6 +459,135 @@ module AgentsFyi
         stages << command(Record::SERVICES, ["agents-fyi-services"], chdir: @worktree.root)
         stages.last
       end
+
+      # The gems that have to move with this rung.
+      #
+      # The scan above reads *Rails'* changes; this asks the service what the application's
+      # own gems need, which is a different question with a different answer: `rspec-rails
+      # 2.13.1` declares `railties ~> 3.1`, so a 4.1 rung cannot keep it, and no amount of
+      # reading Rails' guide would say so. The service answers from facts its clients
+      # recorded, and this client is the one that can close a gap: what a gem's index
+      # declares is fetched here — the service has no route to an index — and recorded
+      # through the operator-authenticated facts route.
+      #
+      # What the routing says is treated exactly as the digest's entries are: a declaration
+      # this tool can rewrite is rewritten and recorded, and everything else is a decision.
+      # `replace` and `remove` are deliberately *not* acted on here — the preflight owns the
+      # digest's moves, and applying one twice would rewrite a line that already moved.
+      def gem_moves(stages, step)
+        path = File.join(@worktree.root, "Gemfile.lock")
+        return nil unless File.file?(path)
+
+        corpus = @corpus || Corpus.new(base: @api)
+        ruby = @machine.ruby_version
+        rails = step["to_version"]
+        route = corpus.route(ruby: ruby, rails: rails, lockfile: lockfile_text)
+        route = research(corpus, route, ruby: ruby, rails: rails, stages: stages) if
+          route.dig("counts", "unknown").to_i.positive?
+
+        moves = route.fetch("gems", []).select { |gem| gem["verdict"] == "move" }
+        applied = moves.filter_map { |gem| apply_move(gem, step) }
+        route.fetch("gems", []).each do |gem|
+          next unless %w[blocked unknown].include?(gem["verdict"])
+
+          @decisions << Record::Decision.new(
+            path: "Gemfile.lock", line: nil, subject: "#{gem["name"]} #{gem["version"]}",
+            reason: gem["reason"], kind: gem["verdict"], replacement: gem["to"],
+            source: "GET /releases/route"
+          )
+        end
+
+        stages << Record::Command.new(
+          stage: Record::GEMS,
+          command: "gems: #{route.dig("counts", "move")} move(s), " \
+                   "#{route.dig("counts", "unknown")} unknown, #{applied.size} applied",
+          ran: true, exit_code: 0, seconds: 0.0,
+          output_tail: (moves.map { |gem|
+                          "#{gem["name"]} #{gem["version"]} -> #{gem["to"]}: #{gem["reason"]}"
+                        } + [route.fetch("next_step", "").to_s]).first(20).join("\n")
+        )
+        @out.puts("  gems: #{route.dig("counts", "move")} move(s), " \
+                  "#{route.dig("counts", "unknown")} unknown — #{applied.size} applied") if @out
+        applied
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        stages << Record::Command.new(stage: Record::GEMS, command: "gems: not routed",
+          ran: false, exit_code: nil, seconds: 0.0,
+          output_tail: "the routing read failed: #{e.message}")
+        []
+      end
+
+      # One `move`, as a Gemfile rewrite: the same line-level caution the preflight takes, and
+      # the same refusal to touch a declaration it cannot rewrite in full. A gem that is only
+      # in the lockfile cannot be moved from the Gemfile at all, and that is a decision.
+      def apply_move(gem, step)
+        name = gem["name"].to_s
+        target = gem["to"].to_s
+        found = declaration_line(name)
+        if found.nil?
+          @decisions << Record::Decision.new(
+            path: "Gemfile.lock", line: nil, subject: name,
+            reason: "#{gem["reason"]}; #{name} is not declared in the Gemfile, so whatever " \
+                    "pulls it in is the gem whose line moves",
+            kind: "move", replacement: target, source: "GET /releases/route"
+          )
+          return nil
+        end
+
+        index, line = found
+        after = "#{line[/\A\s*/]}gem \"#{name}\", \"~> #{target}\""
+        return nil if after == line
+
+        lines = File.binread(File.join(@worktree.root, "Gemfile")).split("\n", -1)
+        unless lines[index] == line
+          @decisions << Record::Decision.new(path: "Gemfile", line: index + 1, subject: name,
+            reason: "the declaration moved while this step was running, so nothing was rewritten",
+            kind: "move", replacement: target, source: "GET /releases/route")
+          return nil
+        end
+
+        lines[index] = after
+        File.binwrite(File.join(@worktree.root, "Gemfile"), lines.join("\n"))
+        edit = Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line, after: after,
+          subject: name, note: "#{gem["reason"]} (routed for Rails #{step["to_version"]})")
+        @applied << edit
+        edit
+      end
+
+      # The declaration line for a gem, or nil — the preflight's own rule, asked of the same
+      # file with the same pattern, so a move and a digest repair can never disagree about
+      # which line a gem is on.
+      def declaration_line(name)
+        path = File.join(@worktree.root, "Gemfile")
+        return nil unless File.file?(path)
+
+        File.binread(path).split("\n", -1).each_with_index do |line, index|
+          match = Preflight::DECLARATION.match(line)
+          return [index, line] if match && match[2] == name
+        end
+        nil
+      end
+
+      # One research pass over the gems the routing could not answer about, and the routing
+      # asked again. Both halves are reported in the stages the caller writes: a pass that
+      # fetched ten documents and closed nothing is a fact about the index, and a walk that
+      # hid it would look like a walk that had nothing to fetch.
+      def research(corpus, route, ruby:, rails:, stages:)
+        unknown = route.fetch("gems", []).select { |gem| gem["verdict"] == "unknown" }
+        pass = @research || Research.new(corpus: corpus, cache: File.join(@home, "index"), out: @out)
+        result = pass.run(unknown.map { |gem| [gem["name"], gem["version"]] })
+        stages << Record::Command.new(
+          stage: Record::RESEARCH, command: "research: #{result}",
+          ran: true, exit_code: 0, seconds: 0.0, output_tail: result.details.first(20).join("\n")
+        )
+        corpus.route(ruby: ruby, rails: rails, lockfile: lockfile_text)
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        stages << Record::Command.new(stage: Record::RESEARCH, command: "research: not run",
+          ran: false, exit_code: nil, seconds: 0.0,
+          output_tail: "the facts could not be recorded: #{e.message}")
+        route
+      end
+
+      def lockfile_text = File.read(File.join(@worktree.root, "Gemfile.lock"), encoding: "utf-8")
 
       # The application's test database, prepared the way it documents. Best-effort by
       # design: `Record.verdict` names a failed preparation beside a suite failure rather

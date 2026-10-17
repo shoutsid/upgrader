@@ -64,6 +64,13 @@ class StepMachineTest < Minitest::Test
         "next_step" => "one step" }
     end
 
+    def route(ruby:, rails:, lockfile:)
+      { "ruby" => ruby, "rails" => rails, "gems_read" => 0,
+        "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 },
+        "gems" => [], "stored" => false, "next_step" => "every pin is recorded" }
+    end
+
     def gem_migrations(gems:)
       { "migrations" => [], "counts" => { "selected" => 0, "total" => 0 }, "stored" => false,
         "next_step" => "the digest's own sentence" }
@@ -142,6 +149,7 @@ class StepMachineTest < Minitest::Test
     def command(argv, chdir:, env: {}) = [["fake", era, *argv], {}]
     def script(command, chdir:, env: {}) = [["fake", era, "sh", "-lc", command], {}]
     def interpreter = "ruby #{era}"
+    def ruby_version = era
     def image = "era-#{era}"
     def services? = @services
     def stamp = "ruby #{era} (era-#{era}@sha256:#{"f" * 64})"

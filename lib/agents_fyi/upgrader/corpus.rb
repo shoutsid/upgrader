@@ -82,6 +82,25 @@ module AgentsFyi
         call(:get, "/rails/ladder")
       end
 
+      # What each gem a lockfile pins needs before the move: keep, move (with a recorded
+      # target), replace/remove (the digest), blocked, or unknown.
+      #
+      # Unknown is not a pass, and this client is the side that can close that gap: the
+      # index is reachable from here and not from the service, so `Research` fetches and
+      # `record_facts` writes what it read.
+      def route(ruby:, rails:, lockfile:)
+        call(:post, "/releases/route",
+          body: { "ecosystem" => "ruby", "ruby" => ruby, "rails" => rails, "lockfile" => lockfile })
+      end
+
+      # One gem's releases, as its index declared them. Operator-authenticated, because it is
+      # a write into a shared corpus — the one write this tool makes that is not a record of
+      # its own work.
+      def record_facts(library:, facts:)
+        call(:post, "/releases/facts",
+          body: { "ecosystem" => "ruby", "library" => library, "facts" => facts })
+      end
+
       # The gem-migrations digest: the moves a machine may make to a Gemfile without
       # reading the application's code.
       #

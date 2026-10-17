@@ -211,6 +211,29 @@ class PreflightTest < Minitest::Test
     end
   end
 
+  # A removal takes the whole line, so what the line's options say does not change what
+  # happens to it — this is the lighthouse's own shape: `gem "therubyracer", platforms:
+  # :ruby` (the digest's `removed` entry) and `gem "turbo-sprockets-rails3", group:
+  # :assets` are both declarations the *rewrite* rule would have refused to touch.
+  def test_a_removal_ignores_the_options_and_comments_a_rewrite_would_refuse
+    dir = app(gemfile: <<~GEM, lockfile: PLAIN_LOCKFILE)
+      source "https://rubygems.org"
+      gem "rails", "4.0.0.rc1"
+      gem "therubyracer", platforms: :ruby
+      gem "turbo-sprockets-rails3", group: :assets # asset speed
+    GEM
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "therubyracer", kind: "removed", replacement: nil),
+      entry(gem: "turbo-sprockets-rails3", kind: "removed", replacement: nil)
+    ])
+    result = preflight(dir, corpus: corpus)
+
+    assert_equal %w[therubyracer turbo-sprockets-rails3], result.repairs.map(&:subject)
+    refute_includes read(dir, "Gemfile"), "therubyracer"
+    refute_includes read(dir, "Gemfile"), "turbo-sprockets-rails3"
+    assert_empty result.notes
+  end
+
   # A digest entry for a gem this application does not have is not its business, and
   # saying so per gem would bury the two that matter under nine that do not.
   def test_an_entry_for_a_gem_the_application_does_not_have_is_ignored
@@ -264,6 +287,33 @@ class PreflightTest < Minitest::Test
 
     refute_empty first.repairs
     assert_empty second.repairs
+  end
+
+  # **Two components, one bound.** The client's question size is the route's own, read out of
+  # the service's file rather than copied and hoped about — a client that drifted below the
+  # route would refuse itself questions the service would answer, and one above it would ask
+  # questions the service refuses, which is exactly how the whole digest went missing on the
+  # first real application.
+  def test_the_client_s_question_bound_is_the_routes_own
+    route = File.read(File.expand_path("../../upgrade/app/services/upgrade/migrations.rb", __dir__),
+      encoding: "utf-8")
+    limit = route[/GEMS_LIMIT = (\d+)/, 1]
+
+    refute_nil limit, "the route no longer declares a GEMS_LIMIT for this test to pin"
+    assert_equal limit.to_i, Preflight::DIGEST_GEMS_LIMIT
+  end
+
+  # And when an application does exceed it, the note says what was not asked about rather
+  # than a prefix going out silently: a question cut short reads as a complete answer.
+  def test_a_question_larger_than_the_route_s_bound_says_what_it_did_not_ask
+    gemfile = +%(source "https://rubygems.org"\n)
+    (Preflight::DIGEST_GEMS_LIMIT + 5).times { |index| gemfile << %(gem "gem#{index}", "1.0"\n) }
+    dir = app(gemfile: gemfile, lockfile: "GEM\n  remote: https://rubygems.org/\n  specs:\n")
+    corpus = FakeCorpus.new
+    result = preflight(dir, corpus: corpus)
+
+    assert(result.notes.any? { |note| note.include?("would have to be asked about") })
+    assert_operator corpus.asked.first.size, :<=, Preflight::DIGEST_GEMS_LIMIT
   end
 
   def test_the_result_says_what_it_did_in_one_line_and_in_detail

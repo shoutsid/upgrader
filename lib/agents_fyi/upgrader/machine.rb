@@ -118,6 +118,14 @@ module AgentsFyi
         # matrix at runtime: the fix is a corrected matrix, not a silent upgrade of the
         # interpreter a verdict is about to be stamped with.
         def start!(stage:, stages:)
+          # **The mounted home has to hold the directories the container's own environment
+          # points at, and on a bind mount nothing creates them.** The image creates
+          # `/agents-fyi/home` and `/agents-fyi/tmp` for the *named volume* case, where
+          # Docker seeds an empty volume from the image; a bind mount shadows all of that,
+          # so `HOME` and `TMPDIR` named directories that did not exist and the first real
+          # application answered `bundle install` with \"`/agents-fyi/home` is not a
+          # directory\" — a failure that reads as the application's.
+          FileUtils.mkdir_p([File.join(@home, "home"), File.join(@home, "tmp")])
           pulled = @runner.run(start_argv, stage: stage, chdir: @home)
           stages << pulled
           unless pulled.ok?
@@ -170,6 +178,11 @@ module AgentsFyi
         end
 
         def interpreter = "ruby #{entry.ruby}"
+
+        # The interpreter's own version, for the routing question ("can these gems run on
+        # the Ruby this step executes on?") which is asked of the machine rather than of the
+        # process.
+        def ruby_version = entry.ruby
 
         # The era this container is, by the matrix's own name ("2.2"), which is what a ledger
         # entry carries so the next cycle can try the same interpreter first.

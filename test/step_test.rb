@@ -130,14 +130,37 @@ class StepTest < Minitest::Test
   class FakeCorpus
     attr_reader :gem_requests
 
-    def initialize(payload: nil, refuse: nil, edits: [], manual: [], migrations: [])
+    attr_reader :routes
+
+    def initialize(payload: nil, refuse: nil, edits: [], manual: [], migrations: [],
+                   route: nil, routes: nil, route_error: nil)
       @payload = payload
       @refuse = refuse
       @edits = edits
       @manual = manual
       @migrations = migrations
+      @route = route
+      @routes = routes
+      @route_error = route_error
       @gem_requests = []
+      @asked_routes = []
     end
+
+    # The routing answer, as the service writes it: no moves unless the test says otherwise,
+    # which is what keeps every existing step test about its own subject. `routes:` is a
+    # *sequence*, for the one test about what a second ask looks like after research.
+    def route(ruby:, rails:, lockfile:)
+      raise @route_error if @route_error
+
+      @asked_routes << [ruby, rails]
+      routed = @routes ? @routes.shift : @route
+      routed || { "ruby" => ruby, "rails" => rails, "gems_read" => 0,
+                  "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0,
+                                "blocked" => 0, "unknown" => 0 },
+                  "gems" => [], "stored" => false, "next_step" => "every pin is recorded" }
+    end
+
+    def asked_routes = @asked_routes
 
     def upgrade(from:, to:)
       raise AgentsFyi::Upgrader::Corpus::Refused, @refuse if @refuse
@@ -299,14 +322,14 @@ class StepTest < Minitest::Test
   end
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
-           reuse: false, source: nil, out: nil)
+           reuse: false, source: nil, out: nil, research: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
-      reuse: reuse
+      reuse: reuse, research: research
     )
   end
 
@@ -343,6 +366,83 @@ class StepTest < Minitest::Test
     # the record is a change nobody reading the record can account for.
     assert_includes record.to_h["applied"].find { |edit| edit["subject"] == "git://" }["note"],
       "2022"
+  end
+
+  # A research pass, as a test double: it records the pins it was handed and answers with a
+  # result the step's stage can render. The fetching itself is `research_test.rb`'s subject.
+  class FakeResearch
+    attr_reader :pins
+
+    def initialize = @pins = []
+
+    def run(pins)
+      @pins = pins
+      AgentsFyi::Upgrader::Research::Result.new(researched: pins.map(&:first), skipped: [], reason: "")
+    end
+  end
+
+  # **The routing's `move` verdicts are what a `bundle update rails` cannot work out for
+  # itself.** `rspec-rails 2.13` declares `railties ~> 3.1`, so a 5.0 rung cannot install it;
+  # the line has to move before the pin is rewritten, and the record has to say which line
+  # moved and why.
+  def test_a_gem_the_routing_says_must_move_has_its_declaration_rewritten
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "rspec-rails", "~> 2.13.0"
+    GEM
+    corpus = FakeCorpus.new(payload: plan, route: {
+      "ruby" => "2.1.10", "rails" => "5.0.0", "gems_read" => 2,
+      "counts" => { "keep" => 1, "move" => 1, "replace" => 0, "remove" => 0, "blocked" => 0,
+                    "unknown" => 0 },
+      "gems" => [{ "name" => "rspec-rails", "version" => "2.13.0", "verdict" => "move",
+                   "to" => "3.0.0",
+                   "reason" => "requires railties ~> 3.1, and rspec-rails 3.0.0 is the newest " \
+                               "recorded release that fits" }],
+      "stored" => false, "next_step" => "1 pin(s) have a recorded release that fits."
+    })
+
+    record = step(dir, corpus: corpus).run
+
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "gems"
+    assert_operator stages.index("gems"), :<, stages.index("pin"),
+      "the moves must be applied before the Rails pin is rewritten"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rspec-rails", "~> 3.0.0")
+    move = record.applied.find { |edit| edit.subject == "rspec-rails" }
+    assert_equal %(gem "rspec-rails", "~> 3.0.0"), move.after
+    assert_includes move.note, "newest recorded release that fits"
+    assert_includes record.patch, %(gem "rspec-rails", "~> 3.0.0")
+  end
+
+  # A pin the routing could not answer about is researched — this client is the side that can
+  # reach an index — and the routing is asked again. What the second answer still cannot
+  # place is a decision naming the gem, never a silent pass.
+  def test_unknown_pins_are_researched_and_the_route_is_asked_again
+    dir = track(app)
+    unknown = { "name" => "who-knows", "version" => "1.0.0", "verdict" => "unknown",
+                "reason" => "no facts are recorded for who-knows 1.0.0 — an unknown gem is not a pass" }
+    corpus = FakeCorpus.new(payload: plan, routes: [
+      { "ruby" => "3.0.0", "rails" => "5.0.0", "gems_read" => 1,
+        "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0,
+                      "unknown" => 1 },
+        "gems" => [unknown], "stored" => false, "next_step" => "1 pin(s) are unknown" },
+      { "ruby" => "3.0.0", "rails" => "5.0.0", "gems_read" => 1,
+        "counts" => { "keep" => 1, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 },
+        "gems" => [{ "name" => "who-knows", "version" => "1.0.0", "verdict" => "keep",
+                     "reason" => "every recorded requirement is satisfied" }],
+        "stored" => false, "next_step" => "every pin is recorded" }
+    ])
+    research = FakeResearch.new
+
+    record = step(dir, corpus: corpus, research: research).run
+
+    assert_equal [["who-knows", "1.0.0"]], research.pins
+    assert_equal 2, corpus.asked_routes.length, "the routing was not asked again after research"
+    assert_includes record.stages.map(&:stage), "research"
+    refute(record.decisions.any? { |decision| decision.subject.include?("who-knows") },
+      "a closed unknown should not also be a decision")
   end
 
   # The install is what makes the baseline a measurement. Without it the suite runs against

@@ -50,6 +50,15 @@ module AgentsFyi
       # reason nobody reading the record could see, and "the suite was green before and red
       # after" is then a finding about the wrong thing.
       SERVICES = "services"
+      # The gems that have to move with this rung, from the service's routing answer: a pin
+      # whose recorded requirement the target violates and whose newest recorded release
+      # fits. A stage of its own because it is a *different question* from the scan's — the
+      # scan reads Rails' changes, this reads the application's own gems.
+      GEMS = "gems"
+      # The research pass that closes the routing's `unknown` pins, by fetching what a gem's
+      # index declares. A stage of its own so a walk can be read for how much it had to learn
+      # before it could move.
+      RESEARCH = "research"
       BASELINE = "baseline"
       # The application's own database preparation (`db:create`, `db:test:prepare`), run
       # before the baseline. Deliberately *not* required: a suite that manages its own

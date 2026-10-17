@@ -86,6 +86,13 @@ class CliTest < Minitest::Test
       @top.nil? ? {} : { "top" => @top }
     end
 
+    def route(ruby:, rails:, lockfile:)
+      { "ruby" => ruby, "rails" => rails, "gems_read" => 0,
+        "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 },
+        "gems" => [], "stored" => false, "next_step" => "every pin is recorded" }
+    end
+
     def gem_migrations(gems:)
       { "migrations" => @migrations.select { |migration| gems.include?(migration["gem"]) },
         "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,

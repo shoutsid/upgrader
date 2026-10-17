@@ -19,9 +19,9 @@ class InterpretersTest < Minitest::Test
   # A matrix row as the file carries one. The base is a well-formed pin because the shipped
   # matrix's pins are asserted below; this is a row a test can vary one field of.
   def row(name:, ruby:, image: "era-#{name}", base: "ruby:#{ruby}@sha256:#{"a" * 64}",
-          os: "jessie", archive: true, bundler: "1.17.3")
-    { "name" => name, "ruby" => ruby, "image" => image, "base" => base, "os" => os,
-      "archive" => archive, "bundler" => bundler }
+          bundler: "1.17.3")
+    { "name" => name, "ruby" => ruby, "image" => image, "base" => base,
+      "bundler" => bundler }
   end
 
   def write_matrix(rows)
@@ -193,10 +193,18 @@ class InterpretersTest < Minitest::Test
     script = File.read(File.join(root, "images", "services.sh"), encoding: "utf-8")
     builder = File.read(File.expand_path("../../scripts/upgrader-images.sh", root), encoding: "utf-8")
 
-    %w[BASE_IMAGE APT_SUITE APT_ARCHIVE BUNDLER].each do |argument|
+    %w[BASE_IMAGE BUNDLER].each do |argument|
       assert_includes dockerfile, "ARG #{argument}", "the Dockerfile takes no #{argument}"
       assert_includes builder, "build-arg \"#{argument}=", "the builder never passes #{argument}"
     end
+    # **The distribution is read, not passed.** Two of the six eras were wrong about theirs
+    # (2.5 is buster, 2.7 is bullseye), and apt pointed at the wrong release answers a
+    # package-list error; so the Dockerfile asks the image and the builder has no column
+    # for it. A test rather than a comment because the failure is a build, not a test run.
+    assert_includes dockerfile, "VERSION_CODENAME",
+      "the Dockerfile no longer reads the distribution out of the image"
+    refute_includes builder, "APT_SUITE", "the builder passes a distribution again"
+    refute_includes builder, "APT_ARCHIVE", "the builder decides how to reach packages again"
     assert_includes builder, "data/interpreters.json",
       "the builder does not read the matrix, so the two would drift"
     assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-fyi-services",

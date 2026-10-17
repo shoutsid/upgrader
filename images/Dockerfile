@@ -17,19 +17,29 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Which Debian release this base is, and how to reach it. jessie, stretch and buster have
-# moved to `archive.debian.org` and their Release files have expired, so a build against
-# the live mirrors fails with 404s and a build against the archive needs
-# `Check-Valid-Until` turned off. bookworm is still served normally.
-ARG APT_SUITE=bookworm
-ARG APT_ARCHIVE=0
-
 # The Bundler this era gets. Not "latest": Bundler 2.x does not run on 2.1 or 2.2 at all,
 # and Bundler 1.x cannot read a lockfile written by the modern bundler that a later era's
 # application arrives with. Each entry of the matrix names its own version.
 ARG BUNDLER=2.6.9
 
-# The packages a Rails application's bundle and suite need, and the reason each is here:
+# **Which Debian release this base is, and how to reach its packages, is read out of the
+# image rather than passed in.** It was build arguments once, and two of them were wrong the
+# first time they were exercised: `ruby:2.5` is a *buster* base (its `VERSION_CODENAME` says
+# so, and its glibc is 2.28), `ruby:2.7` is bullseye, and the 3.2/3.3 tags have moved to
+# trixie. A matrix carrying an `os` column was a second copy of a fact the image owns, and
+# it disagreed with the image exactly where it mattered — apt pointed at the wrong release
+# answers "Unable to correct problems, you have held broken packages", which reads as a
+# broken package list rather than as a wrong distribution name.
+#
+# The rule the image gets: every Debian at or below bullseye has moved to
+# `archive.debian.org` — their Release files have expired, so `Check-Valid-Until` goes off,
+# and their packages are unsigned now, so apt has to be told to take them. jessie through
+# buster spell their security suite `<codename>/updates`; bullseye spells it
+# `bullseye-security`. bookworm and later are still served normally and their own sources
+# are left alone. jessie's `/etc/os-release` predates `VERSION_CODENAME`, which is why the
+# numeric file is the fallback rather than the other way round.
+#
+# The packages, and the reason each is here:
 #
 # * `build-essential`, `pkg-config` — native gems with no prebuilt binary (`libv8`,
 #   `rmagick`, `json` in the old eras, `pg` everywhere). An era image without a compiler is
@@ -42,23 +52,38 @@ ARG BUNDLER=2.6.9
 # * `postgresql`, `postgresql-client` — the database the suite runs against, *inside* the
 #   container. That is a deliberate choice over a sibling container: a 2013 application's
 #   `database.yml` says `localhost`, and a service on a Docker network is not localhost.
-#   Era-matched by the distro: 9.4 on jessie, 9.6 on stretch, 11 on buster, 15 on bookworm.
+#   Era-matched by the distribution the image turned out to be: 9.4 on jessie, 11 on buster,
+#   13 on bullseye, 17 on trixie.
 # * `redis-server` — Resque, Sidekiq and cache stores, and the same localhost argument.
 # * `imagemagick`, `libmagickwand-dev` — `rmagick` and ImageMagick-backed uploaders. The
 #   distro's own version, which is the version the era's gems were written against (IM6 on
-#   every base here, including bookworm).
+#   every base here).
 # * `nodejs` — an ExecJS runtime for `uglifier` and friends, so an asset-pipeline build in
 #   the era does not depend on `therubyracer` compiling.
 # * `ca-certificates` — HTTPS to rubygems.org from an OpenSSL old enough that the trust
 #   store, not the protocol, is what breaks first.
 RUN set -eux; \
-    if [ "$APT_ARCHIVE" = "1" ]; then \
-      printf 'deb http://archive.debian.org/debian %s main\n' "$APT_SUITE" > /etc/apt/sources.list; \
-      printf 'deb http://archive.debian.org/debian-security %s/updates main\n' "$APT_SUITE" >> /etc/apt/sources.list; \
-      printf 'Acquire::Check-Valid-Until "false";\nAcquire::AllowInsecureRepositories "true";\nAPT::Get::AllowUnauthenticated "true";\n' \
-        > /etc/apt/apt.conf.d/99agents-fyi-archive; \
-      rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true; \
+    codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"; \
+    if [ -z "$codename" ]; then \
+      case "$(cat /etc/debian_version)" in \
+        8*) codename=jessie ;; \
+        9*) codename=stretch ;; \
+        10*) codename=buster ;; \
+        11*) codename=bullseye ;; \
+        12*) codename=bookworm ;; \
+        13*) codename=trixie ;; \
+      esac; \
     fi; \
+    case "$codename" in \
+      jessie|stretch|buster|bullseye) \
+        if [ "$codename" = "bullseye" ]; then security="bullseye-security"; else security="$codename/updates"; fi; \
+        printf 'deb http://archive.debian.org/debian %s main\n' "$codename" > /etc/apt/sources.list; \
+        printf 'deb http://archive.debian.org/debian-security %s main\n' "$security" >> /etc/apt/sources.list; \
+        printf 'Acquire::Check-Valid-Until "false";\nAcquire::AllowInsecureRepositories "true";\nAPT::Get::AllowUnauthenticated "true";\n' \
+          > /etc/apt/apt.conf.d/99agents-fyi-archive; \
+        rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true; \
+        ;; \
+    esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       build-essential pkg-config \
@@ -79,6 +104,7 @@ RUN gem install bundler -v "$BUNDLER" --no-document
 # tmpfs the container runtime mounts over this image's, so a directory or symlink made at
 # build time is gone by the first start. It is `start.sh`'s job — the container's only root
 # process — and it is where the comment about the failure lives.
+#
 # The services and the start script, as one copy each: the walker calls the services script
 # by name and the start script is what every container begins with. Both are shell, both are
 # argument-free by design (the values they need are environment variables the walker sets),
@@ -87,9 +113,9 @@ COPY services.sh /usr/local/bin/agents-fyi-services
 COPY start.sh /usr/local/bin/agents-fyi-start
 RUN chmod +x /usr/local/bin/agents-fyi-services /usr/local/bin/agents-fyi-start
 
-# The one directory a step's commands are told about: the walker mounts its home here
-# (`Machine::CONTAINER_ROOT`), and everything a step does — the worktree, the bundle, the
-# databases' log files — is under it or inside the container. Created so a bind mount onto
-# it is over a directory the image knows, which is the same rule the upgrader's own image
-# documents for its volumes.
+# The two directories the container's own environment points at, created here for the *named
+# volume* case — Docker seeds an empty volume from the image, so these arrive with it. A
+# bind mount shadows them, and the walker creates them on its side for exactly that reason
+# (`Machine::Container#start!`, and the first real application's "`/agents-fyi/home` is not a
+# directory" is where that came from).
 RUN mkdir -p /agents-fyi/home /agents-fyi/tmp

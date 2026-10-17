@@ -166,7 +166,36 @@ module AgentsFyi
           ledger: Ledger.load(File.join(options[:home], "ledger.json")),
           suite_timeout: options[:step_timeout]
         ).run
-        step_status(record)
+        return step_status(record) unless options[:publish]
+
+        published(record, options)
+      end
+
+      # The delivery half of a walk: a branch per passed rung and a pull request chained to
+      # the rung before it. A step that did not pass is not published — the sentence says
+      # so, and the exit status stays the *step's*, because "the ladder refused this move"
+      # and "the branch could not be pushed" are different news for whoever is reading.
+      def published(record, options)
+        if record.nil?
+          @out.puts("publish: nothing to publish — the ledger had already settled this move")
+          return EXIT_OK
+        end
+        unless record.passed?
+          @out.puts("publish: skipped — the step's verdict is #{record.verdict}, and a branch " \
+                    "is a claim that this rung works")
+          return step_status(record)
+        end
+
+        result = Publish.new(
+          root: record.worktree, repository: options[:repo],
+          from_version: record.from_version, to_version: record.to_version,
+          record: record, out: @out, token: @env[Publish::ENV_TOKEN]
+        ).call
+        @out.puts(result.to_s)
+        return step_status(record) if result.published? || result.pushed
+
+        @err.puts("failed: #{result}")
+        EXIT_FAILED
       end
 
       def serve(options)
@@ -220,7 +249,9 @@ module AgentsFyi
           opts.on("--heartbeat FILE", "the file `serve` touches every cycle") { |v| options[:heartbeat] = v }
           opts.on("--interval SECONDS", Integer, "how long `serve` waits between cycles") { |v| options[:interval] = v }
           opts.on("--step-timeout SECONDS", Integer, "how long a suite may run") { |v| options[:step_timeout] = v }
-          opts.on("--cycles N", Integer, "stop `serve` after N cycles (default: never)") { |v| options[:cycles] = v }
+          opts.on("--publish", "push a branch and open (or update) a pull request for a " \
+                               "passed step, chained to the previous rung's branch " \
+                               "(needs $#{Publish::ENV_TOKEN})") { |v| options[:publish] = v }
           # Repeatable, and several may follow one flag: the container's entrypoint
           # expands `UPGRADER_REPOS` unquoted, so the shell hands over separate argv
           # items. Those arrive here as leftover arguments and are collected below —

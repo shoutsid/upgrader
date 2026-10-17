@@ -47,10 +47,10 @@ module AgentsFyi
       # One era, as the matrix declares it: a name a human says ("2.2"), the interpreter's own
       # full version (compared against a step's floor, so it must be the *image's* version —
       # `2.2.10`, not `2.2`), the image reference, the base image's pin, and the era's facts.
-      Entry = Struct.new(:name, :ruby, :image, :base, :os, :archive, :bundler, keyword_init: true) do
+      Entry = Struct.new(:name, :ruby, :image, :base, :bundler, keyword_init: true) do
         def to_h
           { "name" => name, "ruby" => ruby, "image" => image, "base" => base,
-            "os" => os, "archive" => archive, "bundler" => bundler }
+            "bundler" => bundler }
         end
       end
 
@@ -142,8 +142,7 @@ module AgentsFyi
 
           Entry.new(
             name: name, ruby: row.fetch("ruby").to_s, image: overrides[name] || row.fetch("image").to_s,
-            base: row.fetch("base").to_s, os: row.fetch("os").to_s,
-            archive: row.fetch("archive", false), bundler: row.fetch("bundler").to_s
+            base: row.fetch("base").to_s, bundler: row.fetch("bundler").to_s
           )
         end
 

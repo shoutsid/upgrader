@@ -55,19 +55,33 @@ class MachineTest < Minitest::Test
   end
 
   def entry(name: "2.2", ruby: "2.2.10", image: "agentsfyi-upgrader-ruby-2.2:dev")
-    Interpreters::Entry.new(name: name, ruby: ruby, image: image, base: "ruby:2.2@sha256:#{"a" * 64}",
-      os: "jessie", archive: true, bundler: "1.17.3")
+    Interpreters::Entry.new(name: name, ruby: ruby, image: image,
+      base: "ruby:2.2@sha256:#{"a" * 64}", bundler: "1.17.3")
   end
 
-  def container(home: "/home/walker", runner: nil, inspector: FakeInspector.new, volume: "",
+  # The home a machine starts against has to be a directory this process can write to —
+  # `start!` creates the two directories the container's environment points at — so the
+  # tests get a temporary one rather than a path that reads well and does not exist.
+  def container(home: nil, runner: nil, inspector: FakeInspector.new, volume: "",
                 self_marker: "/nonexistent-self-marker", **kwargs)
+    home ||= temp_home
     Machine::Container.new(entry: entry(**kwargs), home: home, runner: runner || FakeShell.new,
       uid: 1000, gid: 1000, run_id: "run1", inspector: inspector, volume: volume,
       self_marker: self_marker)
   end
 
+  def temp_home
+    dir = Dir.mktmpdir
+    (@homes ||= []) << dir
+    dir
+  end
+
+  def teardown
+    @homes&.each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
+  end
+
   def test_a_command_is_an_exec_into_the_step_s_container
-    machine = container
+    machine = container(home: "/home/walker")
     machine.instance_variable_set(:@container_id, "abc123")
     argv, env = machine.command(%w[bundle install], chdir: "/home/walker/work/tree", env: {})
 
@@ -84,7 +98,7 @@ class MachineTest < Minitest::Test
   # path would be a path the interpreter inside cannot see, and the bundle it installed would
   # be looked for in the wrong place for the whole of the suite.
   def test_the_environment_travels_as_flags_with_the_paths_translated
-    machine = container
+    machine = container(home: "/home/walker")
     machine.instance_variable_set(:@container_id, "abc123")
     argv, _env = machine.command(["bundle", "install"], chdir: "/home/walker/work/tree",
       env: { "BUNDLE_PATH" => "/home/walker/bundles/x", "BUNDLE_WITHOUT" => "development" })
@@ -95,7 +109,7 @@ class MachineTest < Minitest::Test
   end
 
   def test_a_command_line_runs_through_a_shell_inside_the_container
-    machine = container
+    machine = container(home: "/home/walker")
     machine.instance_variable_set(:@container_id, "abc123")
     argv, _env = machine.script("bundle exec rspec", chdir: "/home/walker/work/tree", env: {})
 
@@ -107,7 +121,7 @@ class MachineTest < Minitest::Test
   # to it would run in whatever directory the container did find. Refused by name rather than
   # silently rewritten.
   def test_a_path_outside_the_home_is_refused_rather_than_translated
-    machine = container
+    machine = container(home: "/home/walker")
     error = assert_raises(Machine::Unavailable) do
       machine.command(%w[true], chdir: "/somewhere/else", env: {})
     end
@@ -181,10 +195,11 @@ class MachineTest < Minitest::Test
   # reason.
   def test_the_home_is_bind_mounted_on_a_host_and_joined_by_name_in_a_container
     started = { "docker run" => [0, "f00dfeed\n"], "ruby -v" => [0, "ruby 2.2.10\n"] }
-    host = container(runner: FakeShell.new(answers: started))
+    home = temp_home
+    host = container(home: home, runner: FakeShell.new(answers: started))
     host.start!(stage: "interpreter", stages: [])
     run_argv = host.instance_variable_get(:@runner).calls.first[:argv].join(" ")
-    assert_includes run_argv, "--mount type=bind,source=/home/walker,target=/agents-fyi"
+    assert_includes run_argv, "--mount type=bind,source=#{home},target=/agents-fyi"
     assert_includes run_argv, "AGENTS_FYI_UID=1000", "the start script is not told which uid to name"
     assert_includes run_argv, "agents-fyi-start", "the container is not started through the naming script"
 

@@ -160,11 +160,26 @@ module AgentsFyi
         repairs
       end
 
+      # How many names one digest question may carry. Mirrored from the route
+      # (`Upgrade::Migrations::GEMS_LIMIT`) rather than discovered by being refused, and
+      # pinned to it by a test: two components, one bound, and a client that sent a prefix
+      # silently would be asking an incomplete question that reads as a complete answer.
+      DIGEST_GEMS_LIMIT = 300
+
       # The digest, bounded to the gems this application can be asked about: the ones it
       # declares, plus the ones it merely locked so the answer can say that a move exists
       # and belongs to another gem's line.
       def digest(notes)
-        payload = client.gem_migrations(gems: declared_gems + locked_gems)
+        names = declared_gems + (locked_gems - declared_gems)
+        if names.size > DIGEST_GEMS_LIMIT
+          notes << "#{names.size} gem name(s) would have to be asked about and this client " \
+                   "sends at most #{DIGEST_GEMS_LIMIT}: the declared ones and the first of the " \
+                   "rest were asked, so a migration for a gem further down the lockfile may " \
+                   "not appear here"
+          names = names.first(DIGEST_GEMS_LIMIT)
+        end
+
+        payload = client.gem_migrations(gems: names)
         payload.fetch("migrations", [])
       rescue Corpus::Unreachable, Corpus::Refused => e
         notes << "the gem-migrations digest was not read (#{e.message}), so only the general " \
@@ -202,7 +217,7 @@ module AgentsFyi
           return
         end
 
-        skip = unrewritable(line)
+        skip = unrewritable(line, kind: entry["kind"].to_s)
         if skip
           notes << "Gemfile:#{index + 1} declares #{name} as `#{line.strip}`, which #{skip}; " \
                    "#{entry["note"]}"
@@ -246,9 +261,17 @@ module AgentsFyi
         nil
       end
 
-      def unrewritable(line)
-        return "carries a comment this class will not risk rewriting around" if line.match?(/\s#/)
+      # Whether this declaration is one the digest repair may touch, and why not when it is
+      # not. The kind matters: a *removal* takes the whole line, so what the line's options
+      # say does not change what happens to it, while a *rewrite* has to leave the gem where
+      # the application put it — which is why an option that changes behaviour (`require:`,
+      # `platforms:`, `group:`) makes the declaration one this class will not rewrite.
+      # A declaration spanning several lines is skipped either way: the one line this class
+      # sees is not the whole of it, and half a removal is a syntax error.
+      def unrewritable(line, kind:)
         return "spans several lines, so the one line this class sees is not the whole" if line.rstrip.end_with?(",")
+        return nil if kind == "removed"
+        return "carries a comment this class will not risk rewriting around" if line.match?(/\s#/)
 
         # The option names, with quoted values removed first so a URL's `https:` is not
         # read as an option called `https`.
