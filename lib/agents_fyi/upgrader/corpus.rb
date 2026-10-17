@@ -73,6 +73,15 @@ module AgentsFyi
         call(:get, "/rails/upgrade", params: { from_version: from, to_version: to })
       end
 
+      # The ladder itself: where it starts, where it tops out, and one row per step.
+      #
+      # A caller that was not given a target reads `top` from here rather than keeping a copy
+      # of Rails' release order — the same rule the ladder bound in `no_target` used to
+      # state, arriving as the read it promised.
+      def ladder
+        call(:get, "/rails/ladder")
+      end
+
       # The gem-migrations digest: the moves a machine may make to a Gemfile without
       # reading the application's code.
       #

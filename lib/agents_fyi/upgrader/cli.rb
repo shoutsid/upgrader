@@ -30,10 +30,10 @@ module AgentsFyi
         ladder this service publishes
 
         Usage:
-          agents-fyi-upgrader plan  --repo PATH|URL [--ref REF] --to VERSION [--api URL]
+          agents-fyi-upgrader plan  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
           agents-fyi-upgrader preflight --repo PATH|URL [--ref REF] [--api URL]
                                     [--record DIR]
-          agents-fyi-upgrader step  --repo PATH|URL [--ref REF] --to VERSION [--api URL]
+          agents-fyi-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--record DIR] [--work DIR]
           agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] --to VERSION [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
@@ -102,7 +102,6 @@ module AgentsFyi
 
       def plan(options)
         return usage_error("plan needs --repo PATH|URL") unless options[:repo]
-        return usage_error(no_target) unless options[:to]
 
         source = Source.resolve(options[:repo], ref: options[:ref], home: options[:home])
         lockfile = Lockfile.read(source.root)
@@ -115,7 +114,7 @@ module AgentsFyi
         end
 
         corpus = @corpus || Corpus.new(base: options[:api])
-        payload = corpus.upgrade(from: pinned.version, to: options[:to])
+        payload = corpus.upgrade(from: pinned.version, to: target(options, corpus))
         @out.puts(
           Plan.new(
             payload: payload,
@@ -160,10 +159,9 @@ module AgentsFyi
       # for — and one that reads the record gets all of it.
       def step(options)
         return usage_error("step needs --repo PATH|URL") unless options[:repo]
-        return usage_error(no_target) unless options[:to]
 
         record = Step.new(
-          repository: options[:repo], ref: options[:ref], to: options[:to], api: options[:api],
+          repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
           home: options[:home], out: @out, work: options[:work], record: options[:record],
           ledger: Ledger.load(File.join(options[:home], "ledger.json")),
           suite_timeout: options[:step_timeout]
@@ -195,12 +193,6 @@ module AgentsFyi
       # after 4.2 is 5.0" would be a second copy of the ladder, and a second copy is
       # how two answers to one question start disagreeing — which this project has
       # paid for more than once.
-      def no_target
-        "this tool will not guess a target: pass --to VERSION (for example --to 7.1.0). " \
-          "A default arrives when the service exposes the top of its ladder; until then " \
-          "this tool keeps no copy of the ladder of its own."
-      end
-
       def parse
         argv = @argv.dup
         # A leading flag is not a command. `agents-fyi-upgrader --help` was read as an
@@ -219,7 +211,8 @@ module AgentsFyi
           opts.banner = USAGE
           opts.on("--repo PATH|URL", "the repository to plan: a local path or a git URL") { |v| options[:repo] = v }
           opts.on("--ref REF", "the branch, tag or commit to read (URLs only)") { |v| options[:ref] = v }
-          opts.on("--to VERSION", "the Rails release the move ends at, e.g. 7.1.0") { |v| options[:to] = v }
+          opts.on("--to VERSION", "the Rails release the move ends at, e.g. 7.1.0 " \
+                  "(default: the top of the service's ladder)") { |v| options[:to] = v }
           opts.on("--api URL", "the service to ask (default $AGENTS_FYI_URL)") { |v| options[:api] = v }
           opts.on("--record DIR", "where `step` writes the patch and the JSON record") { |v| options[:record] = v }
           opts.on("--work DIR", "where `step` puts its working copy (default $UPGRADER_HOME)") { |v| options[:work] = v }
@@ -246,6 +239,27 @@ module AgentsFyi
         end
         options[:repos] = (options[:repos] || []) + argv unless argv.empty?
         options
+      end
+
+      # The target a mode works to: the one the caller named, or the top of the service's
+      # own ladder.
+      #
+      # Naming one is still the caller's choice to make — `serve` deliberately idles
+      # without one, because a deployment that has not decided where it is going must not
+      # start walking somebody's application — but `plan` and `step` are asked by a person
+      # who may not know what the newest release this ladder carries is, and "to what?" is
+      # a question the service answers better than this tool. It answers it *decisively*:
+      # the top is a fact the service publishes, not a guess about Rails' release order,
+      # and `no_target`'s promise ("a default arrives when the service exposes the top of
+      # its ladder") is what this is.
+      def target(options, corpus = nil)
+        return options[:to] if options[:to]
+
+        payload = (corpus || @corpus || Corpus.new(base: options[:api])).ladder
+        top = payload.is_a?(Hash) ? payload["top"].to_s : ""
+        raise Corpus::Unreachable, "the ladder read carried no `top`" if top.empty?
+
+        top
       end
 
       def help

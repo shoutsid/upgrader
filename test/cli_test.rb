@@ -61,16 +61,29 @@ class CliTest < Minitest::Test
   # A corpus client that answers from a value or raises a given error, so a test can
   # drive a refusal and an outage through the same path a real response takes.
   class StubCorpus
-    def initialize(payload: nil, error: nil, migrations: [])
+    attr_reader :upgrades, :ladder_reads
+
+    def initialize(payload: nil, error: nil, migrations: [], top: "8.1.0")
       @payload = payload
       @error = error
       @migrations = migrations
+      @top = top
+      @upgrades = []
+      @ladder_reads = 0
     end
 
     def upgrade(from:, to:)
       raise @error if @error
 
+      @upgrades << [from, to]
       @payload
+    end
+
+    def ladder
+      raise @error if @error
+
+      @ladder_reads += 1
+      @top.nil? ? {} : { "top" => @top }
     end
 
     def gem_migrations(gems:)
@@ -94,15 +107,47 @@ class CliTest < Minitest::Test
     end
   end
 
-  # The tool keeps no copy of the ladder, so it cannot know what follows 4.2 without
-  # asking — and guessing is the one thing it must not do.
-  def test_a_missing_target_is_refused_rather_than_guessed
+  # The tool keeps no copy of the ladder, so a caller that did not name a target is given
+  # the service's own top rather than a guess about Rails' release order. Two reads, and
+  # the second is the one that matters: the plan was asked for *to the top the ladder
+  # published*, which is the only way "to what?" can be answered without a second copy of
+  # the ladder living in this tool.
+  def test_a_missing_target_asks_the_service_where_its_ladder_tops_out
     repository do |dir|
-      code, _out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"])
+      corpus = StubCorpus.new(payload: PAYLOAD, top: "8.1.0")
+      code, out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
+        corpus: corpus)
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, code
-      assert_includes err, "will not guess a target"
-      assert_includes err, "ladder"
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_equal 1, corpus.ladder_reads
+      assert_equal [["4.2.11", "8.1.0"]], corpus.upgrades
+      assert_includes out, "on Rails 4.2.11, read from `rails` in Gemfile.lock"
+    end
+  end
+
+  # A ladder read that cannot be made is an outage, not a licence to guess — the tool has
+  # nothing to plan to and says so with the service's own sentence.
+  def test_a_ladder_that_cannot_be_read_is_an_outage_rather_than_a_guess
+    repository do |dir|
+      outage = AgentsFyi::Upgrader::Corpus::Unreachable.new("could not reach https://example.test: reset")
+      code, _out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
+        corpus: StubCorpus.new(error: outage))
+
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_includes err, "could not reach"
+    end
+  end
+
+  # A ladder read that answers without a top is answered as the outage it is: planning to
+  # an empty target would ask the service for a move to nowhere and report whatever came
+  # back as the answer.
+  def test_a_ladder_read_without_a_top_is_refused_rather_than_planned_to_nowhere
+    repository do |dir|
+      code, _out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
+        corpus: StubCorpus.new(payload: PAYLOAD, top: nil))
+
+      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_includes err, "carried no `top`"
     end
   end
 

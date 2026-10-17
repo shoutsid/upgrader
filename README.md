@@ -42,7 +42,7 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 |---|---|
 | `--repo PATH\|URL` | the application: a local directory (read where it is, never written to) or a git URL |
 | `--ref REF` | the branch, tag or commit to read — URLs only |
-| `--to VERSION` | the Rails release the move ends at, e.g. `7.1.0`. Required, in every mode |
+| `--to VERSION` | the Rails release the move ends at, e.g. `7.1.0`. Optional in `plan` and `step` — without it the target is the top of the service's ladder (`GET /rails/ladder`), because "to what?" is a question the service answers better than this tool. `serve` requires it deliberately: a deployment that has not decided where it is going must not start walking somebody's application |
 | `--api URL` | the service to ask; defaults to `$AGENTS_FYI_URL`, then to the public deployment |
 | `--record DIR` | where `step` writes the patch and the JSON record |
 | `--work DIR` | where `step` puts its working copy; defaults to `$UPGRADER_HOME` |
