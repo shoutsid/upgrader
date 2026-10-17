@@ -35,6 +35,21 @@ if [ -n "${AGENTS_FYI_UID:-}" ]; then
     mkdir -p /var/run/postgresql
     chown "$AGENTS_FYI_UID:${AGENTS_FYI_GID:-$AGENTS_FYI_UID}" /var/run/postgresql 2>/dev/null || true
     chmod 2775 /var/run/postgresql 2>/dev/null || true
+
+    # **The gem home, handed over for the same reason and found the same way.** Rails 4.0.0.rc1
+    # declares a *runtime dependency on bundler*, so a `bundle install` of an application that
+    # old installs the bundler gem into its own bundle and writes the binstub into this gem
+    # home's `bin/` — which the base image created as root. The failure is the last line of an
+    # otherwise clean install: every gem in the Gemfile installed, and then
+    # `Errno::EACCES: Permission denied @ rb_sysopen - /usr/local/bundle/bin/bundle`, reported
+    # as "an error occurred while installing bundler (1.17.3)" with a resolution trace that
+    # never mentions a permission. The check is against the walker's own uid so a container
+    # that is already handed over pays nothing.
+    if [ -d /usr/local/bundle ]; then
+        if [ "$(stat -c %u /usr/local/bundle 2>/dev/null || echo)" != "$AGENTS_FYI_UID" ]; then
+            chown -R "$AGENTS_FYI_UID:${AGENTS_FYI_GID:-$AGENTS_FYI_UID}" /usr/local/bundle 2>/dev/null || true
+        fi
+    fi
 fi
 
 exec "$@"

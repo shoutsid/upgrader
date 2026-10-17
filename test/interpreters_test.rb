@@ -207,6 +207,21 @@ class InterpretersTest < Minitest::Test
     refute_includes builder, "APT_ARCHIVE", "the builder decides how to reach packages again"
     assert_includes builder, "data/interpreters.json",
       "the builder does not read the matrix, so the two would drift"
+    # **The start script does the two things a build cannot**, and a real application found
+    # both. It names the walker's uid — `initdb` refuses an unnamed uid, and every failure of
+    # that kind reads as a broken database rather than as a missing passwd entry. And it hands
+    # the gem home over: Rails 4.0.0.rc1 declares a *runtime dependency on bundler*, so a
+    # 2013 application's `bundle install` installs bundler into its own bundle and writes the
+    # binstub into a root-owned `bin/` — the last line of an otherwise clean install, reported
+    # as "an error occurred while installing bundler" with no permission anywhere in the
+    # sentence. The uid is the host's, so the image cannot know it and the chown cannot be a
+    # build step.
+    start = File.read(File.join(root, "images", "start.sh"), encoding: "utf-8")
+    assert_includes start, "getent passwd", "nothing names the walker's uid"
+    assert_includes start, "/var/run/postgresql", "the socket directory is not prepared"
+    assert_match(/chown -R .*\/usr\/local\/bundle/, start,
+      "the gem home is not handed to the walker, so a Rails 4.0.0.rc1 bundle cannot install")
+
     assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-fyi-services",
       "the image does not install the services script"
     assert_includes script, "initdb", "the services script starts no PostgreSQL"
