@@ -222,6 +222,54 @@ module AgentsFyi
                                                               "alternative, which is a decision about " \
                                                               "how the application reports a missing " \
                                                               "translation",
+        # **The gaps that name a mechanism rather than an edit.** Four of the twenty changes with no
+        # call site are not "no rule yet": they need something this tool does not have, and saying which
+        # is the point of a gap.
+        "bootsnap" => "`app:update` rewrites `config/boot.rb` to require it, so the gem has to be " \
+                      "declared — and no call site points at it. This is the bridge the tool does not " \
+                      "have yet: one driven by the *plan* rather than by the scan, with a condition " \
+                      "over the tree (does `config/boot.rb` require it) instead of a located line",
+        "Spring" => "the gem has to *move* (3.0.0 or newer), and a pin that must move is the " \
+                    "routing's answer rather than an edit — `POST /releases/route` is what says " \
+                    "whether a recorded release fits. An older Spring raises " \
+                    "`undefined method 'mechanism='` before the application boots, which reads as an " \
+                    "application error",
+        "@rails npm packages" => "the fix is in `package.json`, which this tool does not read: the " \
+                                 "three packages moved under the `@rails` scope and the build fails " \
+                                 "loudly without it",
+        "tmp/development_secret.txt" => "a file rename, and the file is git-ignored in most " \
+                                        "applications — so this is a note rather than a diff. It " \
+                                        "matters because a missing one is *generated* rather than " \
+                                        "reported, which silently invalidates the sessions and the " \
+                                        "signed URLs of every developer",
+        "config.secrets.yml" => "`app:update` writes the file; the initializer's secret has to move " \
+                                "*before* `config/initializers/secret_token.rb` goes, or every session " \
+                                "in flight is invalidated. The ordering is the decision, which is why " \
+                                "this is a gap and not a scaffold",
+        "sprockets-rails" => "an application still using the asset pipeline has to add the gem, and " \
+                             "*whether this one does* is a fact about the application rather than " \
+                             "about a line — the same shape as a bridge, with a condition no scan " \
+                             "can answer",
+        "schema.rb column order" => "informational: the dump's order changes and a `schema.rb` diff " \
+                                    "is large and meaningless for one rung. `structure.sql` preserves " \
+                                    "the exact order if the file has to stay quiet",
+        "config.i18n.raise_on_missing_translations" => "the default flips, and a line that sets it " \
+                                                       "explicitly is unaffected — while a line that " \
+                                                       "does not has nothing for a pattern to point at",
+        "attr_accessible" => "the list belongs in a controller, and the note's own bridge " \
+                             "(`protected_attributes`) keeps it working until 5.0 — which is why this " \
+                             "is a gap with the gem named rather than a declaration: a bridge would " \
+                             "silence the work rather than do it",
+        "force_ssl in a controller" => "the controller method's replacement is application-wide " \
+                                       "(`config.force_ssl`), and a controller's own `force_ssl` " \
+                                       "scopes to that controller: moving it is a decision about " \
+                                       "scope, and `config.ssl_options` is where an exemption goes",
+        "format.any" => "the note's fix is to *name the formats the action accepts*, which is a fact " \
+                        "about the action rather than about the line",
+        "has_many_attached assignment" => "the change is what *assignment* does, and the declaration " \
+                                          "the scan locates is not the assignment: `attach` is what " \
+                                          "adds without replacing, and which call sites meant to " \
+                                          "append is the application's",
         "render :text" => "4.1 deprecates `:text` without removing it, so the choice between " \
                           "`plain:`, `html:` and `body:` is still open here — and it is the 5.1 " \
                           "rung's rule that makes it, because there `:text` is gone and the note " \
@@ -233,11 +281,6 @@ module AgentsFyi
                                                          "spans two, is left — the edit is a rename " \
                                                          "and this is the one place a rename is not " \
                                                          "enough",
-        "Rails.logger" => "the note gives the edit — `X.extend(ActiveSupport::Logger.broadcast(Y))` " \
-                          "becomes `X.broadcast_to(Y)` — so what is missing is a family whose " \
-                          "argument capture can see one level of nesting: " \
-                          "`Logger.new(\"log/x.log\")` has parentheses inside it, and a capture that " \
-                          "stopped at the first `)` would write the call in half",
         "config.secret_token" => "the note says to *leave it in place and add* `secret_key_base`, " \
                                  "because a Rails 3 cookie is upgraded on the way in and a Rails 4 " \
                                  "cookie cannot be read by Rails 3 — so the two together are what " \
@@ -314,6 +357,23 @@ module AgentsFyi
                                               "`:nothing` carrying a status is left too: the status " \
                                               "names the `head` call (`render :nothing => true, " \
                                               "status: :created` is `head :created`)",
+        "Rails.logger" => "the rule unwraps `extend(ActiveSupport::Logger.broadcast(x))`; an argument " \
+                          "nested deeper than one level is left rather than cut in half, and " \
+                          "`Rails.autoloaders.log!` — the other half of the same release's note — is " \
+                          "a different edit",
+        "match without via:" => "`via: :all` is what preserves the behaviour, and the deprecation " \
+                                "exists because a route that answers every verb is usually not what " \
+                                "was meant — which verbs this route wants is the application's. A " \
+                                "route drawn with a `do` block is left: `via:` goes before the `do`, " \
+                                "and that is a different edit",
+        "button_to" => "`method: :post` is added to a button built from a record, and on one built " \
+                       "from a path helper it is the default it already had — so the edit is right " \
+                       "either way. A button whose arguments this tool cannot see the end of is left",
+        "config.action_view.raise_on_missing_translations" => "the setting's own line moves to " \
+                                                              "`config.i18n`; the note's other half " \
+                                                              "— a custom I18n exception handler — is " \
+                                                              "a decision about how the application " \
+                                                              "reports a missing translation",
         "protect_from_forgery" => "the rule adds `prepend: true` unconditionally, because the line " \
                                   "does not show what runs before it: where a filter is declared " \
                                   "above the callback the option restores the order 5.0 changed, and " \
@@ -442,17 +502,59 @@ module AgentsFyi
       end
 
       # **An option the new release requires, added to a call that does not have it.** `belongs_to` is
-      # what made this a family: the association's options are a flat list, so the option goes on the
-      # end — and the line is not touched when it already names the option (the negative lookahead is
-      # what makes the rule idempotent) or when the options run past the line (a trailing comma, a
-      # `do` block, a comment), because appending to an argument list whose end the rule cannot see is
-      # how a rule cuts a line in half.
+      # what made this a family: the call's arguments are a flat list, so the option goes on the end.
+      # Three refusals keep it honest, and each was measured:
+      #
+      # * the line already names the option (the first lookahead is what makes the rule idempotent);
+      # * the call opens a block — `match "/x" => "y#z" do` came out as
+      #   `match "/x" => "y#z" do, via: :all`, which is a route that does not parse. A `do` inside a
+      #   string is not seen, because the mask blanks it, which is why the second lookahead can be this
+      #   blunt;
+      # * an argument runs past the line (a trailing comma, a comment, a nested call) — appending to an
+      #   argument list whose end the rule cannot see is how a rule cuts a line in half.
+      #
+      # The argument runs are *lazy* and they exclude `%` and `<`, and both are what let the ERB close be
+      # claimed by the group that names it: greedy, they swallowed ` %>` as an argument and the
+      # declaration landed after the tag; with `%` allowed, `<%= button_to "x", item %><% end %>` was
+      # read as one call whose argument ran through the second tag. `>` stays allowed, because a route's
+      # `=>` is an argument.
+      #
+      # Positional arguments are allowed, and that is a fix rather than a widening: `button_to "Delete",
+      # item` has two arguments and only the second is an option, so a pattern that required every
+      # argument to be a `key: value` pair matched none of the buttons the change is about.
       def self.option_added(subject:, call:, option:, context: nil)
         key = option[/[a-z_]\w*(?=:)/]
         Rule.new(family: :option_added, subject: subject, context: context,
-          pattern: Regexp.new("\\A(?<indent>\\s*)(?!.*\\b#{key}:)(?<call>#{Regexp.escape(call)}\\b[^,()]*" \
-                              "(?:\\s*,\\s*[a-z_]\\w*:\\s*[^,()]+)*)\\s*\\z"),
-          replace: "\\k<indent>\\k<call>#{option}")
+          pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
+                              "(?<call>#{Regexp.escape(call)}\\b[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
+          replace: "\\k<open>\\k<call>#{option}\\k<close>")
+      end
+
+      # **The two ends of an ERB tag.** A rule whose pattern is anchored at `\A` and `\z` is saying "the
+      # whole line is this statement", and in a template the statement is wrapped — so a family that
+      # anchors has to know the wrapper or it matches nothing in a `.erb` file at all. That is measured
+      # rather than imagined: every one of `button_to`'s call sites is in a view, and the rule written
+      # for it matched none of them until these two were part of the pattern. The wrapper is captured,
+      # not just allowed, because the replacement re-emits the line around the call.
+      ERB_OPEN = /(?<open>\A\s*(?:<%[-=]?\s*)?)/
+      ERB_CLOSE = /(?<close>(?:\s*-?%>)?\s*\z)/
+
+      # **The extent of an argument this tool will carry across a call**: one level of nesting and no
+      # more. `Logger.new("log/x.log")` is one level; a call inside a call inside a call is not, and is
+      # left rather than cut in half. One constant, because two families carry an argument across.
+      ARGUMENT = /[^()]*(?:\([^()]*\)[^()]*)*/
+
+      # **A call that wraps another, unwrapped.** "`Rails.logger` is an `ActiveSupport::BroadcastLogger`
+      # now, and `extend(ActiveSupport::Logger.broadcast(...))` is out" —
+      # `Rails.logger.extend(ActiveSupport::Logger.broadcast(other))` is
+      # `Rails.logger.broadcast_to(other)`. The target is captured rather than named, because
+      # `config.logger` is the same edit, and the argument's extent is the careful half: the inner
+      # call's parentheses are why `ARGUMENT` exists.
+      def self.call_unwrapped(subject:, wrapper:, unwrap:, method:, context: nil)
+        Rule.new(family: :call_unwrapped, subject: subject, context: context,
+          pattern: Regexp.new("(?<target>[A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*)\\.#{Regexp.escape(wrapper)}" \
+                              "\\(\\s*#{Regexp.escape(unwrap)}\\(\\s*(?<value>#{ARGUMENT.source})\\s*\\)\\s*\\)"),
+          replace: "\\k<target>.#{method}(\\k<value>)")
       end
 
       # **An option that changed its own name, on the call that takes it.** `render :text => x` is
@@ -751,6 +853,27 @@ module AgentsFyi
         call_replaced(subject: "config_for", from: "config_for",
           to: 'config_for(\k<a1>).with_indifferent_access',
           already: /config_for\([^()]*\)\.with_indifferent_access/),
+
+        # **Two options the release now requires, both behaviour-preserving.** A `match` without `via:`
+        # is *removed* in 4.0, so the rung requires an edit and `via: :all` is the one that keeps the
+        # route answering what it answered — the narrowing is the application's choice, which is what
+        # the gap beside it says. And a `button_to` built from a persisted record renders PATCH rather
+        # than POST from 7.0; `method: :post` is the note's own answer, and on a button built from a
+        # *path* it is the default it already had, so the edit is right either way.
+        option_added(subject: "match without via:", call: "match", option: ", via: :all"),
+        option_added(subject: "button_to", call: "button_to", option: ", method: :post"),
+
+        # "The private `AbstractController::Translation` setting is gone; use
+        # `config.i18n.raise_on_missing_translations`" — the setting moved rather than disappearing,
+        # and the name is the whole edit.
+        name_moved(subject: "config.action_view.raise_on_missing_translations",
+          from: "config.action_view.raise_on_missing_translations",
+          to: "config.i18n.raise_on_missing_translations"),
+
+        # "`Rails.logger.extend(ActiveSupport::Logger.broadcast(x))` is out" — the wrapper and the
+        # inner call collapse into `broadcast_to`.
+        call_unwrapped(subject: "Rails.logger", wrapper: "extend",
+          unwrap: "ActiveSupport::Logger.broadcast", method: "broadcast_to"),
 
         # **The 5.1 rung of the `render :text` story, where the choice has to be made.** 4.1
         # deprecates `:text` without removing it; here the deprecation has run out, and the note's own

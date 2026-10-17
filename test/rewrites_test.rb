@@ -561,6 +561,86 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.gap_for("render :text / render :nothing"), "is for a response that *is* markup"
   end
 
+  # **Two options the release now requires, both behaviour-preserving.** A `match` without `via:` is
+  # *removed* in 4.0, so the rung requires an edit and `via: :all` is the one that keeps the route
+  # answering what it answered — the narrowing is the application's, which is what the gap says. And a
+  # `button_to` built from a persisted record renders PATCH rather than POST from 7.0, where
+  # `method: :post` is the note's own answer and, on a button built from a path, the default it already
+  # had.
+  def test_a_route_names_its_verbs_and_a_button_names_its_method
+    routes = Rewrites.apply([
+      entry(subject: "match without via:", text: %(  match "/legacy" => "legacy#index"),
+        path: "config/routes.rb"),
+      entry(subject: "match without via:", text: %(  match "/a" => "b#c", as: :legacy),
+        path: "config/routes.rb"),
+      entry(subject: "match without via:", text: %(  match "/legacy" => "legacy#index", via: :get),
+        path: "config/routes.rb"),
+      entry(subject: "match without via:", text: %(  match "/legacy" => "legacy#index" do),
+        path: "config/routes.rb")
+    ])
+    views = Rewrites.apply([
+      entry(subject: "button_to", text: %(  <%= button_to "Delete", item %>),
+        path: "app/views/items/index.html.erb"),
+      entry(subject: "button_to", text: %(  <%= button_to "Delete", item, class: "btn" %>),
+        path: "app/views/items/index.html.erb"),
+      entry(subject: "button_to", text: %(  <%= button_to "Delete", item, method: :post %>),
+        path: "app/views/items/index.html.erb"),
+      entry(subject: "button_to", text: %(  <%= button_to "Delete", item_path(item) %>),
+        path: "app/views/items/index.html.erb"),
+      entry(subject: "button_to", text: %(  <%= button_to "Delete", item %><% end %>),
+        path: "app/views/items/index.html.erb")
+    ])
+
+    assert_equal [%(  match "/legacy" => "legacy#index", via: :all),
+      %(  match "/a" => "b#c", as: :legacy, via: :all)], routes.edits.map { |edit| edit["after"] }
+    assert_equal ["match without via:"] * 2, routes.left
+    assert_equal [%(  <%= button_to "Delete", item, method: :post %>),
+      %(  <%= button_to "Delete", item, class: "btn", method: :post %>)],
+      views.edits.map { |edit| edit["after"] },
+      "the declaration goes inside the ERB tag, not after it"
+    assert_equal 3, views.left.size,
+      "a button that already names the method, one built from a path, and a line with two tags"
+    assert_includes Rewrites.gap_for("match without via:"), "which verbs this route wants"
+    assert_includes Rewrites.gap_for("button_to"), "the default it already had"
+  end
+
+  # The setting moved rather than disappearing, and the name is the whole edit.
+  def test_the_translation_setting_moves_to_the_i18n_namespace
+    result = Rewrites.apply([
+      entry(subject: "config.action_view.raise_on_missing_translations",
+        text: "  config.action_view.raise_on_missing_translations = true",
+        path: "config/environments/development.rb")
+    ])
+
+    assert_equal ["  config.i18n.raise_on_missing_translations = true"],
+      result.edits.map { |edit| edit["after"] }
+    assert_includes Rewrites.gap_for("config.action_view.raise_on_missing_translations"),
+      "a custom I18n exception handler"
+  end
+
+  # **A call that wraps another, unwrapped.** The target is captured rather than named, because
+  # `config.logger` is the same edit, and the argument's extent is the family's careful half: an
+  # argument nested deeper than one level is left rather than cut in half.
+  def test_the_broadcast_logger_wrapper_is_unwrapped_and_a_deep_argument_is_left
+    result = Rewrites.apply([
+      entry(subject: "Rails.logger",
+        text: %(  Rails.logger.extend(ActiveSupport::Logger.broadcast(Logger.new("log/x.log")))),
+        path: "config/environments/production.rb"),
+      entry(subject: "Rails.logger",
+        text: %(  config.logger.extend(ActiveSupport::Logger.broadcast(other)) if ENV["X"]),
+        path: "config/environments/production.rb"),
+      entry(subject: "Rails.logger",
+        text: "  Rails.logger.extend(ActiveSupport::Logger.broadcast(a.b(c.d(e))))",
+        path: "config/environments/production.rb")
+    ])
+
+    assert_equal [%(  Rails.logger.broadcast_to(Logger.new("log/x.log"))),
+      %(  config.logger.broadcast_to(other) if ENV["X"])],
+      result.edits.map { |edit| edit["after"] }
+    assert_equal ["Rails.logger"], result.left
+    assert_includes Rewrites.gap_for("Rails.logger"), "nested deeper than one level"
+  end
+
   # End to end through the applier: the write is the applier's, so the line re-check, the sealed
   # path and the refusal reasons are the ones the service's own edits get.
   def test_the_rule_s_edit_is_written_by_the_applier_with_the_line_re_checked
