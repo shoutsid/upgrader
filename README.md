@@ -156,14 +156,19 @@ The pipeline has three stages that make the rest mean anything:
    rather than being a special case.
 10. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
     under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
-11. **repair** *(off unless `UPGRADER_REPAIR_ATTEMPTS` says otherwise)* — a step whose
-    baseline was green and whose suite went red gets that many attempts by an agent in the
-    worktree, each followed by the suite again. The agent may read and edit and nothing
-    else: the application executes on an era interpreter inside a container, so a shell in
-    its hand cannot run what it reasons about. **The verdict is still the suite's** — a
-    repaired step passes because the suite says so afterwards, never because a model said
-    it fixed something — and every attempt is a stage: the command, its exit code, the
-    agent's own closing words and the files it touched.
+11. **repair** *(off unless `UPGRADER_REPAIR_ATTEMPTS` says otherwise)* — in **two** places,
+    in this order. Before the move, when the **baseline** is red: nothing has been changed yet,
+    the failure is the application's own, and a red baseline makes everything after it
+    unmeasurable — which is how applications old enough to need this walk usually arrive (the
+    first real one's suite was 133 examples red on a Rails 4.0.0.rc1-era config). And after the
+    move, when the suite went red with a green baseline beneath it. Both are the same budget
+    and the same agent: it may read and edit and nothing else, because the application executes
+    on an era interpreter inside a container and a shell in its hand cannot run what it reasons
+    about. **The verdict is still the suite's** — a repaired step passes because the suite says
+    so afterwards, never because a model said it fixed something — and every attempt is a
+    stage: the command, its exit code, the agent's closing words and the files it touched. A
+    repaired baseline is named in the verdict, because "the suite was green before this step"
+    is false without that clause.
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is
 its own.
