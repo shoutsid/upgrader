@@ -326,7 +326,15 @@ module AgentsFyi
       def to_s
         lines = ["== #{@name || "#{@from_version} -> #{@to_version}"} (#{@repository})"]
         lines << "   worktree #{@worktree}" if @worktree
-        lines << "   interpreter #{@interpreter}#{@image ? ", image #{@image}" : ""}"
+        # The interpreter line, or the machine's own sentence when there is no interpreter
+        # to print: a record from the "no interpreter installed the bundle" path carries no
+        # interpreter (none ran) and would otherwise print the word with nothing after it —
+        # the empty-field-reads-as-fresh trap in a report meant to be evidence.
+        if @interpreter.to_s.empty?
+          lines << "   machine: #{@machine}" unless @machine.to_s.empty?
+        else
+          lines << "   interpreter #{@interpreter}#{@image.to_s.empty? ? "" : ", image #{@image}"}"
+        end
         lines << "   baseline: #{describe(@baseline)}"
         stages.each { |stage| lines << "   #{stage.stage}: #{describe(stage)}" }
         lines << "   applied #{@applied.size} edit(s), refused #{@refused.size}, " \

@@ -18,7 +18,8 @@ disagreeing, which is the failure this project has paid for more than once.
 | `plan` | resolves the application, reads its Rails release, and prints the steps and the split between mechanical and manual changes | nothing |
 | `preflight` | makes an old Gemfile installable at all — the `git://` protocol GitHub stopped accepting in 2022, a fork that has been deleted, a pin that cannot sit beside the framework — from the service's gem-migrations digest, on a working copy this tool owns | a copy this tool owns, and `preflight.json` where `--record` says |
 | `step` | runs the *first* release of that move end to end on a working copy this tool owns, and prints the record | a patch and the record, where `--record` says — and nothing to the corpus |
-| `serve` | the service: a durable ledger, the service's queue, one step per repository per cycle | the run record and, for a failure, a report |
+| `serve` | the service: a durable ledger, the service's queue, one step per repository per cycle — or, with `--walk`, rungs chained inside a cycle up to `--rungs` | the run record and, for a failure, a report |
+| `serve --walk --publish` | the unattended walk: an empty `--to` reads as the top of the service's ladder, and every passed rung becomes a branch and a pull request chained to the rung before it | the corpus, the branches and the pull requests |
 
 The default is `plan`, on the miner's reasoning: a tool whose first run writes into a
 shared corpus is a tool that discovers its mistakes in the corpus.
@@ -50,6 +51,9 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 | `--repos OWNER/NAME[@REF]` | a repository for `serve` to walk; repeatable. Empty means the service's queue is asked |
 | `--heartbeat FILE` | the file `serve` touches every cycle |
 | `--interval SECONDS` | how long `serve` waits between cycles |
+| `--walk` | `serve` only: chain rungs inside a cycle, and read an empty `--to` as the top of the service's ladder |
+| `--rungs N` | `serve --walk` only: how many rungs one cycle chains (default 3 — one rung is a bundle install and a suite, and a cycle that never returned would leave the heartbeat untouched for a day) |
+| `--publish` | `step`/`serve`: a passed rung becomes a branch and a pull request chained to the rung before it. Needs `UPGRADER_GITHUB_TOKEN` (a token with `contents: write` and `pull_requests: write`); the token is never written down, and every message on the way out has it replaced |
 | `--step-timeout SECONDS` | how long one suite may run |
 | `--cycles N` | stop `serve` after N cycles; the default is never |
 
@@ -133,17 +137,23 @@ The pipeline has three stages that make the rest mean anything:
 6. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
    edits, each with its line re-checked against the text the scan read. An edit whose
    line has moved is a refusal, not an edit.
-7. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
+7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
+   the step executes on and the Rails release it moves to, then the `move` verdicts
+   applied as Gemfile rewrites with their reasons. A pin the routing could not answer
+   about is *researched* first — this client can reach `index.rubygems.org` and the
+   service cannot — and the routing is asked again. `replace`/`remove` are the
+   preflight's; `blocked` and `unknown` are decisions, never a silent pass.
+8. **pin** — the Rails pin in the `Gemfile` is rewritten and `bundle update rails` runs.
    Only the meta-gem: an application that pins the framework as components has a
    different line for each one, and choosing which of them move together is a decision.
    That repository is refused, with a sentence saying what to do instead.
-8. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
+9. **rails** — `bin/rails app:update` (or `bundle exec rake rails:update` on an
    application old enough to have a `Rakefile` and no `bin/rails`). Added files are
    adopted; a file the application
    already owns keeps the application's version and the conflict is recorded.
    `config.load_defaults` is therefore never flipped, and that falls out of the rule
    rather than being a special case.
-9. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
+10. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
    under `RAILS_ENV=test`, with `--step-timeout` as the ceiling.
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is
