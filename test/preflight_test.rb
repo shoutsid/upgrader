@@ -257,6 +257,47 @@ class PreflightTest < Minitest::Test
     end
   end
 
+  # **The kind that keeps the gem and stops it loading at boot.** `capistrano`/`rvm-capistrano`
+  # in the *default* group make `Bundler.require(:default, Rails.env)` load a deploy recipe
+  # before anything boots, and capistrano 2.15.4's `Configuration.instance` answers
+  # `LoadError: Please require this file from within a Capistrano recipe` — measured on the
+  # first real application, where `rake db:create`, the suite and `bin/rails runner` all died
+  # on it. The rewrite appends one option and changes nothing else on the line.
+  def test_a_require_false_entry_appends_the_option_and_keeps_the_line_s_own
+    dir = app(gemfile: <<~GEM, lockfile: PLAIN_LOCKFILE)
+      source "https://rubygems.org"
+      gem "rails", "4.0.0.rc1"
+      gem 'capistrano'
+      gem "rvm-capistrano", group: :deploy
+    GEM
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "capistrano", kind: "require_false", replacement: nil),
+      entry(gem: "rvm-capistrano", kind: "require_false", replacement: nil)
+    ])
+    result = preflight(dir, corpus: corpus)
+
+    gemfile = read(dir, "Gemfile")
+    assert_includes gemfile, %(gem 'capistrano', require: false)
+    assert_includes gemfile, %(gem "rvm-capistrano", group: :deploy, require: false),
+      "the line's own options are kept"
+    assert_equal 2, result.repairs.size
+    assert_equal %w[capistrano rvm-capistrano], result.repairs.map(&:subject)
+  end
+
+  # A line that already states its own `require:` has made this decision for itself, and the
+  # skip says so rather than being silent.
+  def test_a_line_that_already_states_a_require_is_left_alone
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "capistrano", require: false\n),
+      lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "capistrano", kind: "require_false",
+      replacement: nil)])
+    result = preflight(dir, corpus: corpus)
+
+    assert_empty result.repairs
+    assert_equal 1, result.notes.size
+    assert_includes result.notes.first, "already states its own require:"
+  end
+
   # A removal takes the whole line, so what the line's options say does not change what
   # happens to it — this is the lighthouse's own shape: `gem "therubyracer", platforms:
   # :ruby` (the digest's `removed` entry) and `gem "turbo-sprockets-rails3", group:

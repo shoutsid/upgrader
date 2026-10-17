@@ -36,39 +36,26 @@ DATA_DIR="/tmp/agents-fyi-postgres"
 SOCKET_DIR="${AGENTS_FYI_PG_SOCKET:-/var/run/postgresql}"
 PORT=5432
 
-# The adapter and the usernames a `database.yml` declares, read by Ruby so that anchors,
-# aliases and `<%= ENV[...] %>` are handled the way Rails handles them. The ERB pass can
-# raise on a variable the walker did not set, so there is a plain-text fallback: this script
-# decides whether to start PostgreSQL, and a YAML the reader cannot parse should not be read
-# as "no database here".
+# The adapter, hosts, databases and credentials a `database.yml` declares, read by
+# `/usr/local/bin/agents-fyi-dbconfig` — a *file* rather than a heredoc here, because which
+# roles a database needs and with what password is a rule, and a rule inside a shell heredoc
+# is a rule no test can run (`test/dbconfig_test.rb` drives that file directly, one fixture
+# per shape an application actually has). The fallback below is for a context where the
+# reader is not installed: a plain-text scan that answers the two questions this script
+# cannot do without — which adapter, and which usernames.
+DBCONFIG="/usr/local/bin/agents-fyi-dbconfig"
 read_config() {
-    ruby - "$DATABASE_CONFIG" <<'RUBY' 2>/dev/null || true
-require "yaml"
-path = ARGV[0]
-adapter = nil
-users = []
-begin
-  require "erb"
-  config = YAML.unsafe_load(ERB.new(File.read(path)).result)
-  if config.is_a?(Hash)
-    config.each_value do |env|
-      next unless env.is_a?(Hash)
-      adapter ||= env["adapter"].to_s
-      users << env["username"].to_s unless env["username"].to_s.empty?
-    end
-  end
-rescue StandardError
-  text = begin
-    File.read(path)
-  rescue StandardError
-    ""
-  end
-  adapter = text[/adapter:\s*["']?([A-Za-z0-9_]+)/, 1]
-  users = text.scan(/username:\s*["']?([A-Za-z0-9_.-]+)/).flatten
-end
-puts "adapter:#{adapter}" unless adapter.to_s.empty?
-users.uniq.each { |user| puts "user:#{user}" }
-RUBY
+    if [ -x "$DBCONFIG" ]; then
+        ruby "$DBCONFIG" "$DATABASE_CONFIG" 2>/dev/null || true
+        return
+    fi
+    # A best-effort scan for a context without the reader: the adapter and the usernames,
+    # with the quotes and spaces stripped. It deliberately does not try to be the reader —
+    # that is a file with tests — and it never prints a line the caller could read as "no
+    # database" for a file it could not follow.
+    adapter="$(sed -n 's/^[[:space:]]*adapter:[[:space:]]*//p' "$DATABASE_CONFIG" 2>/dev/null | head -n1 | tr -d ' \"')"
+    [ -n "$adapter" ] && printf 'adapter:%s\n' "$adapter"
+    sed -n 's/^[[:space:]]*username:[[:space:]]*//p' "$DATABASE_CONFIG" 2>/dev/null | tr -d ' \"' | sed 's/^/user:/'
 }
 
 start_postgres() {
@@ -90,8 +77,12 @@ start_postgres() {
         fi
     fi
     if ! "$pg_bin/pg_ctl" -D "$DATA_DIR" status >/dev/null 2>&1; then
+        # **`listen_addresses=localhost`, not `127.0.0.1`**, and the difference is a
+        # `database.yml` that says `host: localhost`: libpq resolves that to either loopback
+        # family, and a server listening only on IPv4 is one a connection to `::1` cannot
+        # reach. Postgres reads `localhost` as both.
         if ! "$pg_bin/pg_ctl" -D "$DATA_DIR" -l "$DATA_DIR/server.log" \
-            -o "-c listen_addresses=127.0.0.1 -p $PORT -k $SOCKET_DIR" -w start >/dev/null; then
+            -o "-c listen_addresses=localhost -p $PORT -k $SOCKET_DIR" -w start >/dev/null; then
             echo "agents-fyi-services: pg_ctl could not start the server; see $DATA_DIR/server.log" >&2
             return 1
         fi
@@ -113,7 +104,33 @@ start_postgres() {
         "$pg_bin/createuser" -h 127.0.0.1 -p "$PORT" -U app --superuser "$role" >/dev/null 2>&1 || true
     done
 
+    # **The passwords the application's own file names, set on those roles.** The server
+    # authenticates over `trust`, so a password is not what lets a suite in — but a role that
+    # exists *without* the password its configuration names is a fact a deployment discovers
+    # only by switching the server to password authentication and watching a suite fail. One
+    # statement per credential removes that trap, and a password the line protocol cannot
+    # carry (one with a newline) was never emitted by the reader.
+    printf '%s\n' "$credentials" | while IFS= read -r credential; do
+        [ -n "$credential" ] || continue
+        user="${credential%%:*}"
+        password="${credential#*:}"
+        [ -n "$user" ] || continue
+        # `psql` quotes both values itself: `:"role"` is an identifier and `:'pw'` is a string
+        # literal, so a password with a quote or a backslash in it needs no escaping here —
+        # the shell never builds the SQL.
+        "$pg_bin/psql" -h 127.0.0.1 -p "$PORT" -U app -q -t \
+            -v "role=$user" -v "pw=$password" \
+            -c "ALTER ROLE :\"role\" WITH LOGIN PASSWORD :'pw'" >/dev/null 2>&1 || true
+    done
+
     echo "agents-fyi-services: PostgreSQL $("$pg_bin/postgres" --version | awk '{print $3}') on 127.0.0.1:$PORT and $SOCKET_DIR"
+    # What the file said, in the record: a suite that cannot reach its database is a failure
+    # whose cause is usually in this line.
+    echo "agents-fyi-services: database.yml: adapter ${adapter:-unread}, host ${host:-default}, database ${database:-unset}, user(s) ${users:-none (libpq default)}"
+    case "$host" in
+        ""|localhost|127.0.0.1|::1) ;;
+        *) echo "agents-fyi-services: note: database.yml names host $host, which is not this container — the suite will connect there, not to the server started here" ;;
+    esac
 }
 
 start_redis() {
@@ -129,11 +146,17 @@ start_redis() {
 }
 
 adapter=""
+host=""
+database=""
 users=""
+credentials=""
 if [ -f "$DATABASE_CONFIG" ]; then
     info="$(read_config)"
     adapter="$(printf '%s\n' "$info" | sed -n 's/^adapter://p' | head -n1)"
+    host="$(printf '%s\n' "$info" | sed -n 's/^host://p' | head -n1)"
+    database="$(printf '%s\n' "$info" | sed -n 's/^database://p' | head -n1)"
     users="$(printf '%s\n' "$info" | sed -n 's/^user://p')"
+    credentials="$(printf '%s\n' "$info" | sed -n 's/^credential://p')"
 fi
 
 # Redis first and unconditionally: it is cheap, most suites that use it use it only when

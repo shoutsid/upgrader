@@ -111,7 +111,14 @@ RUN gem install bundler -v "$BUNDLER" --no-document
 # and both carry the failure that found each of their paragraphs.
 COPY services.sh /usr/local/bin/agents-fyi-services
 COPY start.sh /usr/local/bin/agents-fyi-start
-RUN chmod +x /usr/local/bin/agents-fyi-services /usr/local/bin/agents-fyi-start
+# The `database.yml` reader is a file of its own rather than a heredoc inside `services.sh`,
+# and the reason is testability: which roles a database needs, and with what password, is a
+# rule — and a rule inside a shell heredoc is a rule no test can run. It is executed by the
+# *container's* Ruby, which is the era's, so it is written for Ruby 2.1 (`test/dbconfig_test.rb`
+# drives it on the host and the era images are the proof that 2.1 parses it).
+COPY dbconfig.rb /usr/local/bin/agents-fyi-dbconfig
+RUN chmod +x /usr/local/bin/agents-fyi-services /usr/local/bin/agents-fyi-start \
+    /usr/local/bin/agents-fyi-dbconfig
 
 # The two directories the container's own environment points at, created here for the *named
 # volume* case — Docker seeds an empty volume from the image, so these arrive with it. A

@@ -303,6 +303,17 @@ module AgentsFyi
       def unrewritable(line, kind:)
         return "spans several lines, so the one line this class sees is not the whole" if line.rstrip.end_with?(",")
         return nil if kind == "removed"
+        if kind == "require_false"
+          # A line that already names its own `require:` has made this decision for itself —
+          # either it is already `require: false` (nothing to do) or it asks for something
+          # this class will not second-guess. And the option-token check below deliberately
+          # does not apply to this kind: the rewrite *appends* an option, so a `group:` or a
+          # version on the line is kept, not dropped.
+          return "already states its own require:" if line.match?(/require:/)
+          return "carries a comment this class will not risk rewriting around" if line.match?(/\s#/)
+
+          return nil
+        end
         return "carries a comment this class will not risk rewriting around" if line.match?(/\s#/)
 
         # The option names, with quoted values removed first so a URL's `https:` is not
@@ -324,6 +335,11 @@ module AgentsFyi
       def rewrite(entry, line)
         indent = DECLARATION.match(line)&.[](1).to_s
         case entry["kind"].to_s
+        when "require_false"
+          # The gem stays where the application put it and gains one option: Bundler still
+          # installs it, and nothing requires it at boot. Appended rather than rebuilt, so a
+          # line carrying a `group:` or a version keeps both.
+          "#{line.rstrip}, require: false"
         when "replaced", "updated"
           replacement = entry["replacement"].to_s
           return nil if replacement.empty?

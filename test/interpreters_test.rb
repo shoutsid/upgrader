@@ -222,6 +222,20 @@ class InterpretersTest < Minitest::Test
     assert_match(/chown -R .*\/usr\/local\/bundle/, start,
       "the gem home is not handed to the walker, so a Rails 4.0.0.rc1 bundle cannot install")
 
+    # **The database reader is a file the image ships and the script calls**, because which
+    # roles a database needs — and with what password — is a rule a test has to be able to
+    # run. `services.sh` must call it by that path, and the Dockerfile must copy it there;
+    # the two are asserted together because a mismatch is a container that starts a database
+    # with no roles in it.
+    services = File.read(File.join(root, "images", "services.sh"), encoding: "utf-8")
+    assert_includes services, "/usr/local/bin/agents-fyi-dbconfig",
+      "the services script does not call the reader"
+    assert_includes dockerfile, "COPY dbconfig.rb /usr/local/bin/agents-fyi-dbconfig",
+      "the reader is never shipped into the image"
+    assert_includes services, "listen_addresses=localhost",
+      "the server does not listen on both loopback families, so `host: localhost` may not reach it"
+    assert_includes services, "ALTER ROLE", "the passwords the file names are never set"
+
     assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-fyi-services",
       "the image does not install the services script"
     assert_includes script, "initdb", "the services script starts no PostgreSQL"
