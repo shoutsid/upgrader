@@ -118,6 +118,11 @@ module AgentsFyi
                              "`where` chain",
         "scope :name, where(...)" => "a rule would need the second argument's extent to wrap it in " \
                                      "a lambda without cutting the line",
+        "render :text" => "the 4.1 migration is the *spelling* — `render :text => x` becomes " \
+                          "`render text: x`, which is the same response — and the choice between " \
+                          "`plain:`, `html:` and `body:` belongs to the 5.0 rung, where `:text` is " \
+                          "gone. A rule here would be choosing a content type for a response that " \
+                          "still has one",
         "assert_tag" => "a rule would need to know whether the test file is this application's or a " \
                         "gem's, because renaming an assertion helper is part of the move while " \
                         "weakening an assertion never is"

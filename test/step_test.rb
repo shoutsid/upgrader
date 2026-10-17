@@ -489,6 +489,35 @@ class StepTest < Minitest::Test
       "a gem the rung moved is still listed as needing a decision")
   end
 
+  # **A framework gem the pin itself moves is not a decision.** The routing reads recorded facts and
+  # has none for the framework's own components at the target release, so it answers `blocked` — "no
+  # recorded release of rails fits the target" — while the pin resolves exactly that, by naming those
+  # gems in its own `bundle update`. Measured on the first real rung: six such verdicts among sixteen
+  # decisions, every one of them handled. A decision that says the opposite of what happened is worse
+  # than no decision; a gem outside the framework's own set still travels as one.
+  def test_a_framework_gem_the_pin_moves_is_not_a_decision_and_another_gem_still_is
+    dir = track(app)
+    corpus = FakeCorpus.new(payload: plan, route: {
+      "ruby" => "2.1.10", "rails" => "5.0.0", "gems_read" => 2,
+      "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 2,
+                    "unknown" => 0 },
+      "gems" => [
+        { "name" => "rails", "version" => "4.2.11", "verdict" => "blocked",
+          "reason" => "requires actionpack = 4.2.11, and no recorded release of rails fits the target" },
+        { "name" => "who-knows", "version" => "1.0.0", "verdict" => "blocked",
+          "reason" => "requires railties ~> 3.1, and no recorded release of who-knows fits the target" }
+      ],
+      "stored" => false, "next_step" => "1 pin(s) cannot sit beside the target as they stand"
+    })
+
+    record = step(dir, corpus: corpus).run
+
+    subjects = record.decisions.map(&:subject)
+    assert_includes subjects, "who-knows 1.0.0", "a gem the pin does not move is still a decision"
+    refute_includes subjects, "rails 4.2.11",
+      "the pin moves the framework's own gems, so their verdict is not a decision"
+  end
+
   # A pin the routing could not answer about is researched — this client is the side that can
   # reach an index — and the routing is asked again. What the second answer still cannot
   # place is a decision naming the gem, never a silent pass.

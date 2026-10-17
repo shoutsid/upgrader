@@ -166,6 +166,15 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites::GENERIC_GAP, "carried as a located decision until one is written"
   end
 
+  # The gap for a change whose migration belongs to a *later* rung says so, which is the difference
+  # between "not automated yet" and "not this rung's business".
+  def test_the_render_text_gap_names_the_spelling_and_the_rung_the_choice_belongs_to
+    gap = Rewrites.gap_for("render :text")
+
+    assert_includes gap, "`render :text => x` becomes `render text: x`"
+    assert_includes gap, "belongs to the 5.0 rung"
+  end
+
   # **A rule whose change has left the ladder is inert and said to be.** Applying it would be
   # editing code for a change nobody documents any more.
   def test_a_rule_that_names_no_change_in_this_rung_is_reported_rather_than_used

@@ -739,6 +739,15 @@ module AgentsFyi
 
             applied << apply_gem_change(gem, step)
           when "blocked", "unknown"
+            # **A framework gem the pin itself moves is not a decision.** The routing reads recorded
+            # facts, and for the framework's own components it has none for the target release — so
+            # it answers `blocked` with "no recorded release of rails fits the target", while the pin
+            # resolves exactly that, by naming those gems in its own `bundle update` (measured: six
+            # such verdicts in the first real rung's sixteen decisions, all of them handled). The
+            # pin's stage is the evidence; a decision that says the opposite of what happened is
+            # worse than no decision.
+            next if pin_gems.include?(gem["name"].to_s)
+
             @decisions << routing_decision(gem)
           end
         end
