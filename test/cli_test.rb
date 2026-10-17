@@ -283,7 +283,7 @@ class CliTest < Minitest::Test
     assert_operator flags.length, :>, 5, "the usage text names no flags"
 
     valued = %w[--repo --ref --to --api --record --work --home --heartbeat --interval
-                --step-timeout --cycles --rungs --repos]
+                --step-timeout --cycles --rungs --repos --suite-env]
     flags.each do |flag|
       argv = ["serve", flag]
       argv << "1" if valued.include?(flag)

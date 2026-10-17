@@ -59,7 +59,7 @@ module AgentsFyi
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
-        research: nil, env: ENV, repair: nil, force: false
+        research: nil, env: ENV, repair: nil, force: false, suite_env: nil
       )
         @repository = repository
         @to = to
@@ -112,6 +112,15 @@ module AgentsFyi
         # a forced attempt is never read as an ordinary one. The loop never passes it: a walk
         # that ignored its own memory would re-derive every rung every cycle.
         @force = force
+        # **The application's own environment, when the deployment knows it.** A repository
+        # that carries no secrets is the ordinary case, not the exception: this walk's first
+        # real application reads `ENV["RAILS_SECRET_TOKEN"]` and that value lives in a
+        # git-ignored `config/application.yml` (figaro), so a fresh clone cannot boot its own
+        # suite. Nothing here invents a value — the file is the operator's, its lines are
+        # `KEY=VALUE`, and they are merged into every command that runs *the application*
+        # (the suite, the database preparation, the update, the boot) and never into the
+        # bundle or the machine commands, which are this tool's own.
+        @suite_env = read_env_file(suite_env)
       end
 
       def run
@@ -738,6 +747,39 @@ module AgentsFyi
 
       def lockfile_text = File.read(File.join(@worktree.root, "Gemfile.lock"), encoding: "utf-8")
 
+      # The environment an application-level command runs under: the test environment a Rails
+      # suite expects, the bundle this run installed, and the deployment's own values for the
+      # application on top. One method, so a command cannot be added with two of the three.
+      def application_env
+        @tests.machine_test_env.merge(@worktree.bundle_env).merge(@suite_env)
+      end
+
+      # `KEY=VALUE` lines, `#` comments and blank lines ignored, and a missing file is an
+      # empty environment rather than a failure — the operator named a path, and a path that
+      # is not there says "nothing to add" rather than "refuse to walk".
+      def read_env_file(path)
+        return {} if path.to_s.empty?
+
+        file = File.expand_path(path)
+        unless File.file?(file)
+          @out.puts("  suite env: #{file} is not a file, so no values were added") if @out
+          return {}
+        end
+
+        values = {}
+        File.read(file, encoding: "utf-8").each_line do |line|
+          text = line.strip
+          next if text.empty? || text.start_with?("#")
+
+          key, value = text.split("=", 2)
+          next if key.to_s.strip.empty? || value.nil?
+
+          values[key.strip] = value.strip.sub(/\A(["'])(.*)\1\z/m, "\\2")
+        end
+        @out.puts("  suite env: #{values.size} value(s) from #{file}") if @out && !values.empty?
+        values
+      end
+
       # The application's test database, prepared the way it documents. Best-effort by
       # design: `Record.verdict` names a failed preparation beside a suite failure rather
       # than making one out of it, because a suite that manages its own schema is a normal
@@ -767,8 +809,7 @@ module AgentsFyi
         end
 
         @out.puts("  database: #{argv.join(" ")}") if @out
-        stages << command(Record::DATABASE, argv, chdir: root,
-          env: @tests.machine_test_env.merge(@worktree.bundle_env))
+        stages << command(Record::DATABASE, argv, chdir: root, env: application_env)
         stages.last
       end
 
@@ -800,7 +841,7 @@ module AgentsFyi
       # decides whether that directory is on this host or inside the step's container.
       def run_suite(stages, stage)
         result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout,
-          env: @worktree.bundle_env, machine: @machine)
+          env: application_env, machine: @machine)
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
           exit_code: result.exit_code, seconds: result.seconds,
           output_tail: result.output_tail)
@@ -974,7 +1015,7 @@ module AgentsFyi
 
         before = self.class.dirty_paths(@worktree.root)
         stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
-          env: @worktree.bundle_env)
+          env: application_env)
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
       end
 
@@ -1071,8 +1112,7 @@ module AgentsFyi
         return unless File.executable?(File.join(@worktree.root, "bin/rails"))
 
         stages << command(Record::BOOT, ["bin/rails", "runner", "puts Rails.version"],
-          chdir: @worktree.root,
-          env: @tests.machine_test_env.merge(@worktree.bundle_env))
+          chdir: @worktree.root, env: application_env)
       end
 
       # The patch, for a person to apply. Untracked files are included, because

@@ -64,6 +64,13 @@ set -eu
 # rung before it, and `UPGRADER_GITHUB_TOKEN` must be set — the client reads that itself and
 # never writes it down (a token in a record is a token in a corpus).
 : "${UPGRADER_PUBLISH:=}"
+# **The application's own environment, when the deployment knows it.** A repository that
+# carries no secrets is the ordinary case: this walk's first real application reads
+# `ENV["RAILS_SECRET_TOKEN"]` from a git-ignored `config/application.yml`, so a fresh clone
+# cannot boot its own suite. The file is `KEY=VALUE` lines, it is mounted read-only from
+# wherever the operator keeps it, and the CLI merges it into every command that runs *the
+# application* — the suite, the database preparation, the update, the boot.
+: "${UPGRADER_SUITE_ENV_FILE:=}"
 # There is deliberately no log level, and this is a bug fixed rather than a preference.
 #
 # `--log-level "${UPGRADER_LOG_LEVEL}"` used to be passed from here to a CLI that accepts
@@ -153,6 +160,9 @@ if [ -n "${UPGRADER_RUNGS}" ]; then
 fi
 if [ -n "${UPGRADER_PUBLISH}" ]; then
     set -- "$@" --publish
+fi
+if [ -n "${UPGRADER_SUITE_ENV_FILE}" ]; then
+    set -- "$@" --suite-env "${UPGRADER_SUITE_ENV_FILE}"
 fi
 
 exec /app/bin/agents-fyi-upgrader serve \

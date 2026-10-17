@@ -103,7 +103,8 @@ class StepTest < Minitest::Test
   end
 
   def teardown
-    @dirs&.each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
+    (@dirs || []).concat(@dirs_to_clean || [])
+         .each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
   end
 
   def track(dir)
@@ -366,14 +367,15 @@ class StepTest < Minitest::Test
   end
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
-           reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil)
+           reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
+           suite_env: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
-      reuse: reuse, research: research, env: env, repair: repair
+      reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env
     )
   end
 
@@ -595,6 +597,38 @@ class StepTest < Minitest::Test
     assert_equal "5.0.0", evidence[:to_version]
     assert_equal "bundle exec rspec", evidence[:suite_command]
     assert_includes evidence[:output_tail], "1 examples, 1 failure"
+  end
+
+  # **The application's own environment, when the deployment knows it.** A repository that
+  # carries no secrets cannot boot its own suite — this walk's first real application reads
+  # `ENV["RAILS_SECRET_TOKEN"]` from a git-ignored `config/application.yml`, and a fresh clone
+  # therefore fails its baseline for ever. The file is `KEY=VALUE` lines; the values reach the
+  # commands that run *the application* and never the ones that are this tool's own.
+  def test_a_suite_env_file_reaches_the_application_s_commands_and_not_the_bundle
+    dir = track(app)
+    File.write(File.join(dir, "config"), "") if File.exist?(File.join(dir, "config"))
+    env_file = File.join(Dir.mktmpdir, "suite.env")
+    @dirs_to_clean ||= []
+    @dirs_to_clean << File.dirname(env_file)
+    File.write(env_file, <<~ENV)
+      # the application's secrets, from wherever the operator keeps them
+      RAILS_SECRET_TOKEN='a token for this run'
+      SECRET_WITH_EQUALS=pa=ss
+
+      BLANK_IGNORED=1
+    ENV
+    tests = CapturingTests.new
+    runner = FakeRunner.new
+
+    step(dir, tests: tests, runner: runner, suite_env: env_file).run
+
+    assert_equal "a token for this run", tests.envs.first["RAILS_SECRET_TOKEN"],
+      "the suite did not receive the application's environment"
+    assert_equal "pa=ss", tests.envs.first["SECRET_WITH_EQUALS"],
+      "a value with an `=` in it must survive the split"
+    bundle_env = runner.envs.map { |_command, env| env }.first || {}
+    refute bundle_env.key?("RAILS_SECRET_TOKEN"),
+      "this tool's own commands must not be handed the application's secrets"
   end
 
   # The install is what makes the baseline a measurement. Without it the suite runs against

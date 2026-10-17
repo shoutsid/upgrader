@@ -236,6 +236,19 @@ class InterpretersTest < Minitest::Test
       "the server does not listen on both loopback families, so `host: localhost` may not reach it"
     assert_includes services, "ALTER ROLE", "the passwords the file names are never set"
 
+    # **A rebuild cleans up the image it supersedes, and `prune` cleans up the cache.** A
+    # `docker build -t` untags the image the tag pointed at rather than deleting it, and this
+    # script rebuilds six images at a time: five rebuilds in one session left 8.5 GB of build
+    # cache here and a stack of untagged layers. `build` therefore removes exactly the id it
+    # replaced (`docker image prune` would take every other project's dangling images on the
+    # same daemon with it) and says what is left; `prune` reclaims the cache explicitly.
+    assert_includes builder, 'docker image rm "$previous"',
+      "a rebuild no longer removes the image it superseded"
+    assert_match(/^prune\(\) \{/m, builder, "the script has no prune subcommand")
+    assert_includes builder, "docker builder prune -f",
+      "prune does not reclaim the build cache, which is where a rebuild's cost actually lands"
+    assert_includes builder, "prune)", "prune is not reachable from the command line"
+
     assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-fyi-services",
       "the image does not install the services script"
     assert_includes script, "initdb", "the services script starts no PostgreSQL"

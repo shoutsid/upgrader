@@ -263,6 +263,29 @@ class RepairTest < Minitest::Test
     assert_includes result.attempts.first.command, "bytes"
   end
 
+  # **The environment the live path hands this class is `ENV`, not a Hash.** `ENV` answers
+  # `[]`, `each` and `to_h` but not `merge`, and its class is `Object` — so the first live
+  # repair died with `undefined method 'merge' for #<Object:0x...>`, a sentence that names
+  # neither the environment nor the method's real subject. Every test here had passed a Hash;
+  # this one passes what production passes.
+  def test_the_agent_runs_when_the_environment_is_the_process_s_own
+    script = File.join(temp_home, "agent.sh")
+    seen = File.join(temp_home, "seen.txt")
+    File.write(script, "#!/bin/sh\nprintf '%s' \"$OPENCODE_CONFIG\" > #{seen}\nexit 0\n")
+    File.chmod(0o755, script)
+
+    result = Repair.new(
+      root: @root, evidence: evidence,
+      budget: budget(attempts: 1).merge(binary: script, model: ""),
+      env: ENV, out: nil, rerun: -> { FakeSuite.new(ok: true) },
+      config_dir: File.join(temp_home, "repair")
+    ).run
+
+    assert result.repaired, result.inspect
+    assert File.exist?(seen), "the agent did not run at all"
+    assert_includes File.read(seen), "opencode.json"
+  end
+
   # --- the config file --------------------------------------------------------------------
 
   # **The config is named to the agent, not left beside the application.** Measured on the

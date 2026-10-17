@@ -56,7 +56,7 @@ module AgentsFyi
                      step_timeout: 3600, out: $stdout, ledger: nil, cycles: nil,
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
-                     publish_class: Publish)
+                     publish_class: Publish, suite_env: nil)
         @api = api
         @home = home
         @to = to
@@ -72,6 +72,9 @@ module AgentsFyi
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
         @publish_class = publish_class
+        # The deployment's own values for the applications it walks, passed to every step this
+        # loop makes (see `Step#read_env_file` for the shape and the reason).
+        @suite_env = suite_env
         @heartbeat = heartbeat || File.join(home, "heartbeat")
         # `Array(...)` rather than the parameter's own default, and it is not cosmetic:
         # `repos:` defaults to `[]` so a caller may leave it out, but the CLI passes the
@@ -256,6 +259,7 @@ module AgentsFyi
       def run_one(repository, ref)
         record = @step_class.new(
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
+          suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true
         ).run

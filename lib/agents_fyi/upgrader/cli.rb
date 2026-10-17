@@ -35,10 +35,11 @@ module AgentsFyi
                                     [--record DIR]
           agents-fyi-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--record DIR] [--work DIR] [--force] [--publish]
+                                    [--suite-env FILE]
           agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] [--to VERSION] [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
-                                    [--rungs N] [--publish]
+                                    [--rungs N] [--publish] [--suite-env FILE]
 
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
@@ -169,7 +170,8 @@ module AgentsFyi
           repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
           home: options[:home], out: @out, work: options[:work], record: options[:record],
           ledger: Ledger.load(File.join(options[:home], "ledger.json")),
-          suite_timeout: options[:step_timeout], force: options[:force]
+          suite_timeout: options[:step_timeout], force: options[:force],
+          suite_env: options[:suite_env]
         ).run
         return step_status(record) unless options[:publish]
 
@@ -208,7 +210,8 @@ module AgentsFyi
           api: options[:api], home: options[:home], heartbeat: options[:heartbeat],
           to: options[:to], repos: options[:repos], interval: options[:interval],
           step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
-          walk: options[:walk], publish: options[:publish], rungs: options[:rungs]
+          walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
+          suite_env: options[:suite_env]
         ).run
       end
 
@@ -255,6 +258,9 @@ module AgentsFyi
           opts.on("--heartbeat FILE", "the file `serve` touches every cycle") { |v| options[:heartbeat] = v }
           opts.on("--interval SECONDS", Integer, "how long `serve` waits between cycles") { |v| options[:interval] = v }
           opts.on("--step-timeout SECONDS", Integer, "how long a suite may run") { |v| options[:step_timeout] = v }
+          opts.on("--suite-env FILE", "KEY=VALUE lines merged into every command that runs the " \
+                                      "application — for a repository whose secrets are not in " \
+                                      "it (a git-ignored `config/application.yml`, a `.env`)") { |v| options[:suite_env] = v }
           opts.on("--publish", "push a branch and open (or update) a pull request for a " \
                                "passed step, chained to the previous rung's branch " \
                                "(needs $#{Publish::ENV_TOKEN})") { |v| options[:publish] = v }

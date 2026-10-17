@@ -187,7 +187,12 @@ module AgentsFyi
         argv = [@binary, "run", "--standalone", "--agent", @agent]
         argv += ["--model", @model] unless @model.empty?
         argv << prompt
-        env = @env.merge("OPENCODE_CONFIG" => config_path)
+        # **`to_h`, because the live caller hands this `ENV`.** `ENV` answers `[]`, `each` and
+        # `to_h` but *not* `merge`, and its class is `Object` — so the failure read
+        # `undefined method 'merge' for #<Object:0x...>`, which names neither the environment
+        # nor the method's real subject. Every test had passed a Hash, which is why the first
+        # live repair was where this was found.
+        env = @env.to_h.merge("OPENCODE_CONFIG" => config_path)
         return @runner.call(argv, chdir: @root, timeout: @timeout, env: env) if @runner
 
         collect(argv, env)
