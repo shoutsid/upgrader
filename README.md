@@ -54,6 +54,7 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 | `--walk` | `serve` only: chain rungs inside a cycle, and read an empty `--to` as the top of the service's ladder |
 | `--rungs N` | `serve --walk` only: how many rungs one cycle chains (default 3 — one rung is a bundle install and a suite, and a cycle that never returned would leave the heartbeat untouched for a day) |
 | `UPGRADER_REPAIR_ATTEMPTS` | the repair budget, and the only setting here that spends money. Empty or 0 is off (the library's default); a deployment turns it on with a number, and an agent working in the step's tree gets that many attempts. It needs an authenticated model — the agent uses opencode's own configuration (`UPGRADER_REPAIR_MODEL` pins which model is asked) |
+| `--suite-env FILE` | `step`/`serve`: `KEY=VALUE` lines merged into every command that runs *the application* (the suite, the database preparation, the update, the boot) — for a repository whose secrets are not in it, which is the ordinary case: a git-ignored `config/application.yml`, a `.env` |
 | `--publish` | `step`/`serve`: a passed rung becomes a branch and a pull request chained to the rung before it. Needs `UPGRADER_GITHUB_TOKEN` (a token with `contents: write` and `pull_requests: write`); the token is never written down, and every message on the way out has it replaced |
 | `--step-timeout SECONDS` | how long one suite may run |
 | `--cycles N` | stop `serve` after N cycles; the default is never |
