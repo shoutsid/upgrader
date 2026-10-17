@@ -1305,6 +1305,50 @@ class StepTest < Minitest::Test
     assert_empty record.applied, "the gem was already declared, so there was nothing to write"
   end
 
+  # **A bridge whose evidence is the rung.** `bootsnap`'s evidence does not exist at apply time —
+  # `app:update` writes `require "bootsnap/setup"` into `config/boot.rb` *after* the install — so the
+  # rung is what the declaration rests on, and the pin's `bundle update` is the install that follows it.
+  # Nothing is located: the change has no pattern for the scan to find, which is why the scan's list
+  # cannot be the gate for every bridge.
+  def test_a_bridge_whose_evidence_is_the_rung_declares_the_gem_with_nothing_located
+    dir = track(app)
+    with_source(dir, "config/boot.rb", %(ENV["BUNDLE_GEMFILE"] ||= File.expand_path("../Gemfile", __dir__)\n))
+    payload = plan(changes: [change(subject: "bootsnap", kind: "moved", source: "5.2",
+      replacement: nil, note: "app:update writes Bootsnap into config/boot.rb")])
+    corpus = FakeCorpus.new(payload: payload)
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    assert_includes File.read(File.join(dir, "Gemfile")), "gem 'bootsnap'"
+    assert_empty record.decisions, "the declaration is the change's whole fix"
+    applied = record.stages.find { |stage| stage.stage == "apply" }
+    assert_includes applied.output_tail, "1 gem(s) declared for a change (bootsnap)"
+  end
+
+  # **A bridge whose evidence is a file the application owns.** `config/application.rb` asking for
+  # `sprockets/railtie` is what says this application still uses the asset pipeline, and Rails 7 no
+  # longer depends on the gem. The evidence is matched against the file's own bytes rather than a masked
+  # line, because what is being looked for is *inside a string* — which is what the mask blanks. An
+  # application that has dropped the line keeps the change as a decision.
+  def test_a_bridge_whose_evidence_is_the_tree_reads_it_and_leaves_an_application_without_it
+    payload = plan(changes: [change(subject: "sprockets-rails", kind: "moved", source: "7.0",
+      replacement: nil, note: "Rails 7 does not depend on it")])
+
+    uses_pipeline = track(app)
+    with_source(uses_pipeline, "config/application.rb", %(require "rails"\nrequire "sprockets/railtie"\n))
+    record = step(uses_pipeline, corpus: FakeCorpus.new(payload: payload),
+      applier: AgentsFyi::Upgrader::Applier).run
+    assert_includes File.read(File.join(uses_pipeline, "Gemfile")), "gem 'sprockets-rails'"
+
+    plain = track(app)
+    with_source(plain, "config/application.rb", %(require "rails"\n))
+    record = step(plain, corpus: FakeCorpus.new(payload: payload),
+      applier: AgentsFyi::Upgrader::Applier).run
+    refute_includes File.read(File.join(plain, "Gemfile")), "sprockets-rails"
+    assert_equal ["sprockets-rails"], record.decisions.map(&:subject)
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

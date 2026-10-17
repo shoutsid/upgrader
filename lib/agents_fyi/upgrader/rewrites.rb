@@ -137,7 +137,18 @@ module AgentsFyi
       # declared at the top level is installed in production, so `rails-controller-testing` belongs in
       # the block that declares `:test` — and a Gemfile with no such block is left as a decision
       # rather than guessed at.
-      Bridge = Struct.new(:subject, :gems, :group, :why, keyword_init: true)
+      # **A file that says a bridge applies.** A bridge's usual evidence is a call site the scan located;
+      # `sprockets-rails`'s is not, because no pattern in the ladder locates it — the application's own
+      # `require "sprockets/railtie"` is the fact, and it is a fact about the tree.
+      #
+      # The pattern is matched against the file's own bytes rather than a masked line, and that is the
+      # opposite of every rule here for a reason: what is being looked for is usually *inside a string*
+      # (`require "bootsnap/setup"`, `require "sprockets/railtie"`), which is exactly what the mask
+      # blanks. A comment that mentions the name is therefore evidence too, and the cost of that false
+      # positive is a gem declared for an application that does not load it.
+      Evidence = Struct.new(:path, :pattern, :why, keyword_init: true)
+
+      Bridge = Struct.new(:subject, :gems, :group, :why, :evidence, keyword_init: true)
 
       # The changes whose note's own replacement is a gem, and where the gem is the **whole** of the
       # fix: the call sites keep working and nothing else is owed. That distinction is what keeps
@@ -172,7 +183,28 @@ module AgentsFyi
         Bridge.new(subject: "to_xml", gems: %w[activemodel-serializers-xml], group: nil,
           why: "the serialiser left the framework; the gem is the same one"),
         Bridge.new(subject: "Active Storage variants", gems: %w[image_processing], group: nil,
-          why: "image_processing is what the macros are built on now; which processor it uses behind that is the application's configuration")
+          why: "image_processing is what the macros are built on now; which processor it uses behind that is the application's configuration"),
+
+        # **Two bridges whose evidence is the tree rather than a call site**, because the change has no
+        # pattern for the scan to find. Each is conditional in a way that a wrong guess would make worse
+        # than leaving it: `bootsnap` is *required* by a file `app:update` wrote, and `sprockets-rails`
+        # is only wanted by an application that still asks for the pipeline.
+        # **`:rung` is evidence too, and it is the only kind that fits here.** `app:update` writes the
+        # `require` into `config/boot.rb` *after* the install, so the tree cannot say it yet — and the
+        # gem has to be declared *before* the pin's install, or the suite that runs after `app:update`
+        # boots into a `LoadError`. What is true at apply time is the rung: 5.2's `app:update` writes
+        # that line, so an application walking this rung needs the gem. An application that already has
+        # it, or that never walks this rung, is not touched.
+        Bridge.new(subject: "bootsnap", gems: %w[bootsnap], group: nil, evidence: :rung,
+          why: "this rung's `app:update` writes `require \"bootsnap/setup\"` into config/boot.rb, and " \
+               "the gem has to be declared before the install that follows or the application boots " \
+               "into a LoadError"),
+        Bridge.new(subject: "sprockets-rails", gems: %w[sprockets-rails], group: nil,
+          why: "the application still asks for the asset pipeline's railtie, and Rails 7 no longer " \
+               "depends on the gem",
+          evidence: Evidence.new(path: "config/application.rb", pattern: /sprockets\/railtie/,
+            why: "config/application.rb requires sprockets/railtie, so this application is still " \
+                 "using the asset pipeline"))
       ].freeze
 
       Result = Struct.new(:edits, :applied, :left, :scaffolds, keyword_init: true) do
@@ -225,10 +257,6 @@ module AgentsFyi
         # **The gaps that name a mechanism rather than an edit.** Four of the twenty changes with no
         # call site are not "no rule yet": they need something this tool does not have, and saying which
         # is the point of a gap.
-        "bootsnap" => "`app:update` rewrites `config/boot.rb` to require it, so the gem has to be " \
-                      "declared — and no call site points at it. This is the bridge the tool does not " \
-                      "have yet: one driven by the *plan* rather than by the scan, with a condition " \
-                      "over the tree (does `config/boot.rb` require it) instead of a located line",
         "Spring" => "the gem has to *move* (3.0.0 or newer), and a pin that must move is the " \
                     "routing's answer rather than an edit — `POST /releases/route` is what says " \
                     "whether a recorded release fits. An older Spring raises " \
@@ -246,10 +274,6 @@ module AgentsFyi
                                 "*before* `config/initializers/secret_token.rb` goes, or every session " \
                                 "in flight is invalidated. The ordering is the decision, which is why " \
                                 "this is a gap and not a scaffold",
-        "sprockets-rails" => "an application still using the asset pipeline has to add the gem, and " \
-                             "*whether this one does* is a fact about the application rather than " \
-                             "about a line — the same shape as a bridge, with a condition no scan " \
-                             "can answer",
         "schema.rb column order" => "informational: the dump's order changes and a `schema.rb` diff " \
                                     "is large and meaningless for one rung. `structure.sql` preserves " \
                                     "the exact order if the file has to stay quiet",
@@ -361,6 +385,13 @@ module AgentsFyi
                           "nested deeper than one level is left rather than cut in half, and " \
                           "`Rails.autoloaders.log!` — the other half of the same release's note — is " \
                           "a different edit",
+        "bootsnap" => "the bridge is driven by the *tree* rather than by a located line: it declares " \
+                      "the gem when `config/boot.rb` requires `bootsnap/setup`, which is what " \
+                      "`app:update` writes. An application whose boot file does not mention it is left " \
+                      "alone",
+        "sprockets-rails" => "the bridge declares the gem when `config/application.rb` requires " \
+                             "`sprockets/railtie` — the line a pre-7.0 generated application has. An " \
+                             "application that has dropped the pipeline is left alone",
         "match without via:" => "`via: :all` is what preserves the behaviour, and the deprecation " \
                                 "exists because a route that answers every verb is usually not what " \
                                 "was meant — which verbs this route wants is the application's. A " \
@@ -957,13 +988,33 @@ module AgentsFyi
         Result.new(edits: edits, applied: applied, left: left, scaffolds: scaffolds.uniq)
       end
 
-      # **The bridges for the changes the scan located.** Driven by what the scan found rather than by
-      # the rung's whole change list, because a bridge is about call sites: a change this application
-      # does not use needs no gem declared for it, and declaring one would be installing a library
-      # nothing loads.
-      def self.bridges(manual, bridges: BRIDGES)
-        subjects = Array(manual).map { |entry| entry["subject"].to_s }.uniq
-        bridges.select { |bridge| subjects.include?(bridge.subject) }
+      # **The bridges this step should declare**, and the two selectors are the two kinds of evidence.
+      #
+      # **Three kinds of evidence, and each is a different question.** The rung's own change list is the
+      # gate for all of them — a bridge declares a gem for a change *this step* carries, never for one
+      # another rung owns:
+      #
+      # * a call site the scan *located* (`evidence` nil) — a change the application does not use needs
+      #   no gem declared for it, and declaring one would be installing a library nothing loads;
+      # * the rung itself (`:rung`) — for a change whose fix is a declaration and whose evidence does not
+      #   exist yet, because `app:update` is what writes it;
+      # * a file in the tree (`Evidence`) — for a change the application's own configuration answers.
+      #
+      # **The rung is a gate, not a convenience**: a bridge whose subject is not in this step's change
+      # list is a gem declared for a change the step is not making. `changes` is required for that reason
+      # — a caller with only a located list has not said which rung it is walking.
+      def self.bridges(manual, changes:, tree: {}, bridges: BRIDGES)
+        located = Array(manual).map { |entry| entry["subject"].to_s }.uniq
+        in_rung = Array(changes).map { |change| change["subject"].to_s }.uniq
+        bridges.select do |bridge|
+          next false unless in_rung.include?(bridge.subject)
+
+          case bridge.evidence
+          when :rung then true
+          when Evidence then tree[bridge.evidence.path].to_s.match?(bridge.evidence.pattern)
+          else located.include?(bridge.subject)
+          end
+        end
       end
 
       # The rules that name no change in the rung's own plan: a rule that outlives its change is dead

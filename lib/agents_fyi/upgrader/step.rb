@@ -1044,7 +1044,9 @@ module AgentsFyi
         created = write_scaffolds(rules.scaffolds)
         # **The changes whose fix is a gem**, applied to the call sites the scan located: the call
         # sites need no edit, so what handles them is a declaration in the application's Gemfile.
-        declared, bridged = declare_bridges(Rewrites.bridges(manual))
+        declared, bridged = declare_bridges(
+          Rewrites.bridges(manual, changes: step["changes"] || [], tree: bridge_evidence)
+        )
         handled = rules.applied + bridged
         decisions = decisions_for(step, scan).reject do |decision|
           handled.include?(decision.subject.to_s)
@@ -1135,7 +1137,12 @@ module AgentsFyi
             index, indent = at
             line = lines[index].to_s
             inserted = "#{indent}gem '#{gem}'\n"
-            lines[index] = bridge.group ? "#{inserted}#{line}" : "#{line}#{inserted}"
+            # **A declaration at the end of the file needs a separator and one before a block does
+            # not**: the lines came from `split("\n", -1)`, so they carry no terminator — appending
+            # `gem 'x'` to the last line produced `gem "rails", "4.2.11"gem 'x'`, which is a Gemfile
+            # bundler refuses. Inserting *before* a line is fine, because `inserted` ends in its own
+            # newline.
+            lines[index] = bridge.group ? "#{inserted}#{line}" : "#{line}\n#{inserted}"
             repairs << Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line,
               after: lines[index], subject: bridge.subject, note: bridge.why)
             handled << bridge.subject
@@ -1196,6 +1203,18 @@ module AgentsFyi
       # or a declaration at the top level.
       def last_line(lines)
         lines.rindex { |line| !line.strip.empty? } || 0
+      end
+
+      # **The evidence a plan-driven bridge needs**: the files this tool's own bridge table names, read
+      # from the working copy. Read here rather than up front because the whole point of `bootsnap`'s
+      # evidence is that `app:update` is what writes it — and only the named paths, because a tool that
+      # read the tree would be reading everything.
+      def bridge_evidence
+        Rewrites::BRIDGES.filter_map { |bridge| bridge.evidence if bridge.evidence.is_a?(Rewrites::Evidence) }
+          .to_h do |evidence|
+          path = File.join(@worktree.root, evidence.path)
+          [evidence.path, File.file?(path) ? File.read(path, encoding: "utf-8") : ""]
+        end
       end
 
       # The file contents the scan sent, by path and line — what a rule that reads more than its own

@@ -453,13 +453,22 @@ class RewritesTest < Minitest::Test
   # change has left the ladder too.
   def test_a_bridge_is_selected_by_what_the_scan_located_and_counts_as_coverage
     located = [entry(subject: "assigns / assert_template", text: "  expect(assigns(:post))")]
-    bridges = Rewrites.bridges(located)
+    rung = [{ "subject" => "assigns / assert_template" }, { "subject" => "bootsnap" }]
+    bridges = Rewrites.bridges(located, changes: rung)
 
-    assert_equal ["assigns / assert_template"], bridges.map(&:subject)
+    assert_equal ["assigns / assert_template", "bootsnap"], bridges.map(&:subject),
+      "the located change and the one whose evidence is the rung itself — two questions, two answers"
     assert_equal ["rails-controller-testing"], bridges.first.gems
     assert_equal :test, bridges.first.group,
       "a controller-testing helper declared at the top level is installed in production"
-    assert_empty Rewrites.bridges([entry(subject: "MultiJson", text: "  x = MultiJson.dump(a)")])
+
+    # **The rung is a gate**: a located change this rung does not carry is nobody's bridge — and a
+    # bridge whose evidence is the rung needs no located line at all, which is the whole point of it.
+    assert_equal ["bootsnap"],
+      Rewrites.bridges([entry(subject: "MultiJson", text: "  x = MultiJson.dump(a)")],
+        changes: rung).map(&:subject),
+      "MultiJson has no bridge, and bootsnap is selected by the rung alone"
+    assert_empty Rewrites.bridges(located, changes: []), "no plan, no bridge"
     assert_includes Rewrites.inert([{ "subject" => "MultiJson" }]), "assigns / assert_template"
   end
 
