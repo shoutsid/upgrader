@@ -538,25 +538,38 @@ module AgentsFyi
         route = research(corpus, route, ruby: ruby, rails: rails, stages: stages) if
           route.dig("counts", "unknown").to_i.positive?
 
-        moves = route.fetch("gems", []).select { |gem| gem["verdict"] == "move" }
-        applied = moves.filter_map { |gem| apply_move(gem, step) }
+        applied = []
         route.fetch("gems", []).each do |gem|
-          next unless decision_worthy?(gem)
+          case gem["verdict"]
+          when "move"
+            applied << apply_gem_change(gem, step)
+          when "replace", "remove"
+            # The preflight applies the digest's *mechanical* entries, and it must not apply
+            # the others: an entry that can only move once Rails itself has moved is exactly
+            # the one that blocks the pin when the move is finally made — measured on the
+            # first real walk, where `simple_form 3.0.0.rc` (the git pin) requires
+            # `actionpack < 4.1` and `bundle update rails` answered "could not find compatible
+            # versions for actionpack". This pass runs after the baseline, at the rung where
+            # the move is being made, so it is where that entry belongs.
+            next if already_applied?(gem)
 
-          @decisions << Record::Decision.new(
-            path: "Gemfile.lock", line: nil, subject: "#{gem["name"]} #{gem["version"]}",
-            reason: gem["reason"] || gem["note"], kind: gem["verdict"],
-            replacement: gem["to"] || gem["replacement"], source: "GET /releases/route"
-          )
+            applied << apply_gem_change(gem, step)
+          when "blocked", "unknown"
+            @decisions << routing_decision(gem)
+          end
         end
+        applied = applied.compact
 
         stages << Record::Command.new(
           stage: Record::GEMS,
           command: "gems: #{route.dig("counts", "move")} move(s), " \
                    "#{route.dig("counts", "unknown")} unknown, #{applied.size} applied",
           ran: true, exit_code: 0, seconds: 0.0,
-          output_tail: (moves.map { |gem|
-                          "#{gem["name"]} #{gem["version"]} -> #{gem["to"]}: #{gem["reason"]}"
+          output_tail: (route.fetch("gems", []).reject { |gem| gem["verdict"] == "keep" }.map { |gem|
+                          heading = "#{gem["verdict"].upcase} #{gem["name"]} #{gem["version"]}"
+                          heading += " -> #{gem["to"]}" if gem["to"]
+                          heading += " -> #{gem["replacement"]} #{gem["requirement"]}" if gem["replacement"]
+                          "#{heading}: #{gem["reason"] || gem["note"]}"
                         } + [route.fetch("next_step", "").to_s]).first(20).join("\n")
         )
         @out.puts("  gems: #{route.dig("counts", "move")} move(s), " \
@@ -567,6 +580,24 @@ module AgentsFyi
           ran: false, exit_code: nil, seconds: 0.0,
           output_tail: "the routing read failed: #{e.message}")
         []
+      end
+
+      # A digest move the preflight already made. The digest is keyed by gem *name* while the
+      # lockfile still pins the old release, so a route asked after the preflight still answers
+      # `replace` for a line that no longer exists — and recording the same move twice would
+      # read as two.
+      def already_applied?(gem)
+        @applied.any? { |edit| edit.subject.to_s == gem["name"].to_s }
+      end
+
+      def routing_decision(gem, reason: nil)
+        Record::Decision.new(
+          path: "Gemfile.lock", line: nil,
+          subject: "#{gem["name"]} #{gem["version"]}".strip,
+          reason: (reason || gem["reason"] || gem["note"]).to_s,
+          kind: gem["verdict"], replacement: gem["to"] || gem["replacement"],
+          source: "GET /releases/route"
+        )
       end
 
       # Which routing verdicts a reader has to act on. The digest's `replace`/`remove` are the
@@ -580,39 +611,49 @@ module AgentsFyi
         %w[replace remove].include?(gem["verdict"]) && gem["mechanical"] != true
       end
 
-      # One `move`, as a Gemfile rewrite: the same line-level caution the preflight takes, and
-      # the same refusal to touch a declaration it cannot rewrite in full. A gem that is only
-      # in the lockfile cannot be moved from the Gemfile at all, and that is a decision.
-      def apply_move(gem, step)
+      # One gem change, as a Gemfile rewrite: the same line-level caution the preflight takes,
+      # and the same refusal to touch a declaration it cannot rewrite in full. A `move`'s target
+      # is the release the routing named (`~> <to>`); a digest entry's is the requirement the
+      # digest states — one rule, because they are the same edit with a different target.
+      def apply_gem_change(gem, step)
         name = gem["name"].to_s
-        target = gem["to"].to_s
+        replacement = gem["replacement"].to_s.empty? ? name : gem["replacement"].to_s
+        requirement = gem["to"].to_s.empty? ? gem["requirement"].to_s : "~> #{gem["to"]}"
         found = declaration_line(name)
         if found.nil?
-          @decisions << Record::Decision.new(
-            path: "Gemfile.lock", line: nil, subject: name,
-            reason: "#{gem["reason"]}; #{name} is not declared in the Gemfile, so whatever " \
-                    "pulls it in is the gem whose line moves",
-            kind: "move", replacement: target, source: "GET /releases/route"
-          )
+          @decisions << routing_decision(gem, reason:
+            "#{gem["reason"] || gem["note"]}; #{name} is not declared in the Gemfile, so " \
+            "whatever pulls it in is the gem whose line moves")
           return nil
         end
 
         index, line = found
-        after = "#{line[/\A\s*/]}gem \"#{name}\", \"~> #{target}\""
+        after =
+          if gem["verdict"] == "remove"
+            ""
+          elsif requirement.empty?
+            "#{line[/\A\s*/]}gem \"#{replacement}\""
+          else
+            "#{line[/\A\s*/]}gem \"#{replacement}\", \"#{requirement}\""
+          end
         return nil if after == line
 
         lines = File.binread(File.join(@worktree.root, "Gemfile")).split("\n", -1)
         unless lines[index] == line
-          @decisions << Record::Decision.new(path: "Gemfile", line: index + 1, subject: name,
-            reason: "the declaration moved while this step was running, so nothing was rewritten",
-            kind: "move", replacement: target, source: "GET /releases/route")
+          @decisions << routing_decision(gem, reason: "the declaration moved while this step " \
+            "was running, so nothing was rewritten")
           return nil
         end
 
-        lines[index] = after
+        if after.empty?
+          lines.delete_at(index)
+        else
+          lines[index] = after
+        end
         File.binwrite(File.join(@worktree.root, "Gemfile"), lines.join("\n"))
         edit = Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line, after: after,
-          subject: name, note: "#{gem["reason"]} (routed for Rails #{step["to_version"]})")
+          subject: name,
+          note: "#{gem["reason"] || gem["note"]} (routed for Rails #{step["to_version"]})")
         @applied << edit
         edit
       end
@@ -661,8 +702,15 @@ module AgentsFyi
         root = @worktree.root
         return nil unless File.file?(File.join(root, "config", "database.yml"))
 
+        # **`rails db:create` arrived in Rails 5.0, and `bin/rails` arrived in 4.0** — so the
+        # presence of a binstub says nothing about which spelling the application can run. The
+        # first real walk's repository has both and runs Rails 4.0.0.rc1, where `bin/rails
+        # db:create` answers "Command 'db:create' not recognized" and leaves the suite to fail
+        # on a database that was never created. The version at hand is the application's own
+        # (`Gemfile.lock`, read before the pin is rewritten) because that is the Rails that
+        # would run the command.
         argv =
-          if File.executable?(File.join(root, "bin/rails"))
+          if rails_five_or_newer?
             ["bin/rails", "db:create", "db:test:prepare"]
           elsif File.file?(File.join(root, "Rakefile"))
             ["bundle", "exec", "rake", "db:create", "db:test:prepare"]
@@ -871,7 +919,7 @@ module AgentsFyi
       # this rule rather than being a special case — `config/application.rb` is a file
       # the application already owns, so its version stays.
       def update(stages)
-        runner = rails_runner
+        runner, task = update_runner
         unless runner
           stages << Record::Command.new(stage: Record::RAILS_UPDATE,
             command: "bin/rails app:update",
@@ -881,9 +929,35 @@ module AgentsFyi
         end
 
         before = self.class.dirty_paths(@worktree.root)
-        stages << command(Record::RAILS_UPDATE, runner + ["app:update"], chdir: @worktree.root,
+        stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
           env: @worktree.bundle_env)
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
+      end
+
+      # **The runner and the task are one decision, because Rails 5.0 moved both commands from
+      # rake to the CLI.** `app:update` and `rails:update` are two names for one job, and the
+      # four combinations of runner and task include two that fail with a command-not-found —
+      # a 4.x task through `bin/rails` says "Command 'rails:update' not recognized", and a 5.x
+      # task through rake says "Don't know how to build task 'app:update'". So they are chosen
+      # together, from the application's own version, and the fallback is the same shape as
+      # before: an application with neither binstub nor Rakefile has nothing to run.
+      def update_runner
+        if rails_five_or_newer?
+          return [["bin/rails"], "app:update"] if File.executable?(File.join(@worktree.root, "bin/rails"))
+
+          return nil
+        end
+        return [["bundle", "exec", "rake"], "rails:update"] if File.file?(File.join(@worktree.root, "Rakefile"))
+
+        nil
+      end
+
+      # The Rails version the application is *on* — the one whose commands would run, read from
+      # the lockfile the step opened before anything was written. `major >= 5` is the whole
+      # rule: every command that moved did so at 5.0, and an application on a pre-release
+      # (`4.0.0.rc1`) is on 4.
+      def rails_five_or_newer?
+        @lockfile&.rails&.version.to_s.split(".").first.to_i >= 5
       end
 
       # **The class methods in this file are public, and the `private` markers around them
@@ -948,14 +1022,6 @@ module AgentsFyi
       private_class_method :restore
 
       private
-
-      def rails_runner
-        return ["bin/rails"] if File.executable?(File.join(@worktree.root, "bin/rails"))
-
-        return ["bundle", "exec", "rake", "rails:update"] if File.file?(File.join(@worktree.root, "Rakefile"))
-
-        nil
-      end
 
       def boot(stages)
         return unless File.executable?(File.join(@worktree.root, "bin/rails"))

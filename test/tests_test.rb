@@ -68,6 +68,25 @@ class TestsTest < Minitest::Test
     end
   end
 
+  # **An application may carry all three shapes, and the first real walk's did**: a
+  # `spec/spec_helper.rb`, a `test/test_helper.rb` from Rails' generators and a `Rakefile`.
+  # A helper file is a deliberate statement that a suite exists and a `test/` directory of
+  # generated files is not, so specs win — and the suites that were passed over are named in
+  # the reason, which travels into the record's baseline stage. A tool that silently chose one
+  # of three suites would make its own choice invisible in the evidence.
+  def test_an_application_with_three_suites_is_measured_by_the_one_it_states
+    with_app("spec/spec_helper.rb" => "", "test/test_helper.rb" => "", "bin/rails" => "",
+      "Rakefile" => "") do |dir|
+      suite = detect(dir)
+
+      assert_equal :rspec, suite.kind
+      assert_includes suite.reason, "this application's suite is rspec"
+      assert_includes suite.reason, "bin/rails test", "the suites passed over are not named"
+      assert_includes suite.reason, "bundle exec rake test"
+      assert_includes suite.reason, "the one the repository states for itself"
+    end
+  end
+
   def test_a_rails_four_application_runs_its_suite_through_the_rake_task
     with_app("Rakefile" => "", "test/test_helper.rb" => "") do |dir|
       assert_equal :rake, detect(dir).kind

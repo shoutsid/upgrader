@@ -78,13 +78,19 @@ class StepTest < Minitest::Test
 
   # A git working tree with a Gemfile, a Gemfile.lock and a `bin/rails`, because those
   # are the three things the pipeline looks for before it will run anything.
-  def app(lockfile: LOCKFILE, gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\n))
+  # A git working tree with the four things the pipeline looks for: a Gemfile and its lockfile,
+  # a `bin/rails`, and a `Rakefile`. The Rakefile is not decoration — the fixture is a Rails
+  # **4.2** application, and `rails app:update`/`rails db:create` are 5.0's spellings; on 4.2
+  # both go through rake (`rake rails:update`), which is what a 4.2 application actually ships.
+  def app(lockfile: LOCKFILE, gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\n),
+          rakefile: true)
     dir = Dir.mktmpdir
     File.write(File.join(dir, "Gemfile.lock"), lockfile)
     File.write(File.join(dir, "Gemfile"), gemfile)
     FileUtils.mkdir_p(File.join(dir, "bin"))
     File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
     File.chmod(0o755, File.join(dir, "bin", "rails"))
+    File.write(File.join(dir, "Rakefile"), "require File.expand_path(\"../config/application\", __FILE__)\n") if rakefile
     system("git", "init", "--quiet", dir, out: File::NULL, err: File::NULL)
     commit(dir, "fixture")
     dir

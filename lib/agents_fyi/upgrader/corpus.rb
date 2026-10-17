@@ -225,16 +225,21 @@ module AgentsFyi
       def respond(response)
         payload = parse(response.body)
         code = response.code.to_i
-        if code == 200
-          # A 200 is only an answer when the body is one. A proxy's HTML page — a login
-          # portal, a block notice — arrives with a 200 often enough that reading it as
-          # "no changes" would tell a caller the ladder has nothing for this move when
-          # nothing was answered at all. Every route this client reads answers with a
-          # JSON object; anything else is an outage that happens to have a good status
-          # code.
+        if code >= 200 && code < 300
+          # **Any 2xx, because the writes answer 201.** This read only `code == 200` and the
+          # first real walk's research pass failed on it — `POST /releases/facts` creates a row
+          # and answers 201, so every facts write was read as an outage and the routing's
+          # `unknown` pins stayed unknown ("answered HTTP 201 instead of a plan", a sentence
+          # about a request that had in fact succeeded).
+          #
+          # A 2xx is still only an answer when the body is one. A proxy's HTML page — a login
+          # portal, a block notice — arrives with a good status often enough that reading it as
+          # "no changes" would tell a caller the ladder has nothing for this move when nothing
+          # was answered at all. Every route this client reads answers with a JSON object;
+          # anything else is an outage that happens to have a good status code.
           return payload if payload.is_a?(Hash)
 
-          raise Unreachable, "#{@base} answered HTTP 200 with a body that is not a plan"
+          raise Unreachable, "#{@base} answered HTTP #{code} with a body that is not an answer"
         end
         # A collision is its own answer before it is a refusal, and only a write can
         # produce one: the one caller here that writes a report reads it as "the corpus

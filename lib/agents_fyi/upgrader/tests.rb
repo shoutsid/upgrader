@@ -53,7 +53,25 @@ module AgentsFyi
       #    is what makes an application that has both `test/` and `spec/` deterministic:
       #    its framework suite is the one that runs.
       # 3. `bundle exec rake test` — for Rails 4 and older, which have no `bin/rails`.
+      # **The order is the rule, and it is a decision about applications that carry two
+      # suites.** The first real walk's repository has all three shapes at once — a
+      # `spec/spec_helper.rb`, a `test/test_helper.rb` from Rails' generators, and a `Rakefile`
+      # — and the suite that matters is the spec one (its `Guardfile` watches `spec/`, its
+      # `.rspec` asks for colour). A helper file is a deliberate statement that a suite exists;
+      # a `test/` directory of generated files is not, so rspec is asked first and the
+      # *alternatives* are named in `reason` and travel into the record's baseline stage
+      # (`Step#suite_note`). Rails 5+ (`bin/rails test`) is the second shape and rake is the
+      # third, which is the order of the Rails versions that run them.
       CANDIDATES = [
+        {
+          kind: :rspec,
+          command: "bundle exec rspec",
+          matches: ->(root) do
+            File.file?(File.join(root, "spec/spec_helper.rb")) ||
+              File.file?(File.join(root, "spec/rails_helper.rb"))
+          end,
+          reason: "a spec directory with a helper file: this application's suite is rspec"
+        },
         {
           kind: :rails,
           command: "bin/rails test",
@@ -63,15 +81,6 @@ module AgentsFyi
           end,
           reason: "`bin/rails` and `test/test_helper.rb`: a Rails 5 or newer application " \
                   "runs its suite through bin/rails, and `rake test` is the deprecated entry"
-        },
-        {
-          kind: :rspec,
-          command: "bundle exec rspec",
-          matches: ->(root) do
-            File.file?(File.join(root, "spec/spec_helper.rb")) ||
-              File.file?(File.join(root, "spec/rails_helper.rb"))
-          end,
-          reason: "a spec directory with a helper file: this application's suite is rspec"
         },
         {
           kind: :rake,
@@ -91,10 +100,17 @@ module AgentsFyi
       # was looked for.
       def self.detect(root)
         base = File.expand_path(root)
-        entry = CANDIDATES.find { |candidate| candidate[:matches].call(base) }
-        return nil unless entry
+        found = CANDIDATES.select { |candidate| candidate[:matches].call(base) }
+        return nil if found.empty?
 
-        Suite.new(kind: entry[:kind], command: entry[:command], reason: entry[:reason])
+        entry = found.first
+        others = found.drop(1).map { |other| other[:command] }
+        reason = entry[:reason]
+        unless others.empty?
+          reason = "#{reason}; #{others.join(", ")} could also have been run, and this is the " \
+                   "one the repository states for itself"
+        end
+        Suite.new(kind: entry[:kind], command: entry[:command], reason: reason)
       end
 
       # What a repository with no suite we can run is told, named for the record. It

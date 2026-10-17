@@ -85,6 +85,25 @@ class CorpusTest < Minitest::Test
     end
   end
 
+  # **A write answers 201, and reading that as an outage cost a whole research pass.** The
+  # first real walk's facts writes all succeeded and all were reported as failures
+  # ("answered HTTP 201 instead of a plan"), so the routing's `unknown` pins stayed unknown
+  # and no gem could move. Every 2xx is an answer; the body still has to be one.
+  def test_a_created_response_is_an_answer_rather_than_an_outage
+    payload = { "recorded" => 3 }
+    corpus = StubbedCorpus.new(FakeResponse.new("201", JSON.generate(payload)))
+
+    assert_equal payload, corpus.record_facts(library: "devise", facts: [{ "version" => "2.2.4" }])
+  end
+
+  def test_a_created_response_with_a_body_that_is_not_json_is_still_an_outage
+    corpus = StubbedCorpus.new(FakeResponse.new("201", "<html>a portal said hello</html>"))
+
+    assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) do
+      corpus.record_facts(library: "devise", facts: [{ "version" => "2.2.4" }])
+    end
+  end
+
   def test_a_plan_comes_back_exactly_as_the_service_wrote_it
     payload = { "from_version" => "4.2.11", "steps" => [] }
     corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate(payload)))

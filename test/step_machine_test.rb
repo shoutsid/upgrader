@@ -169,12 +169,15 @@ class StepMachineTest < Minitest::Test
     File.write(File.join(dir, "Gemfile"), gemfile)
     FileUtils.mkdir_p(File.join(dir, "spec"))
     File.write(File.join(dir, "spec", "spec_helper.rb"), "")
-    # `bin/rails`, because `app:update` is one of the stages a step must be able to run: a
-    # repository with neither `bin/rails` nor a Rakefile is one this tool cannot move, and
-    # every test in this file is about the machine, not about that refusal.
+    # `bin/rails` *and* a `Rakefile`, because `rails:update` is one of the stages a step must
+    # be able to run and this fixture is a Rails **4.2** application: on 4.x both
+    # `rails:update` and `db:create` are rake tasks (`bin/rails app:update` arrived in 5.0),
+    # so the runner is chosen from the version and a fixture with only a binstub is one this
+    # tool cannot move. Every test in this file is about the machine, not about that refusal.
     FileUtils.mkdir_p(File.join(dir, "bin"))
     File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
     File.chmod(0o755, File.join(dir, "bin", "rails"))
+    File.write(File.join(dir, "Rakefile"), "require File.expand_path(\"../config/application\", __FILE__)\n")
     system("git", "init", "--quiet", dir, out: File::NULL, err: File::NULL)
     system("git", "-C", dir, "add", "--all", out: File::NULL, err: File::NULL)
     system("git", "-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t",
@@ -289,6 +292,28 @@ class StepMachineTest < Minitest::Test
     stages = record.stages.map(&:stage)
     assert_operator stages.index("database"), :<, stages.index("baseline")
     assert(runner.calls.any? { |call| call.include?("db:create db:test:prepare") })
+  end
+
+  # **The other half of the version rule, and the reason it is a rule rather than a file
+  # check.** `rails db:create` and `rails app:update` arrived in Rails 5.0; on 4.x both are
+  # rake tasks. The first real walk's application carries a `bin/rails` binstub *and* runs
+  # 4.0.0.rc1, so "does bin/rails exist" answers the wrong question — and the wrong answer
+  # leaves the suite with no database and the record with a command-not-found.
+  def test_a_rails_five_application_runs_both_moved_commands_through_bin_rails
+    dir = app(lockfile: LOCKFILE.sub("4.0.0.rc1", "5.2.8"), gemfile: GEMFILE.sub("4.0.0.rc1", "5.2.8"))
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "database.yml"), "test:\n  adapter: postgresql\n")
+    runner = FakeRunner.new
+    record = step(dir, machines: machines, runner: runner).run
+
+    calls = runner.calls.map { |call| Array(call).join(" ") }
+    assert(calls.any? { |call| call.include?("bin/rails db:create db:test:prepare") },
+      "a Rails 5 application was sent to rake for its database")
+    assert(calls.any? { |call| call.include?("bin/rails app:update") },
+      "a Rails 5 application was sent to rake for its update")
+    refute(calls.any? { |call| call.include?("rake") },
+      "a Rails 5 application ran a rake task for a command the CLI owns")
+    refute_nil record
   end
 
   # A database that could not be prepared is named beside the suite failure rather than
