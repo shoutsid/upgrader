@@ -33,7 +33,13 @@ module AgentsFyi
       # mechanical), `"rule"` for one of this tool's own rewrites (`Rewrites`), which the service
       # deliberately does not make. A reader of the patch can tell the two apart, and the guard
       # below is why the distinction has to be explicit rather than inferred.
-      Applied = Struct.new(:path, :line, :text, :after, :subject, :origin, keyword_init: true)
+      #
+      # `note` is the change's own sentence from the ladder, and it is carried here because a rule
+      # that *applied* a change withdraws its decision — correctly, it is no longer one — and the note
+      # is where the caveat a reviewer needs lives (`find_all_by_*`'s "`where` returns a relation, not
+      # an array"). A preflight repair carries the digest's reason in the same field, so the record's
+      # `applied` list answers "why" for both kinds of edit.
+      Applied = Struct.new(:path, :line, :text, :after, :subject, :origin, :note, keyword_init: true)
 
       # One edit that was not written, and what was actually found. `found` is the
       # line that is there when there is one: "refused" on its own sends a reader to
@@ -150,7 +156,7 @@ module AgentsFyi
           dirty[full] = true
           applied << Applied.new(
             path: path, line: edit["line"], text: edit["text"], after: edit["after"],
-            subject: edit["subject"], origin: edit["origin"]
+            subject: edit["subject"], origin: edit["origin"], note: edit["note"]
           )
         end
 

@@ -148,10 +148,15 @@ The pipeline has three stages that make the rest mean anything:
    stops — its contract is a statement about the ladder — and a rule that edits code is
    this tool's, applied to what the scan located, through the same line-checked write.
    A change a rule applies stops being a decision, and the record says which rules did
-   it. Rules are *instances of families* (`name_moved`, `option_wrapped`, `line_removed`,
-   `call_replaced`), so the next lighthouse writes an instance of an existing family, and
-   every change no rule covers carries a **gap** saying what would close it — the residue
-   is a queue with reasons, not a list. `docs/upgrades.md` has the policy.
+   it — with the change's own note, because the decision a rule withdrew carried the
+   ladder's caveat. Rules are *instances of families* (`name_moved`, `option_wrapped`,
+   `line_removed`, `call_replaced`, `finder_moved`, `find_conditions`, `option_added`,
+   `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`,
+   `query_materialised`, `superclass_moved`), so the next lighthouse writes an instance of
+   an existing family, and every change no rule covers carries a **gap** saying what
+   would close it — the residue is a queue with reasons, not a list. A rule may also need
+   a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class
+   does), and the step writes it before the suite runs. `docs/upgrades.md` has the policy.
 7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer

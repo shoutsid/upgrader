@@ -1033,13 +1033,14 @@ module AgentsFyi
         # edits — the scan's `text` is what the applier compares against, so a line that moved
         # between the read and the write is refused rather than half-rewritten. A change a rule
         # applies stops being a decision, because it is no longer one.
-        rules = Rewrites.apply(scan["manual"] || [])
+        rules = Rewrites.apply(scan["manual"] || [], files: file_lines(files))
         inert = Rewrites.inert(step["changes"] || [])
         # A rule that *knows* the change and would not touch this line is the most specific thing
         # anything downstream can be told, so it is kept rather than counted: the repair agent's
         # brief carries it (`Repair#prompt_for`).
         @unapplied_rules = rules.left
         result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
+        created = write_scaffolds(rules.scaffolds)
         decisions = decisions_for(step, scan).reject do |decision|
           rules.applied.include?(decision.subject.to_s)
         end
@@ -1047,7 +1048,7 @@ module AgentsFyi
           stage: Record::APPLY,
           command: "apply #{scan["edits"].to_a.size} edit(s) to #{files.size} scanned file(s)",
           ran: true, exit_code: 0, seconds: 0.0,
-          output_tail: apply_summary(result, decisions, rules, inert)
+          output_tail: apply_summary(result, decisions, rules, inert, created)
         )
         [result.applied, result.refused, decisions]
       end
@@ -1056,11 +1057,15 @@ module AgentsFyi
       # rules that name no change in this rung. The last two are evidence rather than decoration —
       # a rule that applied nothing and a rule whose change has left the ladder look identical from
       # the outside, which is the shape `AGENTS.md` keeps paying for.
-      def apply_summary(result, decisions, rules, inert)
+      def apply_summary(result, decisions, rules, inert, created = [])
         parts = ["applied #{result.applied.size}, refused #{result.refused.size}, " \
                  "#{decisions.size} change(s) need a decision"]
         parts << "#{rules.edits.size} by this tool's own rules (#{rules.applied.uniq.join(", ")})" if
           rules.edits.any?
+        # **The files a rule's edit depends on**, named rather than counted: a reader of the patch
+        # needs to know the diff is not the whole change (`ApplicationRecord` is in a file the patch
+        # does not show).
+        parts << "#{created.size} file(s) created for a rule (#{created.join(", ")})" if created.any?
         parts << "#{inert.size} rule(s) name no change in this rung (#{inert.join(", ")})" if
           inert.any?
         unless rules.left.empty?
@@ -1068,6 +1073,33 @@ module AgentsFyi
                    "(#{rules.left.uniq.join(", ")})"
         end
         parts.join("; ")
+      end
+
+      # **The files a rule's edit depends on, written after the edits and before the suite.** A model
+      # cannot inherit from `ApplicationRecord` before that class exists, so the rule that renames the
+      # superclass carries the file that defines it. This is a write outside the applier, and it is the
+      # applier's *contract* that says why: an edit is checked against the line the scan read, and a
+      # file that does not exist has no line to check — the same reason `Defaults` writes the
+      # `new_framework_defaults` file it then steps through. The path is this tool's own constant
+      # rather than the application's or the service's, and a file that is already there is left alone:
+      # an application that has already made this move has its own, with whatever it has added to it.
+      def write_scaffolds(scaffolds)
+        root = @worktree.root
+        Array(scaffolds).filter_map do |scaffold|
+          path = File.join(root, scaffold.path)
+          next if File.exist?(path)
+
+          FileUtils.mkdir_p(File.dirname(path))
+          File.write(path, scaffold.content)
+          scaffold.path
+        end
+      end
+
+      # The file contents the scan sent, by path and line — what a rule that reads more than its own
+      # line gets (`Rewrites::Rule#context`). Built from the same read the scan used, so a rule and the
+      # service are looking at the same bytes.
+      def file_lines(files)
+        files.to_h { |path, text| [path, text.to_s.lines.map(&:chomp)] }
       end
 
       # Every change this rung carries that no machine may make, located where the

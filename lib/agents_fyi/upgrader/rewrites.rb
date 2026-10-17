@@ -15,9 +15,10 @@ module AgentsFyi
     # **A rule is an instance of a family, and the family is the reusable half.** The `subject` ties
     # an instance to the change it belongs to — the ladder's own vocabulary, so a rule whose change
     # has left is inert and said to be. The *family* is the shape of the edit (`name_moved`,
-    # `option_wrapped`, `line_removed`, `call_replaced`), and the next lighthouse — a gem's own
-    # upgrade, a framework nobody has walked yet — writes an instance of a family that already
-    # exists rather than a new mechanism.
+    # `option_wrapped`, `line_removed`, `call_replaced`, `finder_moved`, `option_added`,
+    # `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`, `query_materialised`,
+    # `superclass_moved`), and the next lighthouse — a gem's own upgrade, a framework nobody has
+    # walked yet — writes an instance of a family that already exists rather than a new mechanism.
     #
     # **Nothing here is "never".** A change with no rule today is a *gap*, and `gap_for` says what
     # would close it, which is what the record carries into the residue: a queue with reasons rather
@@ -26,7 +27,11 @@ module AgentsFyi
     # a grown matrix re-opens the verdict): a permanent refusal is the settled-work trap with the sign
     # flipped, and a walk that hands over the same list for ever has learned nothing.
     #
-    # Four things keep a rule honest:
+    # **And a subject a rule covers *partly* still has a gap** (`PARTIAL`): a rule for one spelling of
+    # a change whose note names four would otherwise turn the residue's sentence about the other three
+    # into silence.
+    #
+    # Five things keep a rule honest:
     #
     # * **It names the change it belongs to**, so a rule whose change has left the ladder is inert
     #   rather than quietly editing code for a change nobody documents any more.
@@ -41,29 +46,73 @@ module AgentsFyi
     #   Ruby objects and are not the same thing", and it is right about the *names*; the ladder's own
     #   replacement (`obj.to_json` and `JSON.parse`) is a different edit, and it is mechanical for a
     #   call that takes one argument.
+    # * **A rule's edit carries the change's note into the record.** A rule that applied a change
+    #   withdraws its decision — correctly, it is no longer one — and the note is where the ladder's
+    #   own caveat lives ("`where` returns a relation, not an array: add `.to_a` where an Array is
+    #   expected"). Losing it with the decision would trade a decision a reviewer can read for a diff
+    #   they cannot explain.
     module Rewrites
-      # One rule: the family it is an instance of, the change it belongs to, what it matches, and what
-      # it writes. `replace` is a `String#sub` replacement, so it may use named backreferences —
-      # which is how a rule moves a value rather than guessing at it.
-      Rule = Struct.new(:family, :subject, :pattern, :replace, keyword_init: true) do
+      # One rule: the family it is an instance of, the change it belongs to, what it matches, what it
+      # writes, and the two things a family may need beyond a pattern.
+      #
+      # `replace` is a `String#sub` replacement, so it may use named backreferences — which is how a
+      # rule moves a value rather than guessing at it — or a `Proc`, for a family whose edit depends
+      # on what it matched (a dynamic finder's attributes, a block's body). **The `Proc` receives the
+      # `MatchData`**, rather than reading `$~`: that variable is frame-local, so a lambda defined in a
+      # family and called from `String#sub` sees *the family's* frame, which has never held a match —
+      # and every capture comes back nil, which is a rule that silently refuses every line it was
+      # written for.
+      #
+      # * `context` — **a rule that has to read the rest of the file.** `belongs_to` is the case that
+      #   made this a field: whether an association is required is not a fact about the `belongs_to`
+      #   line, because the model may already say `validates_presence_of :user`, in which case the new
+      #   default agrees with the application and there is nothing to add. It receives the file's
+      #   lines and the match, and answers whether the edit is the right one.
+      # * `scaffold` — **a file the edit depends on.** A model cannot inherit from `ApplicationRecord`
+      #   before that class exists, so the rule that renames the superclass carries the file that
+      #   defines it.
+      Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
         # against the raw one, at the same offsets — the shape the service's own scanner uses, and
         # the reason the mask preserves every byte's position: a pattern that matched inside a string
         # would rewrite a log message.
-        def after(line, masked)
+        def after(line, masked, lines: nil)
           found = pattern.match(masked)
           return nil if found.nil?
+          # **A match that reaches into a comment is not a match.** `.` matches a blanked comment
+          # byte, so a family that runs to the end of the line (`argument_wrapped`) would wrap the
+          # comment too — `scope :active, where(a: 1) # the actives` came out as `-> { where(a: 1) #
+          # the actives }`, where the closing brace is inside the comment and the file no longer
+          # parses. Blanking the comment is not enough on its own; this is the other half.
+          stop = Rewrites.comment_start(line)
+          return nil if stop && found.end(0) > stop
+          return nil if context && !context.call(Array(lines), found)
 
           region = line[found.begin(0)...found.end(0)]
-          written = region.sub(pattern, replace)
+          written =
+            if replace.respond_to?(:call)
+              # The region's own match, because the write is against the *raw* line: a capture the
+              # masked line matched inside a string is a different one here, and a family that
+              # re-matched for itself could see a different extent than the one being replaced.
+              own = pattern.match(region)
+              own ? replace.call(own) : region
+            else
+              region.sub(pattern, replace)
+            end
           text = "#{line[0, found.begin(0)]}#{written}#{line[found.end(0)..]}"
           text == line ? nil : text
         end
       end
 
-      Result = Struct.new(:edits, :applied, :left, keyword_init: true) do
+      # A file a rule's edit depends on. Written only when the rule applied and the file is not
+      # already there, and written by `Step` rather than the applier — a *new* file has no line to
+      # re-check, which is the applier's whole contract, and `Defaults` already writes the files its
+      # own edits depend on for the same reason.
+      Scaffold = Struct.new(:path, :content, keyword_init: true)
+
+      Result = Struct.new(:edits, :applied, :left, :scaffolds, keyword_init: true) do
         def to_s
           return "no rule applies" if edits.empty?
 
@@ -76,8 +125,9 @@ module AgentsFyi
       # missing rather than from scratch. A subject with no entry here still gets a gap (the generic
       # one below), because "nobody has looked at this shape yet" is itself information.
       GENERIC_GAP = "no rule yet: this shape is not one of the families here (name_moved, " \
-                    "option_wrapped, line_removed, call_replaced), and it is carried as a located " \
-                    "decision until one is written"
+                    "option_wrapped, line_removed, call_replaced, finder_moved, option_added, " \
+                    "argument_wrapped, block_value, value_moved, line_replaced, query_materialised, " \
+                    "superclass_moved), and it is carried as a located decision until one is written"
 
       GAPS = {
         "default_scope" => "a rule would need the callers that chain conditions onto the scope, and " \
@@ -87,45 +137,136 @@ module AgentsFyi
                                      "from a string one; the patch is per call site",
         "alias_attribute" => "a rule would need the attribute's own definition to write the " \
                              "explicit method the new release wants",
-        "after_commit / after_rollback" => "a rule would need the callback's position to add `on:` " \
-                                           "where the new release requires it",
-        "sanitize / strip_tags" => "a rule would need the helper's arguments to choose the " \
-                                   "replacement form",
-        "return false from a before callback" => "a rule would need the block's body: " \
-                                                 "`{ return false }` is `{ false }`, anything longer " \
-                                                 "is a named method",
-        "belongs_to" => "a rule would need each association's callers to know whether absence is " \
-                        "legal; `optional: true` is a fact about the application, not about the line",
-        "params as a Hash" => "a rule would need the parameter's uses: `permit(...).to_h` is the " \
-                              "patch where the value is read as a hash and nothing else",
-        "Rails.application.secrets" => "a rule would need the application's own secret handling, " \
-                                       "which is a deployment fact rather than a repository one",
-        "has_many_attached assignment" => "a rule would need the assignment's shape to add the `=` " \
-                                          "the new release wants",
-        "format.any" => "a rule would need the block's body to choose the replacement form",
-        "button_to" => "a rule would need the call's options to move them the way the new release " \
-                       "wants",
-        "Active Storage variant processor" => "a rule would need the application's configured " \
-                                              "processor, which is a deployment fact",
-        "Rails.logger" => "a rule would need to know whether the application wants the old logger's " \
-                          "output as well: `broadcast_to` is a choice",
-        "config.secret_token" => "a rule would need the deployment's own secret handling; the line " \
-                                 "names a setting whose value must not come from the repository",
-        "find_all_by_*" => "a rule per argument shape (the attribute names move into `where`), which " \
-                           "is why the generic one is not written: `find_all_by_a_and_b` is not a " \
-                           "rename",
-        "find(:all, ...)" => "a rule would need the condition arguments to rebuild them as a " \
-                             "`where` chain",
-        "scope :name, where(...)" => "a rule would need the second argument's extent to wrap it in " \
-                                     "a lambda without cutting the line",
+        "after_commit / after_rollback" => "the change is where an error raised in the callback " \
+                                           "*goes*, which the line does not show; `on:` and the " \
+                                           "transactional-callbacks default are decisions about the " \
+                                           "application's error handling",
+        "sanitize / strip_tags" => "the note's own replacement is a gem " \
+                                   "(`rails-deprecated_sanitizer`), so no call site changes: a rule " \
+                                   "for it declares a Gemfile line, which is this tool's preflight " \
+                                   "rather than its rewriter",
+        "serialize" => "the change is what a `nil` assignment *stores* — `NULL` rather than the " \
+                       "encoded form — so a rule would need the attribute's queries, not its " \
+                       "declaration",
         "render :text" => "the 4.1 migration is the *spelling* — `render :text => x` becomes " \
                           "`render text: x`, which is the same response — and the choice between " \
                           "`plain:`, `html:` and `body:` belongs to the 5.0 rung, where `:text` is " \
                           "gone. A rule here would be choosing a content type for a response that " \
                           "still has one",
-        "assert_tag" => "a rule would need to know whether the test file is this application's or a " \
-                        "gem's, because renaming an assertion helper is part of the move while " \
-                        "weakening an assertion never is"
+        "ActiveRecord::Base as a model's superclass" => "the rule covers a model whose superclass is " \
+                                                         "written on one line; a model that inherits " \
+                                                         "from another model, or whose class line " \
+                                                         "spans two, is left — the edit is a rename " \
+                                                         "and this is the one place a rename is not " \
+                                                         "enough",
+        "Rails.logger" => "the note gives the edit — `X.extend(ActiveSupport::Logger.broadcast(Y))` " \
+                          "becomes `X.broadcast_to(Y)` — so what is missing is a family whose " \
+                          "argument capture can see one level of nesting: " \
+                          "`Logger.new(\"log/x.log\")` has parentheses inside it, and a capture that " \
+                          "stopped at the first `)` would write the call in half",
+        "config.secret_token" => "the note says to *leave it in place and add* `secret_key_base`, " \
+                                 "because a Rails 3 cookie is upgraded on the way in and a Rails 4 " \
+                                 "cookie cannot be read by Rails 3 — so the two together are what " \
+                                 "makes a rollback possible. A rename would be the opposite of the " \
+                                 "note, and the new value must not come from the repository",
+        "assert_tag" => "the note says the argument shape differs, so a rename would break the " \
+                        "assertion rather than move it: a rule would need to rewrite each " \
+                        "assertion's arguments, which is reading the test rather than the line",
+        "halted_callback_hook" => "the note says a one-argument override raises `ArgumentError` with " \
+                                  "no deprecation cycle, so a rule would need the override's own " \
+                                  "signature — the line the scan located is the definition, and its " \
+                                  "arity is on the next one",
+        "config_for" => "the note's replacement is a call on the *result* " \
+                        "(`.with_indifferent_access`), which keeps every call site as it is — so " \
+                        "what is missing is a rule that edits the assignment rather than the use",
+        "to_xml" => "the note's own replacement is a gem (`activemodel-serializers-xml`), so no " \
+                    "call site changes: a rule for it declares a Gemfile line",
+        "content_tag_for / div_for" => "the note names both a gem (`record_tag_helper`) and a " \
+                                       "rewrite (`content_tag`), and which one is right is a " \
+                                       "decision about how much of the view is being changed",
+        "assigns / assert_template" => "the note's own replacement is a gem " \
+                                       "(`rails-controller-testing`), so the located lines keep " \
+                                       "working once it is there: a rule for it declares a Gemfile " \
+                                       "line rather than rewriting a call site",
+        "caches_action / caches_page" => "the note says both gems are drop-in, so this is a Gemfile " \
+                                         "line rather than a code change — a rule for it declares " \
+                                         "the gem, and an application that had the caching loses it " \
+                                         "entirely without one",
+        "the protected_attributes gem" => "the change is the *absence* of a bridge, so the edit is a " \
+                                          "Gemfile line to remove — and removing it is only right " \
+                                          "once the models have moved to strong parameters, which " \
+                                          "is the 4.0 entry's work",
+        "button_to" => "the note's fix is `method: :post` or an explicit path helper, and which one " \
+                       "is right depends on whether the button is built from a record — a fact " \
+                       "about the view rather than about the line",
+        "Active Storage variant processor" => "the note's replacement is an application-wide " \
+                                              "setting (`config.active_storage.variant_processor`), " \
+                                              "so a rule would be choosing the processor for the " \
+                                              "deployment rather than for the line"
+      }.freeze
+
+      # **A gap for a subject a rule covers only partly.** `gap_for` answers "does a rule know this
+      # change" for the whole subject, and a subject is not always all-or-nothing: `params.slice` is
+      # an instance while `params.each` is not, and a residue that said "a rule covers this" while
+      # leaving four spellings untouched would be the empty-answer trap with the sign flipped.
+      PARTIAL = {
+        "protect_from_forgery" => "the rule adds `prepend: true` unconditionally, because the line " \
+                                  "does not show what runs before it: where a filter is declared " \
+                                  "above the callback the option restores the order 5.0 changed, and " \
+                                  "where nothing is, it is redundant and can be deleted. Which of " \
+                                  "the two this application is, is a fact about its filter order",
+        "params as a Hash" => "`params.slice(...)` is a rule (`params.permit(...).to_h`, the note's " \
+                              "own shape); `map`, `each`, `each_pair`, `symbolize_keys`, " \
+                              "`reverse_merge` and a bare `to_h` are not, because each reads the " \
+                              "parameters a different way and the note's fix — permit first — is a " \
+                              "decision about what that call site is allowed to read",
+        "find_all_by_*" => "the rule makes the call; whether the *caller* wanted the Array the old " \
+                           "finder returned is not on the line (`where` returns a relation), which " \
+                           "is the note's own warning and the application's suite to catch",
+        "find(:all, ...)" => "the rule unwraps `conditions:` and nothing else, because the note's " \
+                             "replacement is the conditions alone: `find(:all, conditions: {…}, " \
+                             "order: …)` is left rather than silently losing the other options",
+        "scope :name, where(...)" => "the rule wraps a body that starts with a relation call and " \
+                                     "runs to the end of the line; a body with a trailing comment, " \
+                                     "or one that is not a relation call at all, is left — the " \
+                                     "lambda would swallow the comment",
+        "return inside an inline callback block" => "the rule takes a block whose body is exactly " \
+                                                     "one `return`; a body with a statement after " \
+                                                     "it is left, because dropping it would be " \
+                                                     "deleting code — the note's other half is to " \
+                                                     "move that body to a method and name it",
+        "return false from a before callback" => "the rule rewrites the inline block " \
+                                                  "(`before_save { return false }`); a `return " \
+                                                  "false` in a named method body is not this change " \
+                                                  "at all — it is a method's return value, and " \
+                                                  "`throw(:abort)` there would be wrong",
+        "mutator methods on a Relation" => "the rule matches a receiver whose last call is a query " \
+                                           "(`Item.where(...).compact!`), which is what makes `.to_a` " \
+                                           "safe — `Array#to_a` returns the array itself, `Hash#to_a` " \
+                                           "does not. A local variable is left: nothing on the line " \
+                                           "says whether it holds a relation or a hash",
+        "config.action_dispatch.show_exceptions" => "the rule maps the two booleans the release no " \
+                                                    "longer accepts (`true` to `:all`, `false` to " \
+                                                    "`:none`, the note's own mapping); `:rescuable` — " \
+                                                    "what a generated application now uses in test — " \
+                                                    "is a choice about which exceptions a test " \
+                                                    "should see, not a mapping",
+        "config.autoload_paths and $LOAD_PATH" => "the rule replaces the one hand-written line that " \
+                                                  "put `lib` on the autoload paths, which is the " \
+                                                  "shape every generated application had; another " \
+                                                  "path list is left, because `autoload_lib`'s " \
+                                                  "ignore list is a fact about the directory",
+        "belongs_to" => "the rule adds `optional: true` where the model does not already validate " \
+                        "the association's presence — which preserves the behaviour the association " \
+                        "had before 5.0. It is the *safe* direction and not the only right one: an " \
+                        "association the application meant to require should keep the new default " \
+                        "instead, and an association whose options run past the line (a lambda " \
+                        "scope, a trailing comma) is left alone. A migration's `t.belongs_to :user` " \
+                        "is a column definition rather than this change at all, and it is left " \
+                        "because the rule is anchored on the association declaration",
+        "ActiveJob::Base as a job's superclass" => "the rule covers a job whose superclass is written " \
+                                                   "on one line; a job that inherits from another job " \
+                                                   "is left"
       }.freeze
 
       # The families. Each returns a `Rule` whose `subject` names the change it belongs to.
@@ -170,10 +311,183 @@ module AgentsFyi
       # A call that becomes another call, with its arguments carried across. `args` is the point of
       # the family: `MultiJson.dump(x)` is `x.to_json`, and `MultiJson.dump(x, pretty: true)` is not —
       # the options are part of what the call means, so a call with them does not match.
-      def self.call_replaced(subject:, from:, to:, args: 1)
-        captured = (1..args).map { |index| "(?<a#{index}>[^,()]+)" }.join("\\s*,\\s*")
+      #
+      # `args` may be a count (that many comma-separated arguments, each without a parenthesis) or a
+      # pattern string, for a call whose whole argument list moves as one — `params.slice(:a, :b)`
+      # keeps its keys, so the list is captured rather than enumerated. `receiver` names the receiver
+      # the call must have, and it is captured rather than looked behind for the same reason
+      # `name_moved`'s is: the region is what the write re-matches.
+      def self.call_replaced(subject:, from:, to:, args: 1, receiver: nil)
+        captured =
+          if args.is_a?(String)
+            "(?<a1>#{args})"
+          else
+            (1..args).map { |index| "(?<a#{index}>[^,()]+)" }.join("\\s*,\\s*")
+          end
+        head = receiver ? "(?<receiver>\\b#{Regexp.escape(receiver)})\\." : "\\b"
         Rule.new(family: :call_replaced, subject: subject,
-          pattern: Regexp.new("\\b#{Regexp.escape(from)}\\s*\\(\\s*#{captured}\\s*\\)"), replace: to)
+          pattern: Regexp.new("#{head}#{Regexp.escape(from)}\\s*\\(\\s*#{captured}\\s*\\)"),
+          replace: receiver ? "\\k<receiver>.#{to}" : to)
+      end
+
+      # **An option the new release requires, added to a call that does not have it.** `belongs_to` is
+      # what made this a family: the association's options are a flat list, so the option goes on the
+      # end — and the line is not touched when it already names the option (the negative lookahead is
+      # what makes the rule idempotent) or when the options run past the line (a trailing comma, a
+      # `do` block, a comment), because appending to an argument list whose end the rule cannot see is
+      # how a rule cuts a line in half.
+      def self.option_added(subject:, call:, option:, context: nil)
+        key = option[/[a-z_]\w*(?=:)/]
+        Rule.new(family: :option_added, subject: subject, context: context,
+          pattern: Regexp.new("\\A(?<indent>\\s*)(?!.*\\b#{key}:)(?<call>#{Regexp.escape(call)}\\b[^,()]*" \
+                              "(?:\\s*,\\s*[a-z_]\\w*:\\s*[^,()]+)*)\\s*\\z"),
+          replace: "\\k<indent>\\k<call>#{option}")
+      end
+
+      # **A call whose own name carries its arguments.** `find_all_by_name(x)` is `where(name: x)`, and
+      # the family owns what every instance shares: the attribute list is split out of the method name
+      # and each attribute takes the argument in its position. A finder whose arguments do not line up
+      # with its attributes — `find_all_by_name(1, 2)`, a call with an options hash — does not match,
+      # and that is the conservative half: a wrong pairing writes `where(name: 1, 2)` into a file, and
+      # the suite would report it as the application's breakage.
+      def self.finder_moved(subject:, from:, to:)
+        Rule.new(family: :finder_moved, subject: subject,
+          pattern: /(?<!\w)#{Regexp.escape(from)}_(?<names>[a-z_]\w*(?:_and_[a-z_]\w*)*)\((?<args>[^()]*)\)/,
+          replace: lambda do |found|
+            names = found[:names].split("_and_")
+            values = found[:args].split(",").map(&:strip)
+            next found[0] unless names.size == values.size
+
+            pairs = names.zip(values).map { |name, value| "#{name}: #{value}" }.join(", ")
+            format(FINDER_TARGETS.fetch(to), pairs: pairs)
+          end)
+      end
+
+      # The destination shapes a dynamic finder becomes. Each is a *shape* rather than a template: the
+      # attribute/value pairs are the same list in all four, and what differs is what the call becomes.
+      FINDER_TARGETS = {
+        where: "where(%<pairs>s)",
+        where_last: "where(%<pairs>s).last",
+        find_or_create_by: "find_or_create_by(%<pairs>s)",
+        find_or_initialize_by: "find_or_initialize_by(%<pairs>s)"
+      }.freeze
+
+      # **A finder whose options became a `where` chain.** `find(:all, conditions: {name: 'x'})` is
+      # `where(name: 'x')`; the family owns the two parts every instance shares — the scope maps to the
+      # method that replaces it, and the conditions hash is unwrapped rather than rewritten. Anything
+      # else in the options (`order:`, `limit:`, a second key) does not match, because the note's
+      # replacement is the conditions alone and a rule that dropped the other options would be
+      # changing what the query returns.
+      def self.find_conditions(subject:, finder: "find")
+        Rule.new(family: :find_conditions, subject: subject,
+          pattern: /#{Regexp.escape(finder)}\(\s*:(?<scope>all|first|last)\s*,\s*conditions:\s*\{(?<conditions>[^{}]*)\}\s*\)/,
+          replace: lambda do |found|
+            format(FIND_SCOPES.fetch(found[:scope].to_sym), conditions: found[:conditions].strip)
+          end)
+      end
+
+      FIND_SCOPES = {
+        all: "where(%<conditions>s)",
+        first: "where(%<conditions>s).first",
+        last: "where(%<conditions>s).last"
+      }.freeze
+
+      # **A call whose trailing argument must become a callable.** `scope :active, where(active: true)`
+      # is evaluated when the class loads, which is why 4.0 removed it; the guide's fix is a lambda,
+      # and the family is careful about the two things that decide whether wrapping is safe: the
+      # argument has to *start* with a relation call (a scope body that is something else is a
+      # different edit), and it has to run to the end of the line — a trailing comment would end up
+      # inside the braces, which is a line that does not parse.
+      def self.argument_wrapped(subject:, call:, starts: RELATION_START, wrapper: '-> { \k<value> }')
+        Rule.new(family: :argument_wrapped, subject: subject,
+          pattern: Regexp.new("\\A(?<head>\\s*#{Regexp.escape(call)}\\s+:[a-z_]\\w*\\s*,\\s*)" \
+                              "(?<value>#{starts.source}.*)\\z"),
+          replace: "\\k<head>#{wrapper}")
+      end
+
+      # The relation methods a scope body may start with — the ladder's own detect pattern, so the rule
+      # and the scan agree about what a scope body is.
+      RELATION_START = /(?:where|order|joins|includes|group|having|limit|offset|select|rewhere|unscope)\b/
+
+      # **A block whose body is a bare `return`.** 4.1 makes `before_save { return false }` a
+      # `LocalJumpError` and the guide's fix is the value the block meant to return; 5.0 needs the same
+      # shape written as `throw(:abort)` instead. Those two changes are the family, and what they share
+      # is the safety property: the body is *exactly* one `return <expression>` (with an optional `if`
+      # or `unless`), so a `return` in the middle of a block — where dropping it would leave the
+      # statements after it unreachable, and a rule that dropped them would be deleting code — does not
+      # match. `value` narrows the expression when the change names one (`return false`).
+      def self.block_value(subject:, body:, value: nil)
+        expression = value ? value.source : "[^;{}]*?"
+        Rule.new(family: :block_value, subject: subject,
+          pattern: Regexp.new("(?<open>\\{\\s*)return\\b\\s*(?<value>#{expression})" \
+                              "(?<modifier>\\s+(?:if|unless)\\s+[^;{}]+)?(?<close>\\s*\\})"),
+          replace: lambda do |found|
+            written = found[:value].strip
+            written = "nil" if written.empty?
+            text = format(body, value: written)
+            # The modifier keeps its own leading whitespace, so the body's spacing survives the edit:
+            # `{ return false if x }` is `{ throw(:abort) if x }` and not `{ throw(:abort)if x }`. And
+            # a body with no value and no modifier (`{ return }`) had the whitespace before the brace
+            # eaten by the pattern, so it goes back — `{ nil}` is not a line anybody writes.
+            modifier = found[:modifier].to_s
+            text = "#{text}#{modifier}"
+            text = "#{text} " if found[:value].strip.empty? && modifier.empty?
+            "#{found[:open]}#{text}#{found[:close]}"
+          end)
+      end
+
+      # **A setting whose value moved**: the name stays and what it accepts does not. The pattern is
+      # the setting and the value the old release took, so a line already naming the new one does not
+      # match and is left rather than being rewritten twice.
+      def self.value_moved(subject:, setting:, from:, to:)
+        Rule.new(family: :value_moved, subject: subject,
+          pattern: /(?<head>#{Regexp.escape(setting)}\s*=\s*)#{Regexp.escape(from)}\b/,
+          replace: "\\k<head>#{to}")
+      end
+
+      # **A statement whose whole text becomes another statement.** The match is the statement's own
+      # text exactly, with only the indentation free — so a line that has been edited since the guide
+      # was written does not match, and the family cannot half-replace a line it only half-recognises.
+      # It is for a change whose replacement is a *different* line rather than a different name.
+      def self.line_replaced(subject:, from:, to:)
+        Rule.new(family: :line_replaced, subject: subject,
+          pattern: /\A(?<indent>\s*)#{Regexp.escape(from)}\s*\z/, replace: "\\k<indent>#{to}")
+      end
+
+      # The mutators the query lost, from the change's own detect pattern.
+      RELATION_MUTATORS = /(?:map!|collect!|delete_if|keep_if|reject!|select!|compact!|sort!|sort_by!|uniq!)/
+
+      # The methods whose *result* is a query — what makes `.to_a` the right thing to add. Wider than
+      # `RELATION_START`, which is the ladder's own list of scope-body openings: `Item.all` is a query
+      # and not a scope body, and the two questions are different ones.
+      QUERY_METHODS = /(?:all|scoped|#{RELATION_START.source})/
+
+      # A call whose receiver is a query: a constant, then any chain of dotted calls, then one of those
+      # methods.
+      QUERY_CALL = /\.(?:#{QUERY_METHODS.source})(?:\([^()]*\))?/
+      QUERY_RECEIVER = /\b[A-Z]\w*(?:::\w+)*(?:\.\w+(?:\([^()]*\))?)*#{QUERY_CALL.source}/
+
+      # **A mutator the query no longer has.** The note's own edit is `.to_a` first, and the family is
+      # careful about which receiver it will do that to: `Array#to_a` returns the array itself, so the
+      # edit is a no-op on one, while `Hash#to_a` is a different object — which is why the rule only
+      # matches a receiver whose last call is a query (`Item.where(...)`, `Item.all`). A local variable
+      # is left: nothing on the line says whether it holds a relation or a hash.
+      def self.query_materialised(subject:, methods: RELATION_MUTATORS)
+        Rule.new(family: :query_materialised, subject: subject,
+          pattern: /(?<receiver>#{QUERY_RECEIVER.source})\.(?<mutator>#{methods.source})(?!\w)/,
+          replace: "\\k<receiver>.to_a.\\k<mutator>")
+      end
+
+      # **A model's superclass, and the file that has to exist before the rename means anything.**
+      # `class Item < ActiveRecord::Base` becomes `class Item < ApplicationRecord`, and the definition
+      # itself is the one `ActiveRecord::Base` that stays — so the family refuses to rename the class it
+      # is about to write, which is the bug a second walk would otherwise hit: the scan would locate
+      # `class ApplicationRecord < ActiveRecord::Base` in the file this rule created and make it
+      # inherit from itself.
+      def self.superclass_moved(subject:, from:, to:, defines:, scaffold: nil)
+        Rule.new(family: :superclass_moved, subject: subject, scaffold: scaffold,
+          pattern: /\A(?<indent>\s*class\s+(?!#{Regexp.escape(defines)}\b)[A-Z]\w*(?:::\w+)*\s*<\s*)#{Regexp.escape(from)}\b/,
+          replace: "\\k<indent>#{to}")
       end
 
       # **The rules, by the subject the ladder and the scan both use.** Each is here because its own
@@ -199,13 +513,95 @@ module AgentsFyi
         # one argument. Single-quoted, because a double-quoted `\k` is Ruby's own escape and arrives
         # as a bare `k` — measured by this rule's first test, which is why it asserts the written line.
         call_replaced(subject: "MultiJson", from: "MultiJson.dump", to: '\k<a1>.to_json'),
-        call_replaced(subject: "MultiJson", from: "MultiJson.load", to: 'JSON.parse(\k<a1>)')
+        call_replaced(subject: "MultiJson", from: "MultiJson.load", to: 'JSON.parse(\k<a1>)'),
+
+        # **The 4.0 dynamic finders, one instance per name shape, all of them the same family.** The
+        # ladder documents them as one change (`find_all_by_*`), the note gives each destination
+        # (`where`, `.last`, `find_or_create_by`), and the family splits the attribute list out of the
+        # method name — which is the part that would otherwise be a rule per finder.
+        finder_moved(subject: "find_all_by_*", from: "find_all_by", to: :where),
+        finder_moved(subject: "find_all_by_*", from: "find_last_by", to: :where_last),
+        finder_moved(subject: "find_all_by_*", from: "find_or_create_by", to: :find_or_create_by),
+        finder_moved(subject: "find_all_by_*", from: "find_or_initialize_by", to: :find_or_initialize_by),
+        finder_moved(subject: "find_all_by_*", from: "scoped_by", to: :where),
+        # The note's own example: `find(:all, conditions: {name: 'x'})` is `where(name: 'x')`.
+        find_conditions(subject: "find(:all, ...)"),
+        # "A scope body has to be callable … wrap it in a lambda."
+        argument_wrapped(subject: "scope :name, where(...)", call: "scope"),
+
+        # **`return` inside an inline block, and its two rungs.** 4.1 wants the value the block meant
+        # to return; 5.0 wants the halt written explicitly. The family is the block whose body is
+        # exactly one `return`, so the two instances differ only in what the body becomes.
+        block_value(subject: "return inside an inline callback block", body: "%<value>s"),
+        block_value(subject: "return false from a before callback", body: "throw(:abort)", value: /false/),
+
+        # **`belongs_to`, and the one rule that reads the rest of the file.** Whether an association is
+        # required is not a fact about the `belongs_to` line: a model that already says
+        # `validates_presence_of :user` is one the new default agrees with, and adding `optional: true`
+        # there would be noise in a diff whose whole value is being the list of associations whose
+        # behaviour changed. A file the rule could not read answers "nothing validates it", which is the
+        # safe direction — the edit is the behaviour-preserving one either way.
+        option_added(subject: "belongs_to", call: "belongs_to", option: ", optional: true",
+          context: lambda do |lines, found|
+            association = found[:call][/:\K[a-z_]\w*/]
+            # **`presence`, with no boundary around it**: `validates_presence_of` has no word
+            # boundary after the `_`, so `\bpresence\b` matched nothing and the rule added
+            # `optional: true` to an association the model already required — measured on the
+            # lighthouse, where `Bid` validates `:item` and the rule wrote the option anyway.
+            lines.none? do |line|
+              line.match?(/\b#{association}(?:_id)?\b/) && line.match?(/presence/)
+            end
+          end),
+
+        # "The callback is now inserted where it is called rather than prepended, so an
+        # authentication filter declared before it runs first. `prepend: true` restores the old
+        # order." — the note's own answer, and it is added unconditionally because the line does not
+        # show what runs before it: where nothing does, the option is redundant and a reviewer can
+        # delete it, which is a diff rather than a decision.
+        option_added(subject: "protect_from_forgery", call: "protect_from_forgery",
+          option: ", prepend: true"),
+
+        # **The 5.0 superclasses, and the files they depend on.** The note gives both halves: the
+        # definition (`self.abstract_class = true`) and the rename, and the family refuses to rename
+        # the definition itself.
+        superclass_moved(subject: "ActiveRecord::Base as a model's superclass",
+          from: "ActiveRecord::Base", to: "ApplicationRecord", defines: "ApplicationRecord",
+          scaffold: Scaffold.new(path: "app/models/application_record.rb",
+            content: "class ApplicationRecord < ActiveRecord::Base\n  self.abstract_class = true\nend\n")),
+        superclass_moved(subject: "ActiveJob::Base as a job's superclass",
+          from: "ActiveJob::Base", to: "ApplicationJob", defines: "ApplicationJob",
+          scaffold: Scaffold.new(path: "app/jobs/application_job.rb",
+            content: "class ApplicationJob < ActiveJob::Base\nend\n")),
+
+        # "Permit first and convert: `params.permit([:a, :b]).to_h`" — the key list is captured rather
+        # than enumerated, because `slice` takes as many as the call site wants.
+        call_replaced(subject: "params as a Hash", from: "slice", receiver: "params",
+          args: "[^()]*", to: 'permit(\k<a1>).to_h'),
+
+        # "Relation no longer has the in-place mutators: `Model.where(...).compact!` is
+        # `Model.where(...).to_a.compact!`."
+        query_materialised(subject: "mutator methods on a Relation"),
+
+        # "`:all` replaces true, `:none` replaces false" — two instances of one family, because the
+        # two values the release no longer accepts become two different ones.
+        value_moved(subject: "config.action_dispatch.show_exceptions",
+          setting: "config.action_dispatch.show_exceptions", from: "true", to: ":all"),
+        value_moved(subject: "config.action_dispatch.show_exceptions",
+          setting: "config.action_dispatch.show_exceptions", from: "false", to: ":none"),
+        # "`config.autoload_lib(ignore: %w(assets tasks))` replaces the hand-written lines that put lib
+        # on the autoload paths" — the statement itself, which is why this is `line_replaced`.
+        line_replaced(subject: "config.autoload_paths and $LOAD_PATH",
+          from: "config.autoload_paths += %W(\#{config.root}/lib)",
+          to: "config.autoload_lib(ignore: %w(assets tasks))")
       ].freeze
 
-      # The edits to hand the applier, the subjects a rule *applied*, and the subjects it left —
-      # `left` is a subject whose rule exists but whose line the rule would not touch, and it is
-      # carried so that a refusal is visible rather than silent.
-      def self.apply(manual, rules: RULES)
+      # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
+      # files a rule's edit depends on — `left` is a subject whose rule exists but whose line the rule
+      # would not touch, and it is carried so that a refusal is visible rather than silent.
+      #
+      # `files` is what a rule that reads more than its own line gets (`Rule#context`), by path, from
+      # the same read the scan used — so a rule and the service are looking at the same bytes.
+      def self.apply(manual, rules: RULES, files: {})
         # **A subject may have more than one rule, and the first that matches wins.** `MultiJson` is
         # two edits (`dump` and `load`), and a lookup that kept only the last one silently dropped
         # half of it — measured by this file's own test, which is why the rules are grouped rather
@@ -214,6 +610,7 @@ module AgentsFyi
         edits = []
         applied = []
         left = []
+        scaffolds = []
         Array(manual).each do |entry|
           subject = entry["subject"].to_s
           candidates = by_subject[subject].to_a
@@ -224,16 +621,26 @@ module AgentsFyi
 
           text = entry["text"].to_s
           masked = mask(text)
-          after = candidates.filter_map { |rule| rule.after(text, masked) }.first
-          if after.nil?
+          lines = files[entry["path"].to_s]
+          chosen = nil
+          written = nil
+          candidates.each do |candidate|
+            written = candidate.after(text, masked, lines: lines)
+            next if written.nil?
+
+            chosen = candidate
+            break
+          end
+          if written.nil?
             left << subject
             next
           end
 
-          edits << edit(entry, after)
+          edits << edit(entry, written)
           applied << subject
+          scaffolds << chosen.scaffold if chosen.scaffold
         end
-        Result.new(edits: edits, applied: applied, left: left)
+        Result.new(edits: edits, applied: applied, left: left, scaffolds: scaffolds.uniq)
       end
 
       # The rules that name no change in the rung's own plan: a rule that outlives its change is dead
@@ -246,10 +653,12 @@ module AgentsFyi
       end
 
       # **What would close this change's gap**, for the residue to carry. A change a rule covers needs
-      # nothing; one that does not is a queue entry with a reason, and a subject nobody has looked at
-      # yet says so in the generic sentence rather than reading as a verdict.
+      # nothing — unless the rule covers only *some* of its spellings, which is what `PARTIAL` is for.
+      # A subject nobody has looked at yet says so in the generic sentence rather than reading as a
+      # verdict.
       def self.gap_for(subject, rules: RULES)
         name = subject.to_s
+        return PARTIAL[name] if PARTIAL.key?(name)
         return nil if rules.any? { |rule| rule.subject == name }
 
         GAPS.fetch(name, GENERIC_GAP)
@@ -260,6 +669,11 @@ module AgentsFyi
       # (`Upgrade::Scanner.mask`): a client may not depend on the service's package, and the two have
       # to agree about *offsets* rather than about style, which is why the quotes stay and only their
       # contents go.
+      #
+      # **`#` followed by `{` is interpolation, not a comment**, and that exception is measured:
+      # `config.autoload_paths += %W(#{config.root}/lib)` is the line every generated application has
+      # and the line the 7.1 change is about, and a mask that blanked from that `#` onward hid the
+      # setting from the rule written for it.
       def self.mask(line)
         masked = +""
         quote = nil
@@ -273,7 +687,7 @@ module AgentsFyi
             else
               masked << " "
             end
-          elsif char == "#"
+          elsif char == "#" && line[index + 1] != "{"
             masked << (" " * (line.length - index))
             break
           elsif char == '"' || char == "'"
@@ -287,9 +701,32 @@ module AgentsFyi
         masked
       end
 
+      # Where this line's comment starts, or nil. **A rule's second half**, and `mask` alone cannot
+      # do it: blanking a comment stops a *word* from matching inside it, but `.` matches a blanked
+      # byte, so a family that runs to the end of the line still swallows the comment. `Rule#after`
+      # refuses a match that reaches past this offset.
+      def self.comment_start(line)
+        quote = nil
+        index = 0
+        while index < line.length
+          char = line[index]
+          if quote
+            quote = nil if char == quote && line[index - 1] != "\\"
+          elsif char == "#" && line[index + 1] != "{"
+            return index
+          elsif char == '"' || char == "'"
+            quote = char
+          end
+          index += 1
+        end
+        nil
+      end
+
       # The scan's own entry, plus what the applier needs to accept it: `automatic` is what the applier
       # checks, and this edit *is* a rewrite — the walker's rather than the service's — so `origin` is
-      # what tells the two apart in the record and the patch.
+      # what tells the two apart in the record and the patch. `note` is the ladder's own sentence about
+      # the change, and it travels into the record with the edit: a rule that applied a change
+      # withdraws its decision, and the note is where the caveat a reviewer needs lives.
       def self.edit(entry, after)
         {
           "path" => entry["path"], "line" => entry["line"], "text" => entry["text"],

@@ -1153,10 +1153,67 @@ class StepTest < Minitest::Test
     assert_equal 1, record.applied.size, "the rule's edit is not in the record"
     assert_equal "request.content_type", record.applied.first.subject
     assert_equal "rule", record.applied.first.origin
+    assert_equal "media_type is the old value", record.applied.first.note,
+      "the change's own note travels with the edit, because the decision it withdrew carried it"
     assert_empty record.decisions, "a change a rule applied is not a decision any more"
     assert_includes File.read(File.join(dir, "app/controllers/posts_controller.rb")),
       "type = request.media_type"
     assert_includes record.to_s, "1 of those edit(s) were made by this tool's own rules"
+  end
+
+  # **A rule's edit may depend on a file, and the file is created for it.** `class Item <
+  # ActiveRecord::Base` cannot become `class Item < ApplicationRecord` before `ApplicationRecord`
+  # exists, so the rule carries the definition and the step writes it — after the edits and before the
+  # suite, so the suite is judging the move rather than a missing constant. The apply stage names the
+  # file, because a reader of the patch has to know the diff is not the whole change.
+  def test_a_rule_that_needs_a_file_has_it_created_before_the_suite_runs
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item < ActiveRecord::Base\nend\n")
+    located = { "path" => "app/models/item.rb", "line" => 1,
+                "text" => "class Item < ActiveRecord::Base", "after" => nil,
+                "subject" => "ActiveRecord::Base as a model's superclass", "kind" => "moved",
+                "replacement" => "ApplicationRecord", "source" => "5.0",
+                "note" => "the definition itself is the one ActiveRecord::Base that stays",
+                "automatic" => false }
+    payload = plan(changes: [change(subject: "ActiveRecord::Base as a model's superclass",
+      kind: "moved", source: "5.0", replacement: "ApplicationRecord")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    definition = File.join(dir, "app/models/application_record.rb")
+    assert File.file?(definition), "the class the renamed superclass names was not created"
+    assert_includes File.read(definition), "self.abstract_class = true"
+    assert_includes File.read(File.join(dir, "app/models/item.rb")),
+      "class Item < ApplicationRecord"
+    applied = record.stages.find { |stage| stage.stage == "apply" }
+    assert_includes applied.output_tail,
+      "1 file(s) created for a rule (app/models/application_record.rb)"
+  end
+
+  # An application that has already made the move keeps its own definition: the file it wrote may have
+  # anything in it, and overwriting it would be this tool editing a file nobody asked it to.
+  def test_a_scaffold_leaves_a_file_the_application_already_has
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item < ActiveRecord::Base\nend\n")
+    ours = "class ApplicationRecord < ActiveRecord::Base\n  self.abstract_class = true\n  # ours\nend\n"
+    with_source(dir, "app/models/application_record.rb", ours)
+    located = { "path" => "app/models/item.rb", "line" => 1,
+                "text" => "class Item < ActiveRecord::Base", "after" => nil,
+                "subject" => "ActiveRecord::Base as a model's superclass", "kind" => "moved",
+                "replacement" => "ApplicationRecord", "source" => "5.0", "note" => "",
+                "automatic" => false }
+    payload = plan(changes: [change(subject: "ActiveRecord::Base as a model's superclass",
+      kind: "moved", source: "5.0", replacement: "ApplicationRecord")])
+    corpus = FakeCorpus.new(payload: payload, manual: [located])
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    assert_equal ours, File.read(File.join(dir, "app/models/application_record.rb"))
+    applied = record.stages.find { |stage| stage.stage == "apply" }
+    refute_includes applied.output_tail, "file(s) created for a rule"
   end
 
   # A manual call site the plan does not name is the most useful thing a refusal can
