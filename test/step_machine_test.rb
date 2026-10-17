@@ -36,6 +36,30 @@ class StepMachineTest < Minitest::Test
 
   GEMFILE = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\n)
 
+  # A lockfile shaped like a real application's: the meta-gem pins its components at its own
+  # version, and the gems it depends on that are not components are pinned elsewhere.
+  FRAMEWORK_LOCK = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        actionpack (4.0.0.rc1)
+          activesupport (= 4.0.0.rc1)
+        activesupport (4.0.0.rc1)
+        rails (4.0.0.rc1)
+          actionpack (= 4.0.0.rc1)
+          railties (= 4.0.0.rc1)
+          sprockets-rails (~> 2.0.0)
+        railties (4.0.0.rc1)
+        rake (10.0.4)
+        sprockets-rails (2.0.0)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 4.0.0.rc1)
+  LOCK
+
   class FakeSource
     def initialize(root, commit: "abc12345", home: nil)
       @root = root
@@ -244,6 +268,25 @@ class StepMachineTest < Minitest::Test
     assert pin, "the pin stage is not in the record"
     # The era is whatever the fleet settles on; what is asserted is the command's own shape.
     assert_equal "bundle update rails --conservative", pin.command.split(" ", 3).last
+  end
+
+  # **The framework's own gems are named with the meta-gem; nothing else is unlocked.** A
+  # conservative resolve that left `activemodel` at the version the move is leaving cannot find
+  # a compatible set at all — bundler named exactly that gem and advised rebuilding the
+  # snapshot, which is the unconstrained update that moved rake to 12.3.3 and broke
+  # `rails:update`. The gems pinned at the framework's version move with it; `rake` and
+  # `sprockets-rails` stay where the application put them.
+  def test_the_pin_unlocks_the_framework_s_own_gems_and_leaves_the_rest_locked
+    record = step(app(lockfile: FRAMEWORK_LOCK), machines: machines).run
+
+    pin = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    command = pin.command.split(" ", 3).last
+
+    assert_includes command, "actionpack", command
+    assert_includes command, "railties", command
+    assert_includes command, "--conservative", command
+    refute_includes command, "rake ", command
+    refute_includes command, "sprockets-rails", command
   end
 
   # No interpreter can install this application's bundle. The verdict is `unverified` — the

@@ -112,6 +112,15 @@ module AgentsFyi
         @specs.dup
       end
 
+      # Every gem the lockfile pins at this exact version, sorted. **Rails releases its
+      # framework components in lockstep**, so this is how a lockfile spells "the framework":
+      # an application's `rails`, `actionpack`, `activemodel` and the rest are all at one
+      # version, and the gems that merely depend on them (`rake`, `sprockets-rails`) are not.
+      # The pin reads it to name the gems that have to move with the meta-gem.
+      def pinned_at(version)
+        @specs.select { |_name, pinned| pinned == version.to_s }.keys.sort
+      end
+
       private
 
       # Parse the file with the *application* as Bundler's root.

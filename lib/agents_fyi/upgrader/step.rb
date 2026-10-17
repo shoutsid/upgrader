@@ -989,9 +989,24 @@ module AgentsFyi
         # a failure that reads as the application's. `--conservative` keeps the locked version
         # of everything the resolution does not have to change, which is the same rule the
         # routing states: what moves is what this rung requires.
-        stages << command(Record::PIN, ["bundle", "update", "rails", "--conservative"],
+        stages << command(Record::PIN, ["bundle", "update", *pin_gems, "--conservative"],
           chdir: @worktree.root, env: @worktree.bundle_env)
         nil
+      end
+
+      # **The gems that move with the meta-gem, and the measurement that says they must be
+      # named.** Rails releases its framework components in lockstep, so `rails (= 4.1.0)`
+      # requires `activemodel (= 4.1.0)` — and a conservative resolve that left `activemodel`
+      # where the move found it cannot find a compatible set at all: bundler answered "could
+      # not find compatible versions for gem activemodel ... rails (= 4.1.0) ... depends on
+      # activemodel (= 4.1.0)", with its own advice to rebuild the snapshot from scratch,
+      # which is the unconstrained update that moved rake. The set is read from the
+      # application's lockfile — the gems pinned at the version the move leaves — rather than
+      # from a component list kept here, because such a list would have to be extended by hand
+      # for every Rails release that adds one (`actioncable`, `activestorage`, `actiontext`)
+      # and would be silently wrong for the release this tool has not met yet.
+      def pin_gems
+        ["rails", *@lockfile.pinned_at(@from)].uniq
       end
 
       # Pure, and its own method, because it is the one thing that rewrites a line of

@@ -51,6 +51,30 @@ class LockfileTest < Minitest::Test
        2.5.22
   LOCK
 
+  # The shape a real application's lockfile has: the meta-gem pins its components at its own
+  # version, and the gems it depends on that are *not* components are pinned elsewhere.
+  FRAMEWORK = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        actionpack (4.0.0.rc1)
+          activesupport (= 4.0.0.rc1)
+        activesupport (4.0.0.rc1)
+        rails (4.0.0.rc1)
+          actionpack (= 4.0.0.rc1)
+          railties (= 4.0.0.rc1)
+          sprockets-rails (~> 2.0.0)
+        railties (4.0.0.rc1)
+        rake (10.0.4)
+        sprockets-rails (2.0.0)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 4.0.0.rc1)
+  LOCK
+
   NO_RAILS = <<~LOCK
     GEM
       remote: https://rubygems.org/
@@ -113,6 +137,17 @@ gem "dotenv", path: "vendor/gems/dotenv-2.0.1"
     with_lockfile(RAILS_APP) do |lockfile|
       assert_equal "rails", lockfile.rails.gem
       assert_equal "4.2.11", lockfile.rails_version
+    end
+  end
+
+  # **A lockfile spells "the framework" as the gems pinned at the meta-gem's own version.**
+  # Rails releases its components in lockstep, so this is the set that has to move with the
+  # meta-gem — and the gems that merely depend on them (`rake`, `sprockets-rails`) are not in
+  # it. The pin names exactly these in its `bundle update`, and nothing else.
+  def test_the_gems_pinned_at_the_framework_s_version_are_the_framework
+    with_lockfile(FRAMEWORK) do |lockfile|
+      assert_equal %w[actionpack activesupport rails railties], lockfile.pinned_at("4.0.0.rc1")
+      assert_empty lockfile.pinned_at("4.1.0")
     end
   end
 
