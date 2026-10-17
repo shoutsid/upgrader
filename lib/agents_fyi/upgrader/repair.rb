@@ -60,10 +60,15 @@ module AgentsFyi
       # client's own home: no file in the application's tree, and none to clean up.
       CONFIG = "opencode.json"
 
-      # One attempt, as the record shows it.
-      Attempt = Struct.new(:number, :command, :ran, :exit_code, :seconds, :output_tail,
+      # One attempt, as the record shows it. **`ran` and `timed_out` are separate facts, and
+      # the loop turns on the first**: an agent that could not be started never touched the
+      # tree, so asking again asks the same nothing, while one killed at the deadline spent the
+      # whole budget and may have left a patch behind — the first live attempt here ran fifteen
+      # minutes and was recorded as "did not run", which stopped the loop before the suite ever
+      # looked at what it had changed. An attempt that timed out is measured like any other.
+      Attempt = Struct.new(:number, :command, :ran, :timed_out, :exit_code, :seconds, :output_tail,
         :changed, keyword_init: true) do
-        def ok? = ran && exit_code.to_i.zero?
+        def ok? = ran && !timed_out && !exit_code.nil? && exit_code.zero?
       end
 
       Result = Struct.new(:attempts, :repaired, keyword_init: true) do
@@ -145,6 +150,9 @@ module AgentsFyi
           attempts << attempt
           @on_attempt&.call(attempt)
           @out.puts("  repair: attempt #{attempt.number} — #{describe(attempt)}") if @out
+          # **Only a start that never happened ends the loop.** A timed-out attempt ran; the
+          # suite measures its patch like any other attempt's, and the next one is briefed with
+          # what the suite said about it.
           break unless attempt.ran
 
           suite = @rerun&.call
@@ -165,10 +173,11 @@ module AgentsFyi
         prompt = prompt_for(failure)
         before = changed_files
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        exit_code, output = run_agent(prompt)
+        exit_code, output, outcome = run_agent(prompt)
         Attempt.new(
-          number: number, command: command_label(prompt), ran: !exit_code.nil?,
-          exit_code: exit_code, seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
+          number: number, command: command_label(prompt), ran: outcome != :not_started,
+          timed_out: outcome == :timed_out, exit_code: exit_code,
+          seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
           output_tail: tail(output), changed: changed_files - before
         )
       end
@@ -193,11 +202,18 @@ module AgentsFyi
         # nor the method's real subject. Every test had passed a Hash, which is why the first
         # live repair was where this was found.
         env = @env.to_h.merge("OPENCODE_CONFIG" => config_path)
-        return @runner.call(argv, chdir: @root, timeout: @timeout, env: env) if @runner
-
-        collect(argv, env)
+        answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)
+        exit_code, output, outcome = answer
+        # An injected runner answers `[exit_code, output]`, the way the first tests wrote it;
+        # what that means is decided here rather than by every fake: no exit code and no
+        # outcome is a start that never happened.
+        [exit_code, output, outcome || (exit_code.nil? ? :not_started : :ran)]
       end
 
+      # `[exit_code, output, outcome]`, where the outcome is `:ran`, `:timed_out` or
+      # `:not_started`. **A killed attempt is not a failed start**: the process existed and its
+      # edits are in the tree, so the caller measures them rather than discarding them — and a
+      # process killed by something other than this deadline is still one that ran.
       def collect(argv, env)
         output = +""
         status = nil
@@ -211,13 +227,13 @@ module AgentsFyi
             rescue Errno::ESRCH
               nil
             end
-            return [nil, output + "\nthe repair agent was killed after #{@timeout}s"]
+            return [nil, output + "\nthe repair agent was killed after #{@timeout}s", :timed_out]
           end
           status = wait.value
         end
-        [status.exitstatus, output]
+        [status.exitstatus, output, :ran]
       rescue Errno::ENOENT => e
-        [nil, "the repair agent could not be started: #{e.message}"]
+        [nil, "the repair agent could not be started: #{e.message}", :not_started]
       end
 
       def command_label(prompt)
@@ -227,6 +243,7 @@ module AgentsFyi
 
       def describe(attempt)
         return "did not run (#{attempt.output_tail.lines.first.to_s.strip})" unless attempt.ran
+        return "timed out after #{attempt.seconds.round(1)}s" if attempt.timed_out
 
         "exit #{attempt.exit_code} in #{attempt.seconds.round(1)}s" \
           "#{attempt.changed.empty? ? ", no file changed" : ", #{attempt.changed.size} file(s) changed"}"

@@ -118,8 +118,11 @@ module AgentsFyi
         :stage, :command, :ran, :exit_code, :seconds, :output_tail,
         keyword_init: true
       ) do
+        # **No exit status is not a success.** A command killed at its deadline has
+        # `ran: true` and no exit code, and `nil.to_i` reads that as zero — which is how a
+        # timed-out repair would have counted as one that worked.
         def ok?
-          ran && exit_code.to_i.zero?
+          ran && !exit_code.nil? && exit_code.to_i.zero?
         end
 
         def to_h

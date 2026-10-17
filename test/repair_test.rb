@@ -3,6 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "json"
+require "stringio"
 require "tmpdir"
 require "agents_fyi/upgrader"
 
@@ -211,6 +212,57 @@ class RepairTest < Minitest::Test
     assert_equal false, result.attempts.first.ran
     assert_includes result.attempts.first.output_tail, "could not be started"
     assert_equal 1, agent.calls.length
+  end
+
+  # **A timeout is a spent attempt, not a missing one.** The agent ran the whole budget and may
+  # have left a patch, so the suite is re-run on it and the next attempt follows — the live
+  # failure this was written from recorded a fifteen-minute attempt as "did not run" and never
+  # looked at what it had changed.
+  def test_an_attempt_that_times_out_is_still_measured_and_the_next_attempt_follows
+    agent = FakeAgent.new do |_argv, chdir, n|
+      File.write(File.join(chdir, "partial-#{n}.rb"), "x\n")
+      [nil, "thinking about the failure\nthe repair agent was killed after 900s", :timed_out]
+    end
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)]).run
+
+    assert result.repaired, result.to_s
+    assert_equal 2, result.attempts.length
+    first = result.attempts.first
+    assert first.ran, "an agent that ran its whole budget was recorded as never having run"
+    assert first.timed_out
+    assert_nil first.exit_code
+    refute first.ok?, "a killed attempt is not a success"
+    assert_equal ["partial-1.rb"], first.changed
+    assert_includes first.output_tail, "killed after 900s"
+    assert_equal 2, agent.calls.length, "a timeout must not end the loop"
+  end
+
+  # The sentence a reader gets, because "did not run" for an agent that ran fifteen minutes is
+  # a lie a reviewer would believe.
+  def test_a_timed_out_attempt_says_so_rather_than_claiming_it_never_ran
+    out = StringIO.new
+    agent = FakeAgent.new { |_argv, _chdir, _n| [nil, "the repair agent was killed after 900s", :timed_out] }
+
+    Repair.new(
+      root: @root, evidence: evidence, budget: budget(attempts: 1),
+      env: {}, out: out, runner: agent, rerun: -> { FakeSuite.new(ok: false) }
+    ).run
+
+    assert_includes out.string, "timed out after"
+    refute_includes out.string, "did not run"
+  end
+
+  # A process killed by something other than this deadline is still one that ran: it existed,
+  # it produced output, and its edits are in the tree — so the suite measures them.
+  def test_a_process_that_was_signalled_still_counts_as_having_run
+    agent = FakeAgent.new { |_argv, _chdir, _n| [nil, "killed by the kernel", :ran] }
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)]).run
+
+    assert result.attempts.first.ran
+    refute result.attempts.first.timed_out
+    assert_equal 2, result.attempts.length
   end
 
   # --- the brief --------------------------------------------------------------------------
