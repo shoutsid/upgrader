@@ -34,7 +34,7 @@ module AgentsFyi
           agents-fyi-upgrader preflight --repo PATH|URL [--ref REF] [--api URL]
                                     [--record DIR]
           agents-fyi-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
-                                    [--record DIR] [--work DIR]
+                                    [--record DIR] [--work DIR] [--force] [--publish]
           agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] [--to VERSION] [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
@@ -169,7 +169,7 @@ module AgentsFyi
           repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
           home: options[:home], out: @out, work: options[:work], record: options[:record],
           ledger: Ledger.load(File.join(options[:home], "ledger.json")),
-          suite_timeout: options[:step_timeout]
+          suite_timeout: options[:step_timeout], force: options[:force]
         ).run
         return step_status(record) unless options[:publish]
 
@@ -263,6 +263,20 @@ module AgentsFyi
           # items. Those arrive here as leftover arguments and are collected below —
           # OptionParser would otherwise take only the first and read the second as a
           # repository named after the next flag.
+          # **Four flags the usage text named before the parser did.** `--cycles`, `--walk`,
+          # `--rungs` and `--force` were documented (and the deployment's entrypoint passes
+          # two of them) while `parse` had no option for any of them, so `serve --walk` read
+          # as "no walk" and a bounded run never bounded. Found by reading the parser against
+          # the usage text after a `--force` that would not parse; `cli_test.rb` now drives
+          # every flag the text names through the parser, which is the test that would have
+          # caught it the first time.
+          opts.on("--cycles N", Integer, "stop `serve` after N cycles (default: never)") { |v| options[:cycles] = v }
+          opts.on("--walk", "chain rungs within a cycle, and read an empty --to as the top " \
+                            "of the service's ladder") { |v| options[:walk] = v }
+          opts.on("--rungs N", Integer, "how many rungs `--walk` chains in one cycle " \
+                                        "(default #{Serve::DEFAULT_RUNGS_PER_CYCLE})") { |v| options[:rungs] = v }
+          opts.on("--force", "walk a move even though the ledger has settled it — the " \
+                             "ledger is a memory, not a lock") { |v| options[:force] = v }
           opts.on("--repos OWNER/NAME[@REF]", "a repository for `serve` to walk") do |v|
             (options[:repos] ||= []).concat(v.split(","))
           end

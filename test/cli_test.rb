@@ -272,6 +272,38 @@ class CliTest < Minitest::Test
     end
   end
 
+  # **Every flag the usage text names is a flag the parser has.** `--walk`, `--rungs`,
+  # `--cycles` and `--force` were documented — and two of them are passed by the deployment's
+  # own entrypoint — while `parse` had no option for any of them, so `serve --walk` silently
+  # meant "no walk" and a bounded run never bounded. The deploy test compares the entrypoint
+  # against the *text*, which is exactly how the two agreed while the parser did not; this is
+  # the direction that catches a flag written and never read.
+  def test_every_flag_the_usage_text_names_parses
+    flags = AgentsFyi::Upgrader::CLI::USAGE.scan(/--[a-z-]+/).uniq
+    assert_operator flags.length, :>, 5, "the usage text names no flags"
+
+    valued = %w[--repo --ref --to --api --record --work --home --heartbeat --interval
+                --step-timeout --cycles --rungs --repos]
+    flags.each do |flag|
+      argv = ["serve", flag]
+      argv << "1" if valued.include?(flag)
+      cli = AgentsFyi::Upgrader::CLI.new(argv, out: StringIO.new, err: StringIO.new, env: {})
+      options = cli.send(:parse)
+
+      assert_nil options[:error], "#{flag} is in the usage text and not in the parser: " \
+                                  "#{options[:error]}"
+    end
+  end
+
+  # And the flag an operator reaches for when the ledger says no. The ledger is a memory
+  # rather than a lock: `--force` sets a settled move aside, and the record says so.
+  def test_force_is_the_operators_override_of_the_ledger
+    options = AgentsFyi::Upgrader::CLI.new(["step", "--repo", ".", "--force"],
+      out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
+
+    assert_equal true, options[:force]
+  end
+
   def test_an_unknown_command_says_which_modes_exist
     code, _out, err = run_cli(["upgrade", "--repo", "."])
 

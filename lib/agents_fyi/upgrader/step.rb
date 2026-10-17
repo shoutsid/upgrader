@@ -59,7 +59,7 @@ module AgentsFyi
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
-        research: nil, env: ENV, repair: nil
+        research: nil, env: ENV, repair: nil, force: false
       )
         @repository = repository
         @to = to
@@ -106,6 +106,12 @@ module AgentsFyi
         # on with a number and a step by hand stays off.
         @repair = repair
         @env = env
+        # **The ledger is a memory, not a lock.** `--force` is the operator saying "walk this
+        # rung now" — after fixing whatever made the last attempt unverifiable, after an image
+        # rebuild, or simply to see it again — and the record says the ledger was set aside so
+        # a forced attempt is never read as an ordinary one. The loop never passes it: a walk
+        # that ignored its own memory would re-derive every rung every cycle.
+        @force = force
       end
 
       def run
@@ -251,6 +257,10 @@ module AgentsFyi
         entry = @ledger.find(repo: @repository, commit: @worktree.commit,
           from_version: step["from_version"], to_version: step["to_version"])
         return [nil, false] unless entry
+        if @force
+          @out.puts("  ledger: #{entry.verdict} for this move is set aside (--force)") if @out
+          return [entry, false]
+        end
 
         settled = @ledger.settled?(
           repo: @repository, commit: @worktree.commit,
