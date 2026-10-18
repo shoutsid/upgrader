@@ -97,6 +97,28 @@ class CheckpointTest < Minitest::Test
       "the reset deleted an ignored log file"
   end
 
+  # **The patch machinery marks a new file intent-to-add, and a reset has to clear that too.**
+  # Measured on the 6.0 rung: the step failed, `app:update` had created
+  # `config/initializers/new_framework_defaults_6_0.rb` and an ActiveStorage migration, the loop said
+  # the tree was "back at its base commit" — and both files were still there. The reason is the
+  # record's own patch: it is built with `git add --intent-to-add --all` (`Step#patch`), which is a
+  # path the *index* knows, and `git clean -fd` removes untracked paths only. The next attempt's patch
+  # then refused to apply ("already exists in working directory"), which is how it was found — and a
+  # 6.0-only initializer sitting in a tree that claims to be 5.2 is exactly the quiet wrongness the
+  # kept-tree rule exists to prevent.
+  def test_a_reset_clears_an_addition_the_patch_machinery_marked_intent_to_add
+    FileUtils.mkdir_p(File.join(@dir, "config", "initializers"))
+    File.write(File.join(@dir, "config", "initializers", "new_framework_defaults_6_0.rb"),
+      "# app:update's addition, as the patch machinery makes it visible\n")
+    git("add", "--intent-to-add", "--all")
+
+    Checkpoint.reset(@dir)
+
+    refute File.exist?(File.join(@dir, "config", "initializers", "new_framework_defaults_6_0.rb")),
+      "a file the patch machinery marked intent-to-add survived the reset"
+    refute dirty?, "the tree is still dirty after a reset: #{git("status", "--porcelain")}"
+  end
+
   def test_the_message_names_both_releases
     assert_equal "agents-fyi upgrader: the 7.1.0 -> 7.2.0 step, as this tool made it",
       Checkpoint.message(from: "7.1.0", to: "7.2.0")

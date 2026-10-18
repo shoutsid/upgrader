@@ -24,11 +24,17 @@ module AgentsFyi
     #   and committing it would make the next cycle plan from a release nobody has shown
     #   to work. The ladder is walked on evidence, so a step that produced none advances
     #   nothing.
-    # * **A reset is `checkout` plus `clean`, never `clean -x`.** Ignored files are
+    # * **A reset is `reset`, `checkout` and `clean`, never `clean -x`.** Ignored files are
     #   deliberately left alone: the installed bundle, `tmp/`, `log/` and the vendored
     #   caches are the expensive half of the tree and none of them is part of a step's
     #   result. Only tracked modifications and untracked *additions* — which is exactly
-    #   what a step makes — are put back.
+    #   what a step makes — are put back. The `reset` is the first of the three and not a
+    #   flourish: the record's own patch is built with `git add --intent-to-add --all`
+    #   (`Step#patch`), which is an *index* entry, and `clean -fd` removes untracked paths
+    #   only — measured on the 6.0 rung, where `app:update`'s
+    #   `config/initializers/new_framework_defaults_6_0.rb` and an ActiveStorage migration
+    #   survived a "back at its base commit" reset and the next attempt's patch refused to
+    #   apply over them.
     module Checkpoint
       # The message a checkpoint carries, and it names the move rather than this tool:
       # `git log` on the tree is how an operator reads what a kept repository has been
@@ -63,8 +69,11 @@ module AgentsFyi
       end
 
       # Back to the base commit: the caller's files restored, the step's added files
-      # removed, ignored files (the bundle, `tmp`, `log`) left where they are.
+      # removed, ignored files (the bundle, `tmp`, `log`) left where they are. The index
+      # goes back to HEAD first, so a path the patch machinery marked intent-to-add is a
+      # file this can remove — see the rule above.
       def self.reset(root)
+        git(root, "reset", "--quiet")
         git(root, "checkout", "--", ".")
         git(root, "clean", "-fd", "--quiet")
       end
