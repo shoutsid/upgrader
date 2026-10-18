@@ -1762,6 +1762,16 @@ module AgentsFyi
       def stuck_gems(text)
         quoted = text.to_s.scan(/could not find compatible versions for gem "([^"]+)"/).flatten
         bare = text.to_s.scan(/could not find compatible versions for gem ([\w.-]+)/).flatten
+        # **The other shape of the same answer, and it is why a digest declaration can be
+        # narrowed at all.** A Gemfile line the move *added* — a `declared` entry — is a
+        # requirement the lock does not satisfy, and bundler answers by naming the gem to unlock
+        # rather than with a version conflict: measured at the 4.2 rung, `responders ~> 2.0`
+        # declared beside a lock holding 1.1.2 exits 7 with "You have requested: responders
+        # ~> 2.0 / The bundle currently has responders locked at 1.1.2. / Try running `bundle
+        # update responders`". The pin's first round names only the framework, so without this
+        # the rung fails on a gem the digest had already declared and the resolve never runs.
+        requested = text.to_s.scan(/The bundle currently has ([\w.-]+) locked at/).flatten +
+                    text.to_s.scan(/Try running `bundle update ([^`]+)`/).flatten
         # **And a requirer whose own requirement is on the gem bundler could not place — directly, and
         # no further.** The gem bundler cannot place is often not the gem holding it back: measured on
         # the lighthouse's rspec-rails move, bundler named `rspec-mocks`, `rspec-expectations` and
@@ -1785,7 +1795,7 @@ module AgentsFyi
 
           requirer
         end
-        ((named + requirers).uniq & @lockfile.specs.keys)
+        ((named + requested + requirers).uniq & @lockfile.specs.keys)
       end
 
       # **The gems that move with the meta-gem, and the measurement that says they must be

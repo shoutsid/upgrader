@@ -103,8 +103,9 @@ class StepMachineTest < Minitest::Test
   end
 
   class FakeCorpus
-    def initialize(requires_ruby: "1.9.3")
+    def initialize(requires_ruby: "1.9.3", migrations: [])
       @requires_ruby = requires_ruby
+      @migrations = migrations
     end
 
     def upgrade(from:, to:)
@@ -121,7 +122,11 @@ class StepMachineTest < Minitest::Test
     end
 
     def gem_migrations(gems:)
-      { "migrations" => [], "counts" => { "selected" => 0, "total" => 0 }, "stored" => false,
+      # The service's own rule, mirrored so the double cannot lie: a `declared` entry is for a gem
+      # the caller does not hold — the framework brings it in — so it travels with every answer.
+      { "migrations" => @migrations.select { |migration|
+        gems.include?(migration["gem"]) || migration["kind"] == "declared"
+      }, "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,
         "next_step" => "the digest's own sentence" }
     end
 
@@ -295,9 +300,10 @@ class StepMachineTest < Minitest::Test
     ERAS.to_h { |era| [era, FakeMachine.new(era, **(block ? yield(era) : {}))] }
   end
 
-  def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker")
+  def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
+           to: "4.1.0")
     Step.new(
-      repository: "acme/old", to: "4.1.0", home: dir, out: nil,
+      repository: "acme/old", to: to, home: dir, out: nil,
       source: FakeSource.new(dir), corpus: corpus || FakeCorpus.new,
       tests: tests || FakeTests.new, runner: runner || FakeRunner.new, ledger: ledger,
       runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) }
@@ -579,6 +585,66 @@ class StepMachineTest < Minitest::Test
     refute_includes pins.last.command, "resque",
       "#{pins.last.command} (resque only reaches the conflict through sinatra, and naming it " \
       "unlocks a release this Ruby cannot run)"
+  end
+
+  # **A declaration's requirement is a line the *lock* does not satisfy, and bundler names the gem
+  # to unlock rather than answering with a version conflict.** Measured at the 4.2 rung: the
+  # declarations stage adds `responders ~> 2.0` beside a lock holding 1.1.2, and the pin's first
+  # round — which names only the framework — exits 7 with "You have requested: responders ~> 2.0 /
+  # The bundle currently has responders locked at 1.1.2. / Try running `bundle update responders`".
+  # Reading that sentence is the same mechanism the conflict message uses, and without it the rung
+  # fails on a gem the digest had already declared: the resolve that takes responders 2.4.1 never
+  # runs.
+  def test_a_pin_unlocks_the_gem_a_declaration_adds_that_the_lock_does_not_satisfy
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          actionpack (4.1.0)
+            activesupport (= 4.1.0)
+          activesupport (4.1.0)
+          rails (4.1.0)
+            actionpack (= 4.1.0)
+            railties (= 4.1.0)
+          railties (4.1.0)
+          responders (1.1.2)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.1.0)
+
+      BUNDLED WITH
+         1.17.3
+    LOCK
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.1.0"\n)
+    corpus = FakeCorpus.new(migrations: [
+      { "gem" => "responders", "kind" => "declared", "requirement" => "~> 2.0", "mechanical" => true,
+        "when" => { "rails_at_least" => "4.2" },
+        "note" => "the resolver picks a release that cannot sit beside the Rails being moved to",
+        "source" => "the 4.2 rung's own `bundle update` output" }
+    ])
+    runner = FakeRunner.new(answers: {
+      "responders" => [0, ""],
+      "bundle update" => [7, "Fetching gem metadata from https://rubygems.org/...........\n" \
+                             "You have requested:\n  responders ~> 2.0\n\n" \
+                             "The bundle currently has responders locked at 1.1.2.\n" \
+                             "Try running `bundle update responders`\n"]
+    })
+    dir = app(lockfile: lockfile, gemfile: gemfile)
+
+    record = step(dir, machines: machines, runner: runner, corpus: corpus, to: "4.2.0").run
+
+    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    assert_operator pins.length, :>=, 2, "the pin should have been asked again: #{pins.map(&:command)}"
+    refute_includes pins.first.command, "responders",
+      "the first round names only the framework: #{pins.first.command}"
+    assert_includes pins.last.command, "responders",
+      "the gem bundler says to unlock was not named: #{pins.last.command}"
+    assert pins.last.ok?, pins.last.output_tail
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "responders", "~> 2.0")
+    assert_equal "passed", record.verdict, record.why
   end
 
   # **A step prunes before it installs, not only when an operator asks.** The home it mounts
