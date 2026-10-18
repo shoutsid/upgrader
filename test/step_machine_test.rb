@@ -61,6 +61,30 @@ class StepMachineTest < Minitest::Test
       rails (= 4.0.0.rc1)
   LOCK
 
+  # A lockfile where the framework's own new requirement rules a version out — `activesupport` asks
+  # for `i18n ~> 0.7` and the application has 0.6.4 — and where a gem nothing requires anything *of*
+  # has moved past its own dependency, which is the shape that cost the real walk three rounds. Nothing
+  # requires anything of `rake`, so it is the one that goes back.
+  REQUIRING_LOCK = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        activesupport (4.0.0.rc1)
+          i18n (~> 0.7)
+        i18n (0.6.4)
+        old_thing (1.0.0)
+          i18n (~> 0.6.4)
+        rails (4.0.0.rc1)
+          activesupport (= 4.0.0.rc1)
+        rake (10.0.4)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 4.0.0.rc1)
+  LOCK
+
   class FakeSource
     def initialize(root, commit: "abc12345", home: nil)
       @root = root
@@ -150,6 +174,59 @@ class StepMachineTest < Minitest::Test
       exit_code, output = @answers.find { |needle, _| line.include?(needle) }&.last || [0, ""]
       Command.new(stage: stage, command: line, ran: true, exit_code: exit_code, seconds: 0.0,
         output_tail: output.to_s)
+    end
+  end
+
+  # A runner that resolves the way bundler does: the lock it is asked to update comes back changed, and
+  # the Gemfile it was handed at that moment is remembered. Nothing else in the suite needs a resolver;
+  # this is the one property about what the *second* resolve sees.
+  class ResolvingRunner < FakeRunner
+    attr_reader :gemfile_during
+
+    def initialize(bump: { "rake" => %w[10.0.4 12.3.3] })
+      super()
+      @bump = bump
+      @gemfile_during = []
+      @resolves = 0
+    end
+
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil)
+      if argv.join(" ").include?("bundle update")
+        @resolves += 1
+        gemfile = File.read(File.join(chdir, "Gemfile"))
+        @gemfile_during << gemfile
+        path = File.join(chdir, "Gemfile.lock")
+        lock = File.read(path)
+        @bump.each do |name, (from, to)|
+          # The first resolve moves them, which is the leak this stage exists to undo; a later one
+          # asked to hold a gem puts it back, which is what a resolve with the constraint does.
+          lock = if @resolves == 1
+            lock.sub("    #{name} (#{from})", "    #{name} (#{to})")
+          elsif gemfile.include?(%(gem "#{name}", "= #{from}"))
+            held = lock.sub("    #{name} (#{to})", "    #{name} (#{from})")
+            # A resolve records what it was asked to hold in the lock's own `DEPENDENCIES`, because for
+            # the length of that resolve the Gemfile really did declare it.
+            held.sub(/^DEPENDENCIES\n/, "DEPENDENCIES\n  #{name} (= #{from})\n")
+          else
+            lock
+          end
+        end
+        File.write(path, lock)
+      end
+      super
+    end
+  end
+
+  # A routing that answers what the service answered on the walk this test exists for: the
+  # framework's own components routed `move`, not `blocked`.
+  class FrameworkMoveCorpus < FakeCorpus
+    def route(ruby:, rails:, lockfile:)
+      super.merge("gems" => [
+        { "name" => "actionpack", "version" => "4.0.0.rc1", "verdict" => "move", "to" => "4.1.0",
+          "reason" => "requires activesupport = 4.0.0.rc1, which Rails 4.1.0 does not meet" },
+        { "name" => "rake", "version" => "10.0.4", "verdict" => "move", "to" => "12.3.3",
+          "reason" => "the release moved this line" }
+      ])
     end
   end
 
@@ -272,6 +349,79 @@ class StepMachineTest < Minitest::Test
     assert pin, "the pin stage is not in the record"
     # The era is whatever the fleet settles on; what is asserted is the command's own shape.
     assert_equal "bundle update rails --conservative", pin.command.split(" ", 3).last
+  end
+
+  # **What the resolve moved without being asked to goes back.** `--conservative` does not keep it where
+  # the application put it — measured on the lighthouse, rake 10.0.4 → 12.3.3 although railties 4.1 asks
+  # only `rake >= 0.8.7` — so the pin holds it at the version it found, for the length of a second
+  # resolve, and puts the Gemfile back afterwards. The lock is what keeps it there.
+  def test_the_pin_holds_what_the_resolve_moved_without_being_asked_to
+    dir = app(lockfile: FRAMEWORK_LOCK)
+    runner = ResolvingRunner.new
+
+    step(dir, machines: machines, runner: runner).run
+
+    assert_equal 2, runner.gemfile_during.length,
+      "the resolve should have been asked again with the hold in place: #{runner.gemfile_during.length}"
+    refute_includes runner.gemfile_during.first, %(gem "rake", "= 10.0.4"),
+      "the hold was there before anything had moved"
+    assert_includes runner.gemfile_during.last, %(gem "rake", "= 10.0.4"),
+      "rake moved and nothing held it"
+    # **The constraint alone cannot put it back.** A resolve that does not *name* the gem does not
+    # re-resolve it, so bundler answers "You have requested: bcrypt-ruby = 3.0.1 ... the bundle
+    # currently has bcrypt-ruby locked at 3.1.5" and the pin fails — measured on the lighthouse, on
+    # a transitive dependency of the application's own `capistrano` line.
+    assert runner.calls.any? { |call| call.split.include?("rake") && call.include?("bundle update") },
+      "a gem cannot be put back by a resolve that does not name it: " \
+      "#{runner.calls.grep(/bundle update/).inspect}"
+    refute_includes File.read(File.join(dir, "Gemfile")), %(gem "rake"),
+      "the tool's own line stayed in the application's Gemfile"
+    refute_includes File.read(File.join(dir, "Gemfile.lock")), "  rake (=",
+      "the hold left a claim in the lockfile that the application's Gemfile does not make, and a " \
+      "lock that disagrees with its Gemfile is one the next bundle install re-resolves"
+  end
+
+  # **A gem the pin moves is not a decision, whatever the routing calls it.** The guard that keeps
+  # the framework's components out of the decision list reads the *verdict*, and the verdict is not
+  # stable: the first real rung routed them `blocked` ("no recorded release of rails fits the
+  # target") and the walk after the digest grew routed the same components `move`, so they fell
+  # through to the branch that asks whether a person has a line to edit — and five *located*
+  # decisions appeared for gems whose lines the pin's own `bundle update` names.
+  def test_a_framework_gem_the_pin_moves_is_not_a_decision_when_the_routing_calls_it_a_move
+    dir = app(lockfile: FRAMEWORK_LOCK)
+
+    record = step(dir, machines: machines, corpus: FrameworkMoveCorpus.new).run
+
+    refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("actionpack") },
+      "the pin moves actionpack and it was left as a line for a person: " \
+      "#{record.decisions.map(&:subject).inspect}"
+    assert record.decisions.any? { |decision| decision.subject.to_s.start_with?("rake") },
+      "a gem the pin does not name is still a line for a person: " \
+      "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A gem the resolved graph no longer accepts has to move, and holding it makes every resolve
+  # impossible.** Measured on the lighthouse: the resolve moved thirty gems, and twenty-eight of them
+  # were the framework's own new requirements — `activesupport 4.1` asks `i18n >= 0.6.9, ~> 0.6`
+  # against the application's 0.6.4 — so a hold on all of them failed the pin on a constraint nothing
+  # could satisfy. The graph states its own requirements, and `rake`, which nothing required anything
+  # of, is the gem the move had no reason to touch.
+  def test_the_hold_leaves_a_gem_the_resolved_graph_no_longer_accepts
+    dir = app(lockfile: REQUIRING_LOCK)
+    runner = ResolvingRunner.new(bump: {
+      "i18n" => %w[0.6.4 0.9.5], "rake" => %w[10.0.4 12.3.3], "old_thing" => %w[1.0.0 2.0.0]
+    })
+
+    step(dir, machines: machines, runner: runner).run
+
+    held = runner.gemfile_during.last
+    assert_includes held, %(gem "rake", "= 10.0.4"),
+      "nothing required anything of rake, so it goes back"
+    refute_includes held, %(gem "i18n"),
+      "activesupport asks for i18n ~> 0.7 and 0.6.4 does not satisfy it"
+    refute_includes held, %(gem "old_thing"),
+      "old_thing asks for i18n ~> 0.6.4 and the move takes i18n past it: a hold that cannot be " \
+      "satisfied is worse than no hold, because it fails the resolve"
   end
 
   # **The framework's own gems are named with the meta-gem; nothing else is unlocked.** A

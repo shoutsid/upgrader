@@ -121,6 +121,41 @@ module AgentsFyi
         @specs.select { |_name, pinned| pinned == version.to_s }.keys.sort
       end
 
+      # **What the resolved graph requires of a name, as the graph itself states it.** Every spec in
+      # the file lists the requirements it places on the gems it depends on, so this is the resolver's
+      # own answer about whether some version is still acceptable — read out of its output rather than
+      # probed with a second resolve. The pin reads it to tell a gem the move had no reason to touch
+      # from one that has to move: measured on the lighthouse, the resolve moved thirty gems, and
+      # holding all of them made every resolve impossible, because twenty-eight of them were the
+      # framework's own new requirements (`activesupport 4.1` asks `i18n >= 0.6.9, ~> 0.6` against the
+      # application's 0.6.4) while `rake` had nothing to do with it.
+      def required_of(name)
+        @parsed.specs.flat_map do |spec|
+          # This Bundler hands a spec its dependencies as a list of `Gem::Dependency` rather than as
+          # the name-keyed hash the lockfile is written in, so the name is what is matched on.
+          spec.dependencies.select { |dependency| dependency.name == name }.map(&:requirement)
+        end
+      end
+
+      # Whether the resolved graph still accepts this version of this gem.
+      def accepts?(name, version)
+        required_of(name).all? { |requirement| requirement.satisfied_by?(Gem::Version.new(version)) }
+      end
+
+      # **What the gem itself required, at the version this file pins.** The other half of "does this
+      # version still fit": a gem can be accepted by every requirement placed on it and still be
+      # impossible to keep, because its own dependencies have moved past what it asks for. Measured on
+      # the lighthouse, `rspec 2.13.0` passes the first half and fails this one — it requires
+      # `rspec-core ~> 2.13.0` while the rspec-rails move puts rspec-core at 2.14 — and holding it cost
+      # three rounds of bundler naming rspec-mocks, rspec-expectations and rspec-core before the pin
+      # gave up. A name the file does not pin requires nothing.
+      def requires_of(name)
+        spec = @parsed.specs.find { |candidate| candidate.name == name }
+        return {} unless spec
+
+        spec.dependencies.to_h { |dependency| [dependency.name, dependency.requirement] }
+      end
+
       private
 
       # Parse the file with the *application* as Bundler's root.

@@ -1742,4 +1742,40 @@ class StepTest < Minitest::Test
     assert_nil step(Dir.tmpdir).send(:rewrite_pin, %(gem "rails", github: "rails/rails"\n), "5.0.0")
     assert_nil step(Dir.tmpdir).send(:rewrite_pin, %(gem "pg", "1.4"\n), "5.0.0")
   end
+
+  # **The hold's two halves, held still.** What moved is a fact read out of two locks rather than
+  # reasoned about from a dependency graph, and the line that puts it back is written for one resolve
+  # and no longer — so both are pure, and both are asserted rather than left for a walk to notice.
+  def test_the_hold_names_what_moved_without_being_asked_to_and_only_that
+    s = step(Dir.tmpdir)
+
+    moved = s.send(:moved_without_need,
+      { "rake" => "10.0.4", "rails" => "4.0.0.rc1", "i18n" => "0.6.4" },
+      %w[rails],
+      { "rake" => "12.3.3", "rails" => "4.1.0", "i18n" => "0.6.4" })
+
+    assert_equal({ "rake" => "10.0.4" }, moved,
+      "the named gem is not a hold, and neither is a gem that did not move")
+    assert_equal [%(gem "rake", "= 10.0.4")], s.send(:hold_lines, moved)
+    assert_equal %(source "x"\ngem "rake", "= 10.0.4"\n),
+      s.send(:held_gemfile, %(source "x"\n), moved)
+    assert_equal %(source "x"\n), s.send(:held_gemfile, %(source "x"\n), {}),
+      "nothing to hold leaves the Gemfile untouched"
+  end
+
+  # **A gem the application declares is the application's line, not this tool's.** Appending a
+  # second line for one is not a hold: bundler refuses the Gemfile outright — measured, the first
+  # hold failed the pin on `capistrano (>= 0)` against `capistrano (= 2.15.4)` — and rewriting the
+  # line is not the answer either, because the preflight will not touch a declaration that carries
+  # an option, which is exactly what that line carries.
+  def test_the_hold_leaves_the_gems_the_gemfile_declares_alone
+    s = step(Dir.tmpdir)
+    gemfile = %(source "https://rubygems.org"\ngem "capistrano", require: false\ngem 'rake'\n)
+
+    held = s.send(:undeclared,
+      { "capistrano" => "2.15.4", "rake" => "10.0.4", "i18n" => "0.6.4" }, gemfile)
+
+    assert_equal({ "i18n" => "0.6.4" }, held,
+      "a declared gem is the application's line and cannot be held twice")
+  end
 end

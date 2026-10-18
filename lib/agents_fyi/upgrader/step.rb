@@ -864,6 +864,16 @@ module AgentsFyi
         requirement = gem["to"].to_s.empty? ? gem["requirement"].to_s : "~> #{gem["to"]}"
         found = declaration_line(name)
         if found.nil?
+          # **A framework gem the pin moves is not a decision, however the routing spells it.**
+          # The guard on the `blocked`/`unknown` branch reads a verdict, and the verdict for the
+          # framework's own components is not stable: the first real rung routed them `blocked`
+          # ("no recorded release of rails fits the target") and the walk after the digest grew
+          # routed the same five `move`, so they fell through to here — five *located* decisions,
+          # each naming a line of `Gemfile.lock` for a gem whose line the pin's own `bundle update`
+          # names. The question this branch answers is whether a person has a line to edit, and for
+          # a gem the pin moves the answer is no.
+          return nil if pin_gems.include?(name)
+
           @decisions << routing_decision(gem, reason:
             "#{gem["reason"] || gem["note"]}; #{name} is not declared in the Gemfile, so " \
             "whatever pulls it in is the gem whose line moves")
@@ -1517,23 +1527,173 @@ module AgentsFyi
         nil
       end
 
-      # **The pin is a conversation with the resolver, and `--conservative` is why.** A rung
-      # moves Rails and not the world: the lighthouse proved what the alternative costs — the
-      # application pinned rake 10.0.4, the unconstrained `bundle update rails` resolved 12.3.3
-      # (railties 4.1 only asks `rake >= 0.8.7`), and Rails 4.1's own `rails:update` then died
-      # on `Rake::Application#last_comment`, which rake 11 removed. So the first attempt names
-      # the framework's own gems and keeps everything else where the application put it.
+      # **The pin is a conversation with the resolver, and the resolve moves what it must and puts
+      # back what it must not.** A rung moves Rails and not the world: the lighthouse proved what
+      # the alternative costs — the application pinned rake 10.0.4, the unconstrained `bundle
+      # update rails` resolved 12.3.3 (railties 4.1 only asks `rake >= 0.8.7`), and Rails 4.1's own
+      # `rails:update` then died on `Rake::Application#last_comment`, which rake 11 removed. So the
+      # first attempt names the framework's own gems and keeps everything else where the
+      # application put it.
       #
       # **A locked gem the move *requires* is then named by bundler itself.** Its message is
       # the authority on what the resolve could not leave alone — "could not find compatible
       # versions for gem i18n: rails (= 4.1.0) ... activesupport (= 4.1.0) ... depends on i18n
       # (>= 0.6.9, ~> 0.6)" — a fact no compatibility matrix here could have, because it is the
       # resolver's own answer for this application. Each round unlocks exactly the gems named,
-      # so `i18n` and `coffee-rails` move while `rake` stays at 10.0.4. The rounds are capped
-      # because a cascade is finite but a walk is not: every round adds at least one gem, and
-      # the cap is what stops a pathological one from spending the step.
+      # so `i18n` and `coffee-rails` move with the framework. The rounds are capped because a
+      # cascade is finite but a walk is not: every round adds at least one gem, and the cap is
+      # what stops a pathological one from spending the step.
+      #
+      # **`--conservative` does not keep `rake` where the application put it, and that is measured
+      # rather than read off the flag's name**: it moved rake 10.0.4 → 12.3.3 anyway, and the next
+      # rung's `db:create` died on the API rake 11 removed. So the resolve is followed by a hold:
+      # the gems it moved *without being asked to* go back to the versions it found them at, by a
+      # constraint that lives only for the length of a second resolve. The lock is what keeps them
+      # there afterwards, because `bundle install` honours a lock that already satisfies the
+      # Gemfile — the other candidate, `bundle lock --update`, holds correctly and cannot resolve
+      # at all here (measured: the probe's `bundle install` fails on the rspec family and no era
+      # installs the bundle, which is worse than the problem it fixes). A constraint the resolver
+      # refuses is *released* rather than forced, and bundler names it, the same way it names what
+      # has to move: a gem the move really needs is a gem that has to move.
       def pin(stages)
-        conservative_update(stages, pin_gems, stage: Record::PIN)
+        resolved = conservative_update(stages, pin_gems, stage: Record::PIN)
+        return resolved unless resolved.ok?
+
+        hold_what_the_move_did_not_need(stages, @lockfile)
+      end
+
+      # The gems the resolve moved that it was not asked to, and the versions it moved them from.
+      # Read out of the two locks rather than reasoned about from a dependency graph: what moved is
+      # a fact, and "what usually moves with Rails" is the guess this exists to avoid.
+      def moved_without_need(before, named, after)
+        before.select { |name, was| after.key?(name) && after[name] != was && !named.include?(name) }
+      end
+
+      # The hold, as the Gemfile lines it is spelled in — pure, because they are the only lines this
+      # tool writes that are not the application's own, and a test can hold them still.
+      def hold_lines(held)
+        held.map { |name, version| %(gem "#{name}", "= #{version}") }
+      end
+
+      # **A gem the application declares is the application's line, not this tool's.** Appending a
+      # second line for one is not a hold at all: bundler refuses the Gemfile outright — "You cannot
+      # specify the same gem twice with different version requirements. You specified: capistrano
+      # (>= 0) and capistrano (= 2.15.4)" — and the pin fails. Rewriting the line is not the answer
+      # either, because the preflight will not touch a declaration that carries an option (`require:`,
+      # `platforms:`, `group:`) and `capistrano` carries one. So the hold is only for the gems the
+      # Gemfile does not mention.
+      def undeclared(held, gemfile_text)
+        declared = gemfile_text.scan(/^\s*gem\s+["']([^"']+)["']/).flatten
+        held.reject { |name, _| declared.include?(name) }
+      end
+
+      def held_gemfile(text, held)
+        lines = hold_lines(held)
+        return text if lines.empty?
+
+        "#{text.chomp}\n#{lines.join("\n")}\n"
+      end
+
+      # The gems to put back right now: what the resolve has moved without being asked to, minus the
+      # application's own declarations, minus the ones the resolver has already refused to hold.
+      # Recomputed after every round rather than carried, because unlocking a gem to restore it can
+      # move something else, and the property this stage is for is about the lock it ends on.
+      def holdable(before, gemfile_text, refused)
+        lockfile = Lockfile.read(@worktree.root)
+        moved = moved_without_need(before.specs, pin_gems, lockfile.specs)
+        undeclared(moved, gemfile_text)
+          .select { |name, was| fits_both_ways?(before, lockfile, name, was) }
+          .except(*refused)
+      end
+
+      # **A version fits both ways or it does not fit.** Nothing the resolved graph requires of the gem
+      # may rule its old version out, *and* nothing the gem itself required of its own dependencies may
+      # have moved past what it asks for. The first half alone is not enough — measured, it admits
+      # `rspec 2.13.0` against `rspec-core 2.14.8` — and a hold that cannot be satisfied does not just
+      # fail to restore a gem: it makes every resolve impossible and takes the pin with it.
+      def fits_both_ways?(before, after, name, was)
+        return false unless after.accepts?(name, was)
+
+        before.requires_of(name).all? do |dependency, requirement|
+          !after.specs.key?(dependency) ||
+            requirement.satisfied_by?(Gem::Version.new(after.specs[dependency]))
+        end
+      end
+
+      # **A hold that exists only for the length of a resolve, and names what it holds.** The
+      # constraints go in, the resolve runs, and the Gemfile is put back exactly as it was — in an
+      # `ensure`, because a resolve that dies must not leave this tool's lines in somebody's Gemfile.
+      # What survives is the lock.
+      #
+      # **Naming the held gems is not an optimisation, it is the mechanism.** `bundle update <the
+      # framework> --conservative` re-resolves the named gems and their dependencies, so a gem it
+      # moved that is *not* named cannot be put back at all: measured on the lighthouse, holding
+      # `bcrypt-ruby` — a transitive dependency of the application's own `capistrano` line — made
+      # bundler answer "You have requested: bcrypt-ruby = 3.0.1 / The bundle currently has
+      # bcrypt-ruby locked at 3.1.5" and exit 7, which failed the pin. Named, it comes back.
+      #
+      # **A restore the resolver will not make is a gem that stays where the resolve put it.** The
+      # move is what this stage exists to make; a gem the move had no reason to touch is not worth
+      # failing it for. Bundler names the gem when it can — the same sentence the widening reads —
+      # and when it names none of them the whole restore is what is in the way, so it goes and the
+      # resolve is made once more without it.
+      def hold_what_the_move_did_not_need(stages, before)
+        gemfile = File.join(@worktree.root, "Gemfile")
+        original = File.binread(gemfile)
+        lock_before = File.binread(File.join(@worktree.root, "Gemfile.lock"))
+        refused = []
+        attempt = stages.last
+        PIN_ROUNDS.times do
+          held = holdable(before, original, refused)
+          break if held.empty? && attempt.ok?
+
+          File.binwrite(gemfile, held_gemfile(original, held))
+          attempt = conservative_update(stages, pin_gems + held.keys, stage: Record::PIN)
+          return attempt if attempt.ok? && holdable(before, original, refused).empty?
+          # A resolve that succeeded and still moved something is not a failure: the next round holds
+          # that too. Only a *failed* resolve is read for a name.
+          next if attempt.ok?
+
+          named = stuck_gems(attempt.output_tail) & held.keys
+          if named.empty?
+            # **A conflict that names none of the holds is not the holds' doing, and the move is what
+            # the rung is for.** The Gemfile goes back exactly as it was and the resolve is made once
+            # more without them: a rung that moves Rails and leaves one gem where the resolve put it is
+            # the outcome this stage must never trade for a failure.
+            File.binwrite(gemfile, original)
+            return conservative_update(stages, pin_gems, stage: Record::PIN)
+          end
+
+          refused |= named
+        end
+        attempt
+      ensure
+        File.binwrite(gemfile, original) if original
+        drop_leaked_dependencies(lock_before) if lock_before
+      end
+
+      # **A hold must not leave a claim in the lockfile that the Gemfile does not make.** A resolve
+      # writes the gems it was asked to hold into the lock's own `DEPENDENCIES` section, because for the
+      # length of that resolve the Gemfile really did declare them — measured, the 4.1 rung's lock ended
+      # listing `rake (= 10.0.4)` and `thread_safe (= 0.1.0)` beside the application's own lines. The
+      # Gemfile is put back, so that claim is false, and a lock that disagrees with its Gemfile is one
+      # the next `bundle install` re-resolves — which is precisely how the gem this stage exists to hold
+      # gets moved again. The pinned *versions* are the point and they stay; the claim goes.
+      def drop_leaked_dependencies(lock_before)
+        path = File.join(@worktree.root, "Gemfile.lock")
+        after = File.binread(path)
+        leaked = declared_dependencies(after) - declared_dependencies(lock_before)
+        return if leaked.empty?
+
+        File.binwrite(path, after.lines.reject { |line|
+          leaked.any? { |name| line.match?(/^\s{2}#{Regexp.escape(name)}(?![-\w])/) }
+        }.join)
+      end
+
+      # The names a lockfile's own `DEPENDENCIES` section lists.
+      def declared_dependencies(text)
+        section = text[/^DEPENDENCIES\n(.*?)(?=\n\S|\z)/m, 1].to_s
+        section.lines.filter_map { |line| line[/^\s{2}([^\s(!]+)/, 1] }
       end
 
       # The gems bundler said it could not leave alone, as its own message names them. Read
