@@ -40,6 +40,7 @@ module AgentsFyi
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--force] [--publish] [--suite-env FILE]
+                                    [--record DIR]
           agents-fyi-upgrader prune [--home DIR]
 
         Modes:
@@ -281,7 +282,7 @@ module AgentsFyi
             to: options[:to], repos: options[:repos], interval: options[:interval],
             step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
             walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
-            force: options[:force],
+            force: options[:force], record: options[:record],
             suite_env: options[:suite_env], services: services, env: @env
           ).run
         ensure

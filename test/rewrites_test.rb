@@ -424,6 +424,23 @@ class RewritesTest < Minitest::Test
     assert_equal 1, at.edits.size
   end
 
+  # **The option's own guard, and only this family may declare it.** A `belongs_to :user, optional: true`
+  # line is one this rule has already answered — the 5.0 rung added the option, and the 5.1 rung's
+  # residue listed those lines as work still owed. `option_added`'s docstring says its key-only guard
+  # must not become an `already`, because `form: { method: :get }` on a `button_to` line would read as
+  # the option — which is why the guard here names the option itself, on a line anchored on the call.
+  def test_the_belongs_to_rule_recognises_the_option_it_writes
+    rule = Rewrites::RULES.find { |candidate| candidate.subject == "belongs_to" }
+
+    assert rule.satisfied?("  belongs_to :user, optional: true",
+      Rewrites.mask("  belongs_to :user, optional: true"))
+    refute rule.satisfied?("  belongs_to :user", Rewrites.mask("  belongs_to :user"))
+    refute rule.satisfied?("  belongs_to :user, optional: false",
+      Rewrites.mask("  belongs_to :user, optional: false"))
+    refute rule.satisfied?("    t.belongs_to :user, optional: true",
+      Rewrites.mask("    t.belongs_to :user, optional: true"))
+  end
+
   # The rule degrades to the unconditional one when it cannot read the file, because the edit it makes
   # is the behaviour-preserving one either way — and refusing everything it could not read would leave
   # an association to fail validation silently, which is the note's own warning.

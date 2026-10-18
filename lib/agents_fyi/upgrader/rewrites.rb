@@ -1102,10 +1102,10 @@ module AgentsFyi
       # generator's own junk — and the rule wrote `belongs_to:, optional: true` into them: this tool
       # editing a file the change is not about. The pattern the rule then needs is the association's
       # name, and it is the *call* that carries it, so the group still re-emits the whole call.
-      def self.option_added(subject:, call:, option:, context: nil, argument: nil)
+      def self.option_added(subject:, call:, option:, context: nil, argument: nil, already: nil)
         key = option[/[a-z_]\w*(?=:)/]
         named = argument ? "\\s+#{argument}" : ""
-        Rule.new(family: :option_added, subject: subject, context: context,
+        Rule.new(family: :option_added, subject: subject, context: context, already: already,
           pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
                               "(?<call>#{Regexp.escape(call)}\\b#{named}[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
           replace: "\\k<open>\\k<call>#{option}\\k<close>")
@@ -1520,6 +1520,17 @@ module AgentsFyi
         # safe direction — the edit is the behaviour-preserving one either way.
         option_added(subject: "belongs_to", call: "belongs_to", option: ", optional: true",
           argument: ":[a-z_]\\w*",
+          # **The option itself, spelled out, and only this family may do it.** `option_added`'s own
+          # docstring says its key-only guard must not become an `already` — a line carrying
+          # `form: { method: :get }` would read as a `button_to` that has `method:` — and that stands for
+          # `match` and `button_to`. It does not stand here: the pattern is anchored on
+          # `belongs_to :name`, so an `optional: true` on that line *is* the option this rule writes, and
+          # the guard is what tells a line this tool already answered at an earlier rung from one it
+          # never touched. Measured at the 5.1 rung, whose residue listed the four model lines the 5.0
+          # rung had added the option to as decisions still owed. `optional: false` is deliberately not
+          # matched: the line says the association is required, which is the *new* default rather than
+          # the preserved behaviour, and a person's choice stays a decision.
+          already: /^\s*belongs_to\s+:[a-z_]\w*.*\boptional:\s*true\b/,
           context: lambda do |lines, found, _raw, _tree|
             association = found[:call][/:\K[a-z_]\w*/]
             # **`presence`, with no boundary around it**: `validates_presence_of` has no word

@@ -192,11 +192,28 @@ class ServeTest < Minitest::Test
   end
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
-            ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false)
+            ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
-      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish, force: force)
+      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish, force: force,
+      record: record)
+  end
+
+  # **`serve --record` writes what `step --record` writes.** The option was advertised and never passed,
+  # so a walk's record lived only in the corpus — and a record the corpus refuses as a duplicate
+  # (`filed: not_filed`, which is what it answered for every one of the lighthouse's failed 5.1 runs)
+  # was stored nowhere at all: measured three times, where each failure's own output had to be recovered
+  # by re-running the step with `--record`.
+  def test_a_walk_hands_the_steps_the_record_directory_it_was_given
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    dir = track(Dir.mktmpdir)
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    serve(corpus: corpus, record: dir).run
+
+    assert_equal [dir], FakeStep.calls.map { |call| call[:record] }.uniq,
+      "the step was not told where to write its record"
   end
 
   # One repository in the queue, walked once per cycle. Two cycles is the acceptance

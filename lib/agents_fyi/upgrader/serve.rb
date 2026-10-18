@@ -57,7 +57,7 @@ module AgentsFyi
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
                      publish_class: Publish, suite_env: nil, services: nil, env: ENV,
-                     force: false)
+                     force: false, record: nil)
         @api = api
         @home = home
         @to = to
@@ -80,6 +80,13 @@ module AgentsFyi
         # had walked a rung it never touched — measured, `serve --walk --force` printed "already settled:
         # passed" and ran nothing, which reads as a walk that finished rather than one that was skipped.
         @force = force
+        # **Where each step writes its patch and its JSON record.** The option was advertised and thrown
+        # away: `serve --record DIR` accepted the argument and passed nothing, so a walk's evidence
+        # lived only in the corpus — and a record the corpus answers `duplicate` for (which is what
+        # every one of the lighthouse's failed 5.1 runs got) was stored nowhere. A step's record is
+        # named for the move it made (`<repo>-<from>-<to>.json`), so a walk of several rungs writes one
+        # file each rather than overwriting the one before it.
+        @record = record
         @rungs = rungs || DEFAULT_RUNGS_PER_CYCLE
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
@@ -273,7 +280,8 @@ module AgentsFyi
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
-          corpus: @corpus, reuse: true, services: @services, env: @env, force: @force
+          corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
+          record: @record
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")

@@ -160,6 +160,21 @@ class StepMachineTest < Minitest::Test
   # A plan that does not carry the change and a scan that locates its call site — the shape the 5.1
   # rung had for `assigns`/`assert_template`, whose bridge the rung that arrived at 5.0 had already
   # declared into the application's Gemfile.
+  # A scan that locates `belongs_to` at two lines: one this tool's own rule has already answered with
+  # `optional: true`, and one — a migration's column definition — the change never applied to.
+  class BelongsToCorpus < FakeCorpus
+    def scan(from:, to:, files:)
+      { "edits" => [],
+        "manual" => [
+          { "subject" => "belongs_to", "path" => "app/models/item.rb", "line" => 2,
+            "note" => "belongs_to validates presence by default from 5.0.", "kind" => "default_changed" },
+          { "subject" => "belongs_to", "path" => "db/migrate/1_create_items.rb", "line" => 3,
+            "note" => "belongs_to validates presence by default from 5.0.", "kind" => "default_changed" }
+        ],
+        "counts" => { "automatic" => 0, "manual" => 2 }, "next_step" => "two call sites" }
+    end
+  end
+
   class EarlierRungCorpus < FakeCorpus
     def scan(from:, to:, files:)
       { "edits" => [],
@@ -549,6 +564,26 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
       "the lock moved it and the residue still asks for it: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A line that already reads the new way is not work, and the *line* is what says so.** The 5.1
+  # record's `belongs_to` residue is four model lines the 5.0 rung's own rule answered with
+  # `optional: true` and four migration columns the change never applied to — one subject, two answers,
+  # which is why the question is asked per located line rather than per subject.
+  def test_a_located_line_that_already_reads_the_new_way_is_not_a_decision
+    dir = app
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "item.rb"),
+      "class Item < ApplicationRecord\n  belongs_to :user, optional: true\nend\n")
+    FileUtils.mkdir_p(File.join(dir, "db", "migrate"))
+    File.write(File.join(dir, "db", "migrate", "1_create_items.rb"),
+      "class CreateItems < ActiveRecord::Migration\n  def change\n    t.belongs_to :user\n  end\nend\n")
+
+    record = step(dir, machines: machines, corpus: BelongsToCorpus.new).run
+
+    belongs_to = record.decisions.select { |decision| decision.subject.to_s == "belongs_to" }
+    assert_equal ["db/migrate/1_create_items.rb"], belongs_to.map { |decision| decision.path },
+      "the answered model line is not work and the migration column still is"
   end
 
   # **A bridge the Gemfile already carries answers its change, whatever rung the scan found the call

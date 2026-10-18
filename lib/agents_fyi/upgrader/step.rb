@@ -1213,7 +1213,7 @@ module AgentsFyi
         )
         handled = rules.applied + bridged + bridges_the_gemfile_answers
         decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
-          handled.include?(decision.subject.to_s)
+          handled.include?(decision.subject.to_s) || already_reads_the_new_way?(decision, tree)
         end
         # **A change the application has already made is not a decision.** A rule whose own idempotence guard
         # matches a line has *read* it and found nothing to do — an answer about the application rather than a
@@ -1773,6 +1773,24 @@ module AgentsFyi
         return text if lines.empty?
 
         "#{text.chomp}\n#{lines.join("\n")}\n"
+      end
+
+      # **A located line that already reads the new way is not work, and the line is what says so.** A
+      # rule's own `already` guard answers exactly that question — "this line is what I would write" —
+      # and `rules.satisfied` asks it per *subject*, which is right for a change whose lines are all of
+      # one kind and wrong for one whose subject spans lines that are not: the 5.1 record's `belongs_to`
+      # entries are four model lines this tool itself answered with `optional: true` at the 5.0 rung and
+      # four migration columns the change never applied to, so a subject-level answer has to call them
+      # all the same thing. The line's own answer does not.
+      def already_reads_the_new_way?(decision, tree)
+        path = decision.path.to_s
+        return false if path.empty? || decision.line.nil?
+
+        line = Array(tree[path])[decision.line.to_i - 1]
+        return false if line.nil?
+
+        Rewrites::RULES.select { |rule| rule.subject == decision.subject.to_s }
+          .any? { |rule| rule.satisfied?(line, Rewrites.mask(line)) }
       end
 
       # The gems to put back right now: what the resolve has moved without being asked to, minus the
