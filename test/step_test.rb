@@ -382,7 +382,7 @@ class StepTest < Minitest::Test
     # it would let the pipeline stop bounding its commands without a red test, which is exactly the state a
     # real walk was found in. The same goes for what a command is given on stdin: the update task's answer
     # pipe is the difference between finishing and asking for ever, so it is *read* here rather than kept.
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       @calls << argv.join(" ")
       @envs << [argv.join(" "), env]
       @timeouts << [argv.join(" "), timeout]

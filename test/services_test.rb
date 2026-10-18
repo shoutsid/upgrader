@@ -27,7 +27,7 @@ class ServicesTest < Minitest::Test
       @calls = []
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       line = argv.join(" ")
       @calls << { argv: argv, stage: stage, chdir: chdir, env: env }
       Command.new(stage: stage, command: line, ran: true, exit_code: @exit_code,

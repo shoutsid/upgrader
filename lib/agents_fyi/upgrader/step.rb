@@ -607,12 +607,13 @@ module AgentsFyi
       def install_bundle(stages, machine = @machine)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-          env: @worktree.bundle_env, machine: machine)
+          env: @worktree.bundle_env, machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
         stages << stage
         if (version = missing_bundler(stage))
           stages << command(Record::BUNDLE,
             ["gem", "install", "--user-install", "bundler", "-v", version, "--no-document"],
-            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine)
+            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine,
+            excerpt_bytes: Shell::RESOLVER_BYTES)
           stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
             env: @worktree.bundle_env, machine: machine)
           stages << stage
@@ -666,7 +667,8 @@ module AgentsFyi
         gems = gems.dup
         PIN_ROUNDS.times do
           attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
-            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine)
+            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine,
+            excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
           return attempt if attempt.ok?
 
@@ -2246,11 +2248,14 @@ module AgentsFyi
       # Every command a step runs is bounded (`Shell::DEFAULT_COMMAND_TIMEOUT`, or the operator's
       # `UPGRADER_COMMAND_TIMEOUT`): the *suite* has its own bound through `Tests`, and nothing else had one —
       # so a container that could not reach rubygems held a step in `bundle update` until somebody noticed.
-      def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL)
+      # `excerpt_bytes` is how a caller says its output is *evidence* rather than a payload: a
+      # resolver prints the blocks that name why it refused, and `Shell::RESOLVER_BYTES` keeps them all.
+      def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL,
+                  excerpt_bytes: Shell::TAIL_BYTES)
         runner_machine = machine || @machine
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
         @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
-          timeout: command_timeout)
+          timeout: command_timeout, excerpt_bytes: excerpt_bytes)
       end
 
       # How many overwrite questions one update task may ask. Generous rather than counted: an application

@@ -252,16 +252,18 @@ class StepMachineTest < Minitest::Test
   # The shell, answering by substring. Every command a fake machine carries is prefixed with
   # its era, so "this era's bundle install fails" is one line of setup.
   class FakeRunner
-    attr_reader :calls
+    attr_reader :calls, :excerpts
 
     def initialize(answers: {})
       @answers = answers
       @calls = []
+      @excerpts = []
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       line = argv.join(" ")
       @calls << line
+      @excerpts << [line, excerpt_bytes]
       exit_code, output = @answers.find { |needle, _| line.include?(needle) }&.last || [0, ""]
       Command.new(stage: stage, command: line, ran: true, exit_code: exit_code, seconds: 0.0,
         output_tail: output.to_s)
@@ -277,7 +279,7 @@ class StepMachineTest < Minitest::Test
       @installs = 0
     end
 
-    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil)
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       line = argv.join(" ")
       @calls << line
       if line.include?("bundle install")
@@ -306,7 +308,7 @@ class StepMachineTest < Minitest::Test
       @resolves = 0
     end
 
-    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil)
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       if argv.join(" ").include?("bundle update")
         @resolves += 1
         gemfile = File.read(File.join(chdir, "Gemfile"))
@@ -663,6 +665,23 @@ class StepMachineTest < Minitest::Test
       "the install is retried once, and only after the bundler was installed"
     assert_empty record.stages.select { |stage| stage.command.include?("gem install") && stage.exit_code != 0 },
       "the bundler arrives before the second attempt"
+  end
+
+  # **A resolver's output is evidence, and the record must not be a place its cause can hide.** Measured
+  # twice at the 6.0 rung: every block a reader could see in the recorded output was satisfiable on its
+  # own, and the block that failed the resolve had been dropped from the middle. So the commands that run
+  # the resolver ask for `Shell::RESOLVER_BYTES` rather than the payload-sized default, and this says so.
+  def test_the_resolver_commands_keep_the_whole_message
+    runner = FakeRunner.new
+    step(app, machines: machines, runner: runner, corpus: FakeCorpus.new).run
+
+    resolvers = runner.excerpts.select do |call, _bytes|
+      call.include?("bundle install") || call.include?("bundle update")
+    end
+
+    refute_empty resolvers, "the step ran no resolver: #{runner.calls.inspect}"
+    assert(resolvers.all? { |_call, bytes| bytes == AgentsFyi::Upgrader::Shell::RESOLVER_BYTES },
+      "a resolver's output was bound to the payload size: #{resolvers.inspect}")
   end
 
   # **A bridge that inserts a line writes the requirement it declares with onto it.** Measured at the 5.2

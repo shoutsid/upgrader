@@ -32,6 +32,18 @@ module AgentsFyi
       # been dropped. The middle of a long output is where the noise is.
       HEAD_SHARE = 0.4
 
+      # **A resolver's message is evidence, and the block that names the cause sits in its middle.** The
+      # excerpt exists because a Rails suite prints megabytes and its middle is noise; a `bundle update`'s
+      # output is the opposite — it prints a handful of "Bundler could not find compatible versions for gem
+      # X" blocks and *each* of them is a candidate cause, with the real one neither first nor last.
+      # Measured twice on the 6.0 rung: the `rack`, `sprockets`, `globalid` and `ffi` blocks a reader saw
+      # were every one of them satisfiable, and the block that actually failed the resolve (`zeitwerk
+      # (~> 2.1, >= 2.1.8) … ruby (>= 3.2)`, and before it `bootsnap … ruby (>= 2.3)`) had been dropped from
+      # the middle of the record — so the cause had to be found by replaying the resolve by hand. 64 KB
+      # still bounds it (a resolve's whole message is a few kilobytes) and it stops the record being a place
+      # a cause can hide.
+      RESOLVER_BYTES = 64_000
+
       # The two ends of an output, kept while it streams. A suite can print hundreds of
       # megabytes, so the middle is dropped *as it flows* rather than after the fact — and
       # what was dropped is counted, so the record says how much it did not keep instead of

@@ -12,6 +12,20 @@ require "agents_fyi/upgrader"
 class ShellTest < Minitest::Test
   Shell = AgentsFyi::Upgrader::Shell
 
+  # **A resolver's middle is where its cause is.** `TAIL_BYTES` bounds a suite's output because a suite's
+  # middle is noise; a resolver's output is a handful of blocks and any one of them may be the block that
+  # failed the resolve — measured twice at the 6.0 rung, where the recorded block a reader could see was
+  # always satisfiable and the cause had been dropped. So the commands that run a resolver ask for
+  # `RESOLVER_BYTES`, and this is the case that bound exists for.
+  def test_the_resolver_bound_keeps_a_block_from_the_middle_of_a_message
+    block = %(Bundler could not find compatible versions for gem "ruby ":\n      ruby  (>= 3.2)\n)
+    output = ("noise\n" * 2_000) + block + ("noise\n" * 2_000)
+
+    refute_includes Shell.excerpt(output), "ruby  (>= 3.2)",
+      "the payload bound is what dropped it, which is why the resolver bound exists"
+    assert_includes Shell.excerpt(output, bytes: Shell::RESOLVER_BYTES), "ruby  (>= 3.2)"
+  end
+
   def test_a_command_that_finishes_is_recorded_with_its_output_and_its_exit_code
     record = Shell.run(["sh", "-c", "echo hello; exit 0"], stage: "probe", chdir: Dir.pwd)
 
