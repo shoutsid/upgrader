@@ -1131,6 +1131,10 @@ module AgentsFyi
         # needs to know the diff is not the whole change (`ApplicationRecord` is in a file the patch
         # does not show).
         parts << "#{created.size} file(s) created for a rule (#{created.join(", ")})" if created.any?
+        # **A rule's glob that matched more files than it read is named**, because a rule that read a slice
+        # and found nothing looks exactly like a rule with nothing to find.
+        parts << "a rule's file glob was truncated: #{@truncated_sources.join("; ")}" if
+          @truncated_sources.to_a.any?
         parts << "#{inert.size} rule(s) name no change in this rung (#{inert.join(", ")})" if
           inert.any?
         unless rules.left.empty?
@@ -1317,8 +1321,18 @@ module AgentsFyi
       # silent: a glob a rule writes matches a handful of files in any application, and one that matched
       # thousands would be a rule reading a tree rather than a file.
       def rule_sources
+        @truncated_sources = []
         Rewrites::RULES.filter_map(&:file).uniq.flat_map do |glob|
-          Dir.glob(glob, base: @worktree.root).sort.first(Rewrites::SOURCE_LIMIT).filter_map do |path|
+          matched = Dir.glob(glob, base: @worktree.root).sort
+          # **A truncated glob is said rather than silent.** `SOURCE_LIMIT` bounds how many files one rule's
+          # pattern is tried against, and a rule whose glob is broader than the limit would otherwise read a
+          # slice and report "no call sites here" — which is the empty answer this pipeline keeps paying for,
+          # in a rule instead of a scan. The bound is not raised here: it is a rule reading a tree rather than
+          # a file at that point, and the honest thing is to say so and let the rule be narrowed.
+          if matched.size > Rewrites::SOURCE_LIMIT
+            @truncated_sources << "#{glob} (#{matched.size} file(s), first #{Rewrites::SOURCE_LIMIT} read)"
+          end
+          matched.first(Rewrites::SOURCE_LIMIT).filter_map do |path|
             full = File.join(@worktree.root, path)
             [path, File.file?(full) ? File.read(full, encoding: "utf-8").lines.map(&:chomp) : nil]
           end

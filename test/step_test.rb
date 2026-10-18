@@ -1616,6 +1616,27 @@ class StepTest < Minitest::Test
       "a value the rule cannot see the end of is still a person's to read"
   end
 
+  # **A rule's glob that matched more files than it read is said, not silent.** `SOURCE_LIMIT` bounds how many
+  # files one rule's pattern is tried against; a rule that read a slice and found nothing would look exactly
+  # like a rule with nothing to find, which is the empty answer this pipeline keeps paying for — in a rule
+  # instead of a scan. The bound is not raised here: at that point the rule is reading a tree rather than a
+  # file, and the honest thing is to say so and let the rule be narrowed.
+  def test_a_rule_glob_that_matched_more_files_than_it_read_says_so
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item\nend\n")
+    # The JavaScript glob is the only one in the rule table, so it is the one to overflow.
+    (AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT + 1).times do |index|
+      with_source(dir, "app/assets/javascripts/file_#{index}.js", "// nothing\n")
+    end
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan), applier: AgentsFyi::Upgrader::Applier).run
+
+    tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
+    assert_includes tail, "a rule's file glob was truncated"
+    assert_includes tail, "#{AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT + 1} file(s), first " \
+      "#{AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT} read"
+  end
+
   def entry_for(path, line, text)
     { "path" => path, "line" => line, "text" => text, "after" => nil,
       "subject" => ":confirm option on link_to", "kind" => "renamed",
