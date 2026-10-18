@@ -1343,6 +1343,7 @@ module AgentsFyi
         bridges.each do |bridge|
           bridge.gems.each do |gem|
             declared = declaration_line(gem)
+            wanted = bridge.requirement || bridge.floor
             # **A floor is about a gem the application already has.** "Spring 3.0.0 or newer" is not an
             # instruction to install Spring, and an application without it is not asked to.
             if declared.nil? && bridge.floor
@@ -1351,15 +1352,16 @@ module AgentsFyi
             end
 
             if declared
-              # A bridge with no floor is whole when the gem is declared. A floor's work *is* that
-              # declaration, and it only has anywhere to go when the line asks for no version at all —
+              # A bridge with no requirement is whole when the gem is declared — the change is satisfied
+              # whether this step declared it or the application did. A requirement's work *is* that
+              # declaration, and it only has anywhere to go when the line asks for no version at all:
               # `gem "spring"` becomes `gem "spring", ">= 3.0.0"`, while a line that already names one is
               # a person's call and stays a decision rather than being counted as handled.
-              if bridge.floor.nil?
+              if wanted.nil?
                 handled << bridge.subject
               elsif declaration_requirement(declared.last).nil?
                 index, line = declared
-                lines[index] = "#{line.to_s.sub(/\s*\z/, "")}, \"#{bridge.floor}\"\n"
+                lines[index] = "#{line.to_s.sub(/\s*\z/, "")}, #{wanted.inspect}\n"
                 repairs << Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line,
                   after: lines[index], subject: bridge.subject, note: bridge.why)
                 handled << bridge.subject
@@ -1372,7 +1374,12 @@ module AgentsFyi
 
             index, indent = at
             line = lines[index].to_s
-            inserted = "#{indent}gem '#{gem}'\n"
+            # **A bridge that inserts a line writes the requirement it declares with onto it.** The
+            # requirement only ever reached a line the application had already declared, so a bridge whose
+            # whole work is a version inserted an unversioned line and the resolver took the newest
+            # release: measured at the 5.2 rung, where `gem 'bootsnap'` resolved to 1.10.3, whose own
+            # `ruby (>= 2.3.0)` cannot sit on the 2.2 era, and the pin failed on it.
+            inserted = "#{indent}gem '#{gem}'#{bridge.requirement ? ", #{bridge.requirement.inspect}" : ''}\n"
             # **A declaration at the end of the file needs a separator and one before a block does
             # not**: the lines came from `split("\n", -1)`, so they carry no terminator — appending
             # `gem 'x'` to the last line produced `gem "rails", "4.2.11"gem 'x'`, which is a Gemfile

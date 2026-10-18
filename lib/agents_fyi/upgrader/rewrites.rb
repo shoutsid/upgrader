@@ -211,7 +211,14 @@ module AgentsFyi
       # positive is a gem declared for an application that does not load it.
       Evidence = Struct.new(:path, :pattern, :why, keyword_init: true)
 
-      Bridge = Struct.new(:subject, :gems, :group, :why, :evidence, :floor, keyword_init: true)
+      # `floor` and `requirement` are the two ways a bridge carries a version, and **they differ in what
+      # presence means**. A *floor* is a condition on a gem the application may already have — absent,
+      # nothing is owed, because Rails does not install Spring. A *requirement* is what the bridge's own
+      # declaration must carry, because the rung is what needs the gem: `bootsnap` is written into
+      # `config/boot.rb` by the same `app:update`, so the line is inserted here and has to name a release
+      # the era can run. A bridge with neither is whole when the gem is declared.
+      Bridge = Struct.new(:subject, :gems, :group, :why, :evidence, :floor, :requirement,
+        keyword_init: true)
 
       # The changes whose note's own replacement is a gem, and where the gem is the **whole** of the
       # fix: the call sites keep working and nothing else is owed. That distinction is what keeps
@@ -259,9 +266,15 @@ module AgentsFyi
         # that line, so an application walking this rung needs the gem. An application that already has
         # it, or that never walks this rung, is not touched.
         Bridge.new(subject: "bootsnap", gems: %w[bootsnap], group: nil, evidence: :rung,
+          requirement: "= 1.4.5",
           why: "this rung's `app:update` writes `require \"bootsnap/setup\"` into config/boot.rb, and " \
                "the gem has to be declared before the install that follows or the application boots " \
-               "into a LoadError"),
+               "into a LoadError. **The release is pinned, and by the interpreter rather than by the " \
+               "rung**: bootsnap raised its own floor to Ruby 2.3 at 1.4.6 — measured with `Gem::Package` " \
+               "over 1.0.0 (`>= 2.3.0`), 1.1.0–1.4.5 (all `>= 2.0.0`) and 1.4.6, 1.4.7, 1.4.9, 1.5.0 " \
+               "(`>= 2.3.0`) — and a line with no requirement resolves to the newest, so the 5.2 rung's " \
+               "pin failed on `bootsnap was resolved to 1.10.3, which depends on ruby (>= 2.3.0)` " \
+               "against the 2.2 era's 2.2.9. 1.4.5 is the newest release every era here can run"),
         Bridge.new(subject: "sprockets-rails", gems: %w[sprockets-rails], group: nil,
           why: "the application still asks for the asset pipeline's railtie, and Rails 7 no longer " \
                "depends on the gem",

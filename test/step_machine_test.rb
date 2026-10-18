@@ -199,6 +199,18 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A plan that carries a change whose fix is a bridge with a floor — the rung's own gem that cannot be
+  # left unversioned.
+  class BootsnapCorpus < FakeCorpus
+    def upgrade(from:, to:)
+      { "steps" => [{ "from_version" => from, "to_version" => to, "name" => "Rails #{to}",
+                      "requires_ruby" => @requires_ruby, "note" => "",
+                      "changes" => [{ "subject" => "bootsnap", "automatic" => false, "kind" => "moved",
+                                      "note" => "this rung's app:update requires it in config/boot.rb" }] }],
+        "next_step" => "one step" }
+    end
+  end
+
   class FakeTests
     attr_reader :machines
 
@@ -579,6 +591,21 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
       "the lock moved it and the residue still asks for it: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A bridge that inserts a line writes the requirement it declares with onto it.** Measured at the 5.2
+  # rung: the bootsnap bridge inserted `gem 'bootsnap'` with no requirement, the resolver took 1.10.3,
+  # whose own `ruby (>= 2.3.0)` cannot sit on the 2.2 era, and the pin failed on `bootsnap was resolved to
+  # 1.10.3, which depends on ruby (>= 2.3.0)`. A *floor* is a different thing and keeps its rule — nothing
+  # is owed for a gem the application does not have (`require "spring"`'s floor is not an instruction to
+  # install Spring) — which is why the insert reads `requirement` and not `floor`.
+  def test_a_bridge_that_inserts_a_line_writes_its_requirement_onto_it
+    record = step(app, machines: machines, corpus: BootsnapCorpus.new).run
+
+    inserted = record.applied.find { |edit| edit.path.to_s == "Gemfile" }
+    refute_nil inserted, "the bridge inserted nothing: #{record.applied.map(&:path).inspect}"
+    assert_includes inserted.after.to_s, %(gem 'bootsnap', "= 1.4.5"),
+      "the requirement did not reach the inserted line: #{inserted.after.inspect}"
   end
 
   # **A call site from a rung the application has crossed is not the same sentence as one it has not
