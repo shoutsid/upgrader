@@ -881,7 +881,13 @@ module AgentsFyi
                                           "of the two a line should say is not readable from the line. " \
                                           "The survey beside this sentence is the other half: it is " \
                                           "what reports that this application sets no rollback flag at " \
-                                          "all"
+                                          "all",
+        "cookies and their purpose" => "the same shape at the next rung — 6.0 embeds the purpose in " \
+                                       "the cookie value, so a 6.0 cookie is unreadable by 5.2 — and " \
+                                       "the three `cookies.` call sites the scan locates are not where " \
+                                       "the fix goes: the rollback flag is a deployment decision, and " \
+                                       "the survey beside this sentence reports both the flag and the " \
+                                       "lines that write a cookie"
       }.freeze
 
       # **A gap for a subject a rule covers only partly.** `gap_for` answers "does a rule know this
