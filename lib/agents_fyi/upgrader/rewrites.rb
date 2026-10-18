@@ -1064,6 +1064,16 @@ module AgentsFyi
       # Positional arguments are allowed, and that is a fix rather than a widening: `button_to "Delete",
       # item` has two arguments and only the second is an option, so a pattern that required every
       # argument to be a `key: value` pair matched none of the buttons the change is about.
+      #
+      # **Its idempotence is a refusal and deliberately not a declared guard.** `(?!.*\b#{key}:)` stops a
+      # second walk adding the option twice, and the tempting tidy is to hand the same predicate to
+      # `already:` so an already-optioned line reports `satisfied` the way `:confirm`'s does. That would be
+      # a lie: `:confirm`'s guard names the *whole* wrapper it recognises (`data: { confirm: … }`), while
+      # this one can only name the option's *key* — `\bmethod:` for `button_to`'s `, method: :post` — and a
+      # line carrying `form: { method: :get }` would then be reported as already reading the new way and
+      # the option would never be added. `satisfied` is a claim about the line, so it has to be true; a
+      # guard too loose to support it leaves the line a decision, which is the honest answer and the one
+      # the person can still read.
       def self.option_added(subject:, call:, option:, context: nil)
         key = option[/[a-z_]\w*(?=:)/]
         Rule.new(family: :option_added, subject: subject, context: context,
