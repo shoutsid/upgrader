@@ -826,10 +826,10 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.gap_for("the protected_attributes gem"), "leaves the line as a decision"
   end
 
-  # **The conditions may be an array, and the lighthouse is what found that.** The note's own example is the
-  # hash form; the first real application uses `find(:all, conditions: ["url LIKE ?", "tech%"])`, and a rule
-  # that knew only the hash refused the one form the application has — so the suite kept failing on a change
-  # the ladder documents. The hash's braces are the call's and the array's brackets are the *argument's*.
+  # **The conditions may be an array.** The note's own example is the hash form, and a rule that knew only
+  # that refused half the API's spellings — the array form is what the lighthouse's failure carries, in a
+  # `stringex` call no rule can reach. The hash's braces are the call's and the array's brackets are the
+  # *argument's*; that distinction is the whole of the rule, so both are driven here.
   def test_a_finder_whose_conditions_are_an_array_unwraps_the_same_way
     assert_equal [%(    @categories = Category.where(["url LIKE ?", "tech-1%"]))],
       finder_after(%(    @categories = Category.find(:all, conditions: ["url LIKE ?", "tech-1%"])))

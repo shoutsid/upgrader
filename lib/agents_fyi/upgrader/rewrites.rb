@@ -865,8 +865,8 @@ module AgentsFyi
         "find_all_by_*" => "the rule makes the call; whether the *caller* wanted the Array the old " \
                            "finder returned is not on the line (`where` returns a relation), which " \
                            "is the note's own warning and the application's suite to catch",
-        "find(:all, ...)" => "the rule unwraps `conditions:` — a hash *or* an array, which is what the " \
-                             "first real application uses — and nothing else, because the note's " \
+        "find(:all, ...)" => "the rule unwraps `conditions:` — a hash *or* an array — and nothing " \
+                             "else, because the note's " \
                              "replacement is the conditions alone: `find(:all, conditions: {…}, " \
                              "order: …)` is left rather than silently losing the other options",
         "scope :name, where(...)" => "the rule wraps a body that starts with a relation call and " \
@@ -1107,12 +1107,14 @@ module AgentsFyi
       # replacement is the conditions alone and a rule that dropped the other options would be
       # changing what the query returns.
       #
-      # **The conditions may be an array, and the lighthouse is what found that.** The note's own example is
-      # the hash form; `find(:all, conditions: ["url LIKE ?", "tech%"])` is the same unwrap into
-      # `where(["url LIKE ?", "tech%"])`, and the rule knew only the hash — so it refused the one form the
-      # first real application uses, and the suite kept failing on a change the ladder documents. The
-      # brackets are part of the capture because `where` takes them; the value's *contents* are masked and
-      # do not need to be read, since the whole condition moves as it is.
+      # **The conditions may be an array.** The note's own example is the hash form, and the rule knew only
+      # that — so it refused the array form, which is the one the lighthouse's failure actually carries:
+      # `find(:all, conditions: ["url LIKE ?", "tech%"])` is the same unwrap into
+      # `where(["url LIKE ?", "tech%"])`. That call is inside `stringex 1.5.1` rather than in the
+      # application, so no rule reaches it; the form is still real, and a rule that knows one of the two
+      # spellings of an API refuses half its call sites. The brackets are part of the capture because
+      # `where` takes them; the value's *contents* are masked and need not be read, since the whole
+      # condition moves as it is.
       def self.find_conditions(subject:, finder: "find")
         Rule.new(family: :find_conditions, subject: subject,
           pattern: /#{Regexp.escape(finder)}\(\s*:(?<scope>all|first|last)\s*,\s*conditions:\s*(?:\{(?<hash>[^{}]*)\}|(?<array>\[[^\[\]]*\]))\s*\)/,
