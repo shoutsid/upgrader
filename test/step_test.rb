@@ -363,7 +363,7 @@ class StepTest < Minitest::Test
   # can assert what ran, in what order, and under which bundle — which is the whole of what
   # the install stage promises the stages after it.
   class FakeRunner
-    attr_reader :calls, :envs, :timeouts
+    attr_reader :calls, :envs, :timeouts, :stdins
 
     def initialize(fail_on: nil, ran: true)
       @fail_on = fail_on
@@ -371,15 +371,18 @@ class StepTest < Minitest::Test
       @calls = []
       @envs = []
       @timeouts = []
+      @stdins = []
     end
 
     # **The timeout is recorded rather than ignored**, for the same reason the env is: a double that dropped
     # it would let the pipeline stop bounding its commands without a red test, which is exactly the state a
-    # real walk was found in.
+    # real walk was found in. The same goes for what a command is given on stdin: the update task's answer
+    # pipe is the difference between finishing and asking for ever, so it is *read* here rather than kept.
     def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
       @calls << argv.join(" ")
       @envs << [argv.join(" "), env]
       @timeouts << [argv.join(" "), timeout]
+      @stdins << [argv.join(" "), stdin.respond_to?(:read) ? stdin.read : stdin]
       failing = @fail_on && argv.join(" ").include?(@fail_on)
       Command.new(stage: stage, command: argv.join(" "), ran: failing ? @ran : true,
         exit_code: failing ? (@ran ? 1 : nil) : 0, seconds: 0.1,
@@ -1534,6 +1537,16 @@ class StepTest < Minitest::Test
     step(dir, corpus: FakeCorpus.new(payload: plan), runner: bound,
       applier: AgentsFyi::Upgrader::Applier, env: { "UPGRADER_COMMAND_TIMEOUT" => "42" }).run
     assert_equal [42] * bound.timeouts.size, bound.timeouts.map(&:last)
+
+    # **The update task is given the answer, and nothing else is.** `app:update` stops on every file the
+    # application owns and asks whether to overwrite it; the walker's rule is that an application-owned file
+    # keeps the application's version, so the answer is `n` for every question — and a walk that left it to a
+    # prompt was killed at its bound with `Overwrite config/boot.rb?` on screen.
+    asked = runner.stdins.find { |command, _| command.include?("rails:update") }
+    refute_nil asked, "the update task ran"
+    assert_equal "n\n" * AgentsFyi::Upgrader::Step::OVERWRITE_ANSWERS, asked.last
+    install = runner.stdins.find { |command, _| command.include?("bundle install") }
+    assert_equal File::NULL, install.last, "every other command reads nothing, and gets EOF if it tries"
   end
 
   # **The scan looks below the rung, because an application can be behind the release it declares.** The

@@ -1551,8 +1551,14 @@ module AgentsFyi
         # from the application's test group, and that gem cannot load under the minitest 5 the release
         # brought, so a task about config files failed on a test gem. Nothing about `app:update` is
         # test-specific; a person runs it in development, which is what this does.
-        stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
-          env: application_env.merge("RAILS_ENV" => "development", "RACK_ENV" => "development"))
+        answers = overwrite_answers
+        begin
+          stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
+            env: application_env.merge("RAILS_ENV" => "development", "RACK_ENV" => "development"),
+            stdin: answers)
+        ensure
+          answers.close
+        end
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
       end
 
@@ -1676,11 +1682,33 @@ module AgentsFyi
       # Every command a step runs is bounded (`Shell::DEFAULT_COMMAND_TIMEOUT`, or the operator's
       # `UPGRADER_COMMAND_TIMEOUT`): the *suite* has its own bound through `Tests`, and nothing else had one —
       # so a container that could not reach rubygems held a step in `bundle update` until somebody noticed.
-      def command(stage, argv, chdir:, env: {}, machine: nil)
+      def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL)
         runner_machine = machine || @machine
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
-        @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: File::NULL,
+        @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
           timeout: command_timeout)
+      end
+
+      # How many overwrite questions one update task may ask. Generous rather than counted: an application
+      # with a few hundred files it owns asks about each one, and a pipe that ran dry would turn the rest
+      # into EOF — which is the same hang this exists to stop, one prompt later.
+      OVERWRITE_ANSWERS = 500
+
+      # **The overwrite answer, given rather than asked.** `app:update` stops on every file the application
+      # owns and asks; a walker that leaves the answer to a prompt does not finish. The walk that found this
+      # was killed at its command bound with Rails' `Overwrite config/boot.rb?` on screen and the same question
+      # printed again below it, because the walker hands every command `File::NULL`.
+      #
+      # The answer is the rule the walker already states — "added files are adopted; a file the application
+      # already owns keeps the application's version" — so it is `n` for every question, and the conflicts are
+      # recorded from the tree's own diff (`adopt_added_only`) rather than from the prompt. A pipe rather than
+      # a flag because the two command families spell the flag differently and a 4.x application has only the
+      # prompt.
+      def overwrite_answers
+        reader, writer = IO.pipe
+        writer.write("n\n" * OVERWRITE_ANSWERS)
+        writer.close
+        reader
       end
 
       def command_timeout
