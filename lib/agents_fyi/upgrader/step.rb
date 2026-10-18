@@ -1712,17 +1712,30 @@ module AgentsFyi
       def stuck_gems(text)
         quoted = text.to_s.scan(/could not find compatible versions for gem "([^"]+)"/).flatten
         bare = text.to_s.scan(/could not find compatible versions for gem ([\w.-]+)/).flatten
-        # **And the gems the message says *resolved* against it.** The gem bundler cannot place is
-        # often not the gem holding it back: measured on the lighthouse's rspec-rails move, bundler
-        # named `rspec-mocks`, `rspec-expectations` and `rspec-core` in three rounds while the pin
-        # that made all three impossible was the `rspec` *meta*-gem's own `~> 2.13.0` — which the
-        # message names only as the requirer ("`guard-rspec` was resolved to 3.0.0, which depends on
-        # `rspec (~> 2.13)` was resolved to 2.13.0, which depends on `rspec-mocks`"). Adding what it
-        # names as the conflict alone never converges; adding the requirer unlocks the line and does,
-        # and both names are read out of the resolver's own sentence rather than guessed from a list
-        # of gems that usually move together.
-        requirers = text.to_s.scan(/(\S+) was resolved to/).flatten
-        ((quoted + bare + requirers).uniq & @lockfile.specs.keys)
+        # **And a requirer whose own requirement is on the gem bundler could not place — directly, and
+        # no further.** The gem bundler cannot place is often not the gem holding it back: measured on
+        # the lighthouse's rspec-rails move, bundler named `rspec-mocks`, `rspec-expectations` and
+        # `rspec-core` in three rounds while the pin that made all three impossible was the `rspec`
+        # *meta*-gem's own `~> 2.13.0` — which the message names only as the requirer, with the
+        # dependency line it contributes directly underneath it.
+        #
+        # **"And no further" is measured, not tidy.** The message nests, and a requirer three hops
+        # down is a gem that merely *reaches* the conflict: on the 4.2 rung `resque` appeared as a
+        # requirer of `rack` through `sinatra` and `rack-protection`, naming it unlocked resque
+        # itself, and it resolved to 2.7.0 — a release that needs Ruby 2.3 while the era's interpreter
+        # is 2.1, which bundler 1.17 reports but does not resolve around. The pin then failed on a gem
+        # the move never had to touch, and the same run with `rack` named and resque left alone
+        # resolves. So the requirer is the name on the line whose *next* line begins with the gem
+        # bundler could not place.
+        named = quoted + bare
+        requirers = text.to_s.lines.each_cons(2).filter_map do |line, following|
+          requirer = line[/^\s*(\S+) was resolved to/, 1]
+          next unless requirer
+          next unless named.any? { |gem| following.strip.match?(/\A#{Regexp.escape(gem)}(?:\s|\()/) }
+
+          requirer
+        end
+        ((named + requirers).uniq & @lockfile.specs.keys)
       end
 
       # **The gems that move with the meta-gem, and the measurement that says they must be
