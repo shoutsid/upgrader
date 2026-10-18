@@ -383,6 +383,26 @@ class RewritesTest < Minitest::Test
       "the rule rewrote a fixture: #{result.edits.map { |edit| edit["after"] }.inspect}"
   end
 
+  # **A setting the rung removed, deleted from the file Rails' generator wrote it into.** Rails 5.0's
+  # `new_framework_defaults.rb` holds an application's old defaults one at a time; 5.2 removed
+  # `halt_callback_chains_on_return_false` (the 5.0 rung's own boot said "deprecated and will be removed in
+  # Rails 5.2") and the 5.2 boot then died with `undefined method … for ActiveSupport:Module` at line 23.
+  # Deleting the line *is* the change, and a commented spelling is not the setting.
+  def test_a_setting_the_rung_removed_is_deleted_from_the_initializer
+    entry = entry(subject: "ActiveSupport.halt_callback_chains_on_return_false",
+      text: "ActiveSupport.halt_callback_chains_on_return_false = true",
+      path: "config/initializers/new_framework_defaults.rb")
+    commented = entry.merge("text" => "# ActiveSupport.halt_callback_chains_on_return_false = true")
+
+    result = Rewrites.apply([entry, commented], rung: "5.2.0")
+
+    assert_equal [""], result.edits.map { |edit| edit["after"] },
+      "the setting's line goes and the commented one stays"
+    assert_equal 1, result.left.size
+    assert_empty Rewrites.apply([entry], rung: "5.1.0").edits,
+      "the setting exists at 5.1, so the rule must not run there"
+  end
+
   # **A request helper's whole trailing list was the params hash, and 5.1 moves it under `params:`.**
   # Shape and refusals both: measured on the lighthouse, 48 call sites in `spec/` and `test/` are of this
   # shape, and 17 of its 201 examples fail on `ArgumentError: unknown keyword: category_id` without it.

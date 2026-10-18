@@ -1288,8 +1288,8 @@ module AgentsFyi
       # assignment, so a line that mentions it in a comment or passes it to something else does not
       # match, and the edit empties the line rather than shifting it away — the same shape
       # `line_removed` writes, because a patch that renumbers a file is a patch nobody can read.
-      def self.setting_removed(subject:, setting:)
-        Rule.new(family: :setting_removed, subject: subject,
+      def self.setting_removed(subject:, setting:, file: nil, rung: nil)
+        Rule.new(family: :setting_removed, subject: subject, file: file, rung: rung,
           pattern: /\A(?<indent>\s*)#{Regexp.escape(setting)}\s*=(?!=)\s*.*\z/, replace: "")
       end
 
@@ -1935,7 +1935,21 @@ module AgentsFyi
         # `app/workers/complete_auction.rb:8` passes an id (`item_id`), which is why the rule refuses a
         # name that already says it is one.
         finder_takes_an_id(subject: "find with an object argument",
-          file: "{spec,test,app}/**/*.rb", rung: "5.1.0")
+          file: "{spec,test,app}/**/*.rb", rung: "5.1.0"),
+
+        # **A setting the release removed, from the file Rails' own generator wrote it into.** Rails 5.0's
+        # `new_framework_defaults.rb` is where an application holds its old defaults one at a time, and 5.2
+        # *removed* `ActiveSupport.halt_callback_chains_on_return_false=` — the 5.0 rung's own boot warned
+        # "deprecated and will be removed in Rails 5.2", and the 5.2 rung's boot then died with `undefined
+        # method 'halt_callback_chains_on_return_false=' for ActiveSupport:Module` at
+        # `config/initializers/new_framework_defaults.rb:23`. Deleting the line *is* the change: the setting
+        # only ever chose between the old behaviour and the new one, and at 5.2 only the new one exists.
+        # The ladder does not carry it (its 5.2 step documents cookies and bootsnap), which is why the rule
+        # states its own rung and reads the directory itself — `config/initializers/**/*.rb` is a handful of
+        # files, and the line can be in any of them.
+        setting_removed(subject: "ActiveSupport.halt_callback_chains_on_return_false",
+          setting: "ActiveSupport.halt_callback_chains_on_return_false",
+          file: "config/initializers/**/*.rb", rung: "5.2.0")
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
