@@ -75,6 +75,16 @@ module AgentsFyi
                   "`spec/support/devise.rb` — which includes `Devise::TestHelpers` for " \
                   "`:type => :controller` — stops applying and every controller spec raises " \
                   "`undefined method `sign_in'`"
+          ),
+          # The other place a generated rspec-rails 3 application puts the block. An absent file is no
+          # edit, so naming both costs a file read and covers the application that moved its
+          # configuration when it upgraded.
+          Insert.new(
+            path: "spec/rails_helper.rb",
+            anchor: "RSpec.configure do |config|",
+            line: "  config.infer_spec_type_from_file_location!",
+            note: "rspec-rails 3 does not infer an example group's type unless this is asked for; " \
+                  "an application on `rails_helper.rb` asks for it there"
           )
         ],
         rules: [
@@ -104,7 +114,7 @@ module AgentsFyi
         # The edits this move needs, already guarded against a tree that has them.
         def edits(entry, root:)
           files = read(entry.globs, root: root)
-          Array(entry.inserts).filter_map { |insert| insertion(insert, root: root) } +
+          Array(entry.inserts).filter_map { |insert| insertion(insert, entry: entry, root: root) } +
             rule_edits(entry, files)
         end
 
@@ -119,7 +129,7 @@ module AgentsFyi
             end.to_h
         end
 
-        def insertion(insert, root:)
+        def insertion(insert, entry:, root:)
           path = File.join(root, insert.path)
           return nil unless File.file?(path)
 
@@ -130,7 +140,7 @@ module AgentsFyi
           return nil if index.nil?
 
           Edit.new(path: insert.path, line: index + 1, text: lines[index],
-            after: "#{lines[index]}\n#{insert.line}", subject: RSPEC_RAILS_THREE.subject,
+            after: "#{lines[index]}\n#{insert.line}", subject: entry.subject,
             note: insert.note)
         end
 
