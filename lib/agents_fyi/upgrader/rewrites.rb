@@ -697,6 +697,29 @@ module AgentsFyi
             located.map do |entry|
               [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
             end
+          end),
+
+        # **A change whose rule has no call site here is not the same sentence as a change nobody has
+        # automated.** `require_dependency` and `request.content_type` both have rules, so a call site
+        # would be rewritten — and the 6.0 rung's residue listed both with only the ladder's own note
+        # beside them, which reads as work waiting rather than as an observation about this application.
+        # A survey with nothing to report is what says which it is; the sentence is what keeps the empty
+        # answer from reading as a verdict about the change.
+        Survey.new(subject: "require_dependency", sentence: "the lines that still call it",
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                [path, index + 1, line.strip] if line.match?(/(?:\A|\s)require_dependency\b/)
+              end
+            end
+          end),
+        Survey.new(subject: "request.content_type", sentence: "the lines that read it",
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                [path, index + 1, line.strip] if line.match?(/\brequest\.content_type\b/)
+              end
+            end
           end)
       ].freeze
 

@@ -383,6 +383,29 @@ class RewritesTest < Minitest::Test
       "the rule rewrote a fixture: #{result.edits.map { |edit| edit["after"] }.inspect}"
   end
 
+  # **A change whose rule has no call site here is not the same sentence as a change nobody has
+  # automated.** `require_dependency` and `request.content_type` both have rules — a call site would be
+  # rewritten — and the 6.0 rung's residue listed both with only the ladder's own note beside them, which
+  # reads as work waiting rather than as an observation about this application. The survey is what says
+  # which it is, and the sentence is what keeps an empty answer from reading as a verdict on the change.
+  def test_a_survey_says_whether_a_change_with_a_rule_has_a_call_site_here
+    changes = [{ "subject" => "require_dependency" }, { "subject" => "request.content_type" }]
+    tree = { "app/controllers/items_controller.rb" => ["    Item.find(params[:id])\n"] }
+
+    empty = Rewrites.survey(changes, tree: tree)
+
+    assert_equal ["request.content_type", "require_dependency"], empty.keys.sort
+    assert_empty empty["require_dependency"].findings, "no call site is an observation, not a verdict"
+    assert_includes empty["require_dependency"].sentence, "the lines that still call it"
+    assert_includes empty["request.content_type"].sentence, "the lines that read it"
+
+    found = Rewrites.survey(changes,
+      tree: { "app/models/item.rb" => [%(require_dependency "vendor/lib"\n)] })
+
+    assert_equal [["app/models/item.rb", 1, %(require_dependency "vendor/lib")]],
+      found["require_dependency"].findings
+  end
+
   # **A setting the rung removed, deleted from the file Rails' generator wrote it into.** Rails 5.0's
   # `new_framework_defaults.rb` holds an application's old defaults one at a time; 5.2 removed
   # `halt_callback_chains_on_return_false` (the 5.0 rung's own boot said "deprecated and will be removed in
