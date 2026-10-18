@@ -800,6 +800,32 @@ class RewritesTest < Minitest::Test
       .edits.map { |edit| edit["after"] }
   end
 
+  # **A rule whose condition is about another file**, which is what `context`'s fourth argument is for.
+  # The protected_attributes gem is the case: Rails 5 removes the bridge it provided, so the Gemfile line
+  # goes — but the ladder's own caveat is the condition, because a model still calling `attr_accessible`
+  # fails without the gem. The tree is what answers it, and the Gemfile is not the file that knows.
+  def test_a_rule_may_ask_the_whole_tree_before_it_touches_a_line
+    sources = { "Gemfile" => ["source \"https://rubygems.org\"", "gem \"rails\", \"4.2.11\"",
+                              "gem \"protected_attributes\""] }
+    changes = [{ "subject" => "the protected_attributes gem", "kind" => "removed",
+                 "note" => "Rails 5 removes the bridge" }]
+
+    converted = { "app/models/user.rb" => ["class User < ApplicationRecord", "end"] }
+    result = Rewrites.apply([], sources: sources, changes: changes,
+      files: converted.merge(sources))
+    assert_equal [["Gemfile", 3, ""]], result.edits.map { |edit| [edit["path"], edit["line"], edit["after"]] },
+      "the line goes once nothing calls what the gem provided"
+    assert_empty result.left
+
+    still_using = { "app/models/user.rb" => ["class User < ApplicationRecord",
+      "  attr_accessible :name", "end"] }
+    result = Rewrites.apply([], sources: sources, changes: changes,
+      files: still_using.merge(sources))
+    assert_empty result.edits, "a model that still calls it leaves the line alone"
+    assert_equal ["the protected_attributes gem"], result.left
+    assert_includes Rewrites.gap_for("the protected_attributes gem"), "leaves the line as a decision"
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a

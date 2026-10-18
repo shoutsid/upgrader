@@ -84,7 +84,7 @@ module AgentsFyi
         # against the raw one, at the same offsets — the shape the service's own scanner uses, and
         # the reason the mask preserves every byte's position: a pattern that matched inside a string
         # would rewrite a log message.
-        def after(line, masked, lines: nil)
+        def after(line, masked, lines: nil, tree: {})
           return nil if already && already.match?(line)
 
           found = pattern.match(masked)
@@ -99,7 +99,10 @@ module AgentsFyi
           # The context gets the file's lines, the match, and the **raw** line: a question about what a
           # literal *is* (`ActiveSupport::Dependencies.constantize("User")` is not the same call with a
           # symbol) cannot be asked of the masked one, where the string's contents are blanked.
-          return nil if context && !context.call(Array(lines), found, line)
+          # **The fourth argument is the whole tree**, because a rule's condition can be about another
+          # file: whether a Gemfile line may go depends on whether the models still call what the gem
+          # provided, and that is not a fact about the Gemfile.
+          return nil if context && !context.call(Array(lines), found, line, tree)
 
           # **Every match on the line, for a family whose change is a *respelling*.** One string key
           # rewritten and the second left behind is a line that is half-fixed while the change is reported
@@ -278,7 +281,7 @@ module AgentsFyi
         Rule.new(family: :concern_included, subject: subject,
           pattern: /\A(?<indent>\s*)class\s+(?<name>[A-Z]\w*(?:::\w+)*)\s*<\s*#{Regexp.escape(superclass)}\b(?<rest>[^\n]*)\z/,
           replace: "\\k<indent>class \\k<name> < #{superclass}\\k<rest>\n\\k<indent>  include #{concern}",
-          context: lambda do |lines, _found, _raw|
+          context: lambda do |lines, _found, _raw, _tree|
             lines.any? { |line| line.match?(/#{marker}/) } &&
               lines.none? { |line| line.match?(/\binclude\s+#{Regexp.escape(concern)}\b/) }
           end)
@@ -743,10 +746,6 @@ module AgentsFyi
         "config_for" => "the note's replacement is a call on the *result* " \
                         "(`.with_indifferent_access`), which keeps every call site as it is — so " \
                         "what is missing is a rule that edits the assignment rather than the use",
-        "the protected_attributes gem" => "the change is the *absence* of a bridge, so the edit is a " \
-                                          "Gemfile line to remove — and removing it is only right " \
-                                          "once the models have moved to strong parameters, which " \
-                                          "is the 4.0 entry's work",
         "button_to" => "the note's fix is `method: :post` or an explicit path helper, and which one " \
                        "is right depends on whether the button is built from a record — a fact " \
                        "about the view rather than about the line",
@@ -783,6 +782,11 @@ module AgentsFyi
                                                    "the line *after* `set_callback` is not matched, so " \
                                                    "that call site stays a decision rather than becoming " \
                                                    "a guess",
+        "the protected_attributes gem" => "the rule removes the Gemfile line once no model calls " \
+                                          "`attr_accessible`/`attr_protected` — the ladder's own " \
+                                          "caveat is the condition, and the tree is what answers it. A " \
+                                          "model that still calls one leaves the line as a decision, " \
+                                          "and the models' conversion is the 4.0 entry's work",
         "assert_tag" => "the rule rewrites the *documented* forms — a tag, an `id` or `class` " \
                         "attribute and a `content`, all quoted literals — into the selector the guide " \
                         "maps them to. A `descendant:`, a `count:`, an attribute that is neither `id` " \
@@ -1372,7 +1376,7 @@ module AgentsFyi
         # behaviour changed. A file the rule could not read answers "nothing validates it", which is the
         # safe direction — the edit is the behaviour-preserving one either way.
         option_added(subject: "belongs_to", call: "belongs_to", option: ", optional: true",
-          context: lambda do |lines, found, _raw|
+          context: lambda do |lines, found, _raw, _tree|
             association = found[:call][/:\K[a-z_]\w*/]
             # **`presence`, with no boundary around it**: `validates_presence_of` has no word
             # boundary after the `_`, so `\bpresence\b` matched nothing and the rule added
@@ -1422,11 +1426,11 @@ module AgentsFyi
         # and the raw line is the only place that can be asked.
         call_inverted(subject: "ActiveSupport::Dependencies private API",
           receiver: "ActiveSupport::Dependencies", call: "constantize", to: "\\k<value>.constantize",
-          context: ->(_lines, _found, raw) { raw.match?(/#{Regexp.escape("constantize")}\(\s*["']/) }),
+          context: ->(_lines, _found, raw, _tree) { raw.match?(/#{Regexp.escape("constantize")}\(\s*["']/) }),
         call_inverted(subject: "ActiveSupport::Dependencies private API",
           receiver: "ActiveSupport::Dependencies", call: "safe_constantize",
           to: "\\k<value>.safe_constantize",
-          context: ->(_lines, _found, raw) { raw.match?(/safe_constantize\(\s*["']/) }),
+          context: ->(_lines, _found, raw, _tree) { raw.match?(/safe_constantize\(\s*["']/) }),
 
         # "`Rails.application.config_for(:app).with_indifferent_access` keeps the call sites as they
         # are." The conversion goes on the call, and the guard is what makes a second walk a no-op —
@@ -1584,6 +1588,20 @@ module AgentsFyi
 
             selector = "#{tag}#{id && "##{id}"}#{klass && ".#{klass}"}"
             "assert_select #{selector.inspect}#{content ? ", text: #{content.inspect}" : ""}"
+          end),
+
+        # "The protected_attributes gem keeps the old list working as a bridge, and Rails 5 removes that
+        # bridge." The gem line is the edit, and the ladder's own caveat is the *condition*: removing it is
+        # only right once the models have moved, because a model still calling `attr_accessible` fails
+        # without the gem. So the rule asks the whole tree — which is what `context`'s fourth argument is
+        # for, since a condition about another file is not a fact about this one.
+        Rule.new(family: :line_removed, subject: "the protected_attributes gem", file: "Gemfile",
+          pattern: /\A\s*gem\s+["']protected_attributes["'][^\n]*\z/,
+          replace: "",
+          context: lambda do |_lines, _found, _raw, tree|
+            tree.none? do |_path, lines|
+              lines.any? { |line| line.match?(/\battr_(accessible|protected)\b/) }
+            end
           end)
       ].freeze
 
@@ -1620,7 +1638,7 @@ module AgentsFyi
             # **A rule with a `file` matches the raw line**, because the file it names is not Ruby: in
             # `package.json` the quoted text *is* the data, and the mask exists to stop a pattern
             # matching inside a Ruby string.
-            written = candidate.after(text, candidate.file ? text : masked, lines: lines)
+            written = candidate.after(text, candidate.file ? text : masked, lines: lines, tree: files)
             next if written.nil?
 
             chosen = candidate
