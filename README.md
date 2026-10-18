@@ -125,6 +125,10 @@ The pipeline has three stages that make the rest mean anything:
    removed. A declaration it cannot rewrite in full (a comment, several lines, a
    `require:` that changes behaviour) is skipped *with the reason*, and a digest entry for
    a gem the application does not declare becomes a decision rather than an edit.
+   The install itself is where a native gem meets the environment: nokogiri vendors its own
+   libxml2 and builds it with libtool, whose install `chmod`s the static library — refused on
+   the Docker Desktop share this walker's home is a bind mount of — so the bundle builds
+   nokogiri against the libraries the image ships (`BUNDLE_BUILD__NOKOGIRI`).
 3. **machine** — which interpreter executes the application. An application old enough to
    be interesting cannot be installed on the Ruby running this tool, so the step chooses:
    the era container for the step's floor when `UPGRADER_RUNTIME=docker`, this process
