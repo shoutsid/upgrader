@@ -865,7 +865,8 @@ module AgentsFyi
         "find_all_by_*" => "the rule makes the call; whether the *caller* wanted the Array the old " \
                            "finder returned is not on the line (`where` returns a relation), which " \
                            "is the note's own warning and the application's suite to catch",
-        "find(:all, ...)" => "the rule unwraps `conditions:` and nothing else, because the note's " \
+        "find(:all, ...)" => "the rule unwraps `conditions:` — a hash *or* an array, which is what the " \
+                             "first real application uses — and nothing else, because the note's " \
                              "replacement is the conditions alone: `find(:all, conditions: {…}, " \
                              "order: …)` is left rather than silently losing the other options",
         "scope :name, where(...)" => "the rule wraps a body that starts with a relation call and " \
