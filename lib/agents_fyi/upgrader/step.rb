@@ -2185,10 +2185,22 @@ module AgentsFyi
       # would bury the one that mattered.
       def print_failure_evidence(record)
         why = record.why.to_s
-        record.stages.select do |stage|
+        named = record.stages.select do |stage|
           stage.ran && stage.exit_code.to_i != 0 && !stage.command.to_s.empty? &&
             why.include?(stage.command.to_s)
-        end.first(2).each do |stage|
+        end
+        # **A verdict about the suite names no command**, and the suite's own output is the evidence:
+        # "the suite was green before this step and failed after it" has no stage's argv in it, so the
+        # selection above is empty and the reason a rung stopped was never printed — measured at the
+        # 5.1 rung, whose suite exit 1 arrived as that sentence alone. The fallback is the suite's own
+        # stage rather than "the last non-zero exit", because a failed pin or boot leaves the suite
+        # failing too and the last stage would be the symptom.
+        if named.empty?
+          named = [record.stages.reverse.find do |stage|
+            stage.ran && stage.exit_code.to_i != 0 && stage.stage.to_s == Record::SUITE
+          end].compact
+        end
+        named.first(2).each do |stage|
           @out.puts("  #{stage.stage} failed (exit #{stage.exit_code}); its output:")
           stage.output_tail.to_s.lines.last(20).each { |line| @out.puts("    #{line.chomp}") }
         end

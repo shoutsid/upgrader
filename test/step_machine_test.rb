@@ -566,6 +566,25 @@ class StepMachineTest < Minitest::Test
   # Stages that are *expected* to fail (`bundle install` refusing a changed line, the pin's widening
   # rounds) are not printed: the stage is chosen by the verdict's own sentence, not by the first
   # non-zero exit.
+  # **A verdict about the suite names no command, and the suite's output is the evidence.** Every
+  # other failure sentence quotes the stage's own argv, which is how the stage is found; "the suite was
+  # green before this step and failed after it" quotes none, so the reason a rung stopped was never
+  # printed — measured at the 5.1 rung, whose suite exit 1 arrived as that sentence alone.
+  def test_a_failed_suite_prints_its_own_output
+    out = StringIO.new
+    green = AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
+      exit_code: 0, seconds: 0.1, output_tail: "201 examples, 0 failures", timed_out: false)
+    failed = AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
+      exit_code: 1, seconds: 0.2, output_tail: "Failure/Error: assigns(:item)\n  undefined method `assigns'",
+      timed_out: false)
+    tests = FakeTests.new(results: [green, failed])
+
+    step(app, machines: machines, tests: tests, out: out).run
+
+    assert_includes out.string, "undefined method `assigns'",
+      "the suite's own output was not printed: #{out.string.lines.last(6).inspect}"
+  end
+
   def test_a_failed_stage_prints_its_own_output
     out = StringIO.new
     runner = FakeRunner.new(answers: {
