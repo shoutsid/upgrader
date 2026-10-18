@@ -178,7 +178,7 @@ module AgentsFyi
         # no longer accepts, a fork that has been deleted, a pin that cannot sit beside the
         # framework. Its repairs are edits this step made; everything it will not rewrite
         # travels as a decision.
-        preflight = preflight_stage(stages)
+        preflight = preflight_stage(stages, step)
         @applied.concat(preflight.repairs)
         @decisions.concat(preflight.decisions)
 
@@ -437,9 +437,16 @@ module AgentsFyi
       # A repository with no Gemfile at all still gets a stage, saying so: `planned`
       # requires a lockfile but not a Gemfile, and a preflight that silently did nothing
       # would leave an install failure to report it in a sentence about gems.
-      def preflight_stage(stages)
+      # **The rung's own floor is what a digest entry's condition is read against.** This stage runs
+      # before the machine is chosen — the choice *is* a `bundle install`, so the Gemfile has to be
+      # installable first — so the honest interpreter to name here is the lowest one the move may
+      # run on, which is the ladder's own statement of it. The lockfile's own `RUBY VERSION` is the
+      # fallback for a rung that states no floor; with neither, a conditioned entry is a note rather
+      # than a silent pass.
+      def preflight_stage(stages, step)
         corpus = @corpus || Corpus.new(base: @api)
-        result = Preflight.new(root: @worktree.root, corpus: corpus).run
+        result = Preflight.new(root: @worktree.root, corpus: corpus,
+          ruby: step["requires_ruby"] || @lockfile.locked_ruby).run
         stages << Record::Command.new(
           stage: Record::PREFLIGHT, command: "preflight: #{result.summary}",
           ran: true, exit_code: 0, seconds: 0.0,

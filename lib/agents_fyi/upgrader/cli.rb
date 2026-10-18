@@ -156,13 +156,28 @@ module AgentsFyi
       # The service's digest is read, and a service that does not answer it is a *narrowed*
       # preflight rather than a failure: the general repairs are facts about a protocol,
       # and the record says which half was skipped.
+      # The lockfile's own `RUBY VERSION`, or nil — never an exception. A tree whose lockfile
+      # cannot be read is exactly the tree a preflight is for, and failing the mode on it would
+      # refuse the repair because of the damage.
+      def lockfile_for(root)
+        Lockfile.read(root)
+      rescue Lockfile::Missing, Lockfile::Unreadable
+        nil
+      end
+
       def preflight(options)
         return usage_error("preflight needs --repo PATH|URL") unless options[:repo]
 
         source = Source.worktree(options[:repo], ref: options[:ref], home: options[:home],
           run: run_id, reuse: false)
+        # The interpreter is read from the lockfile here, because this mode is asked about a
+        # repository rather than about a rung: `RUBY VERSION` is what the application last
+        # succeeded against, which is the closest thing to "the Ruby this move will run on" that
+        # a caller with no machine can name. A lockfile without it leaves a conditioned digest
+        # entry unapplied, and the record says so.
         result = Preflight.new(root: source.root,
-          corpus: @corpus || Corpus.new(base: options[:api])).run
+          corpus: @corpus || Corpus.new(base: options[:api]),
+          ruby: lockfile_for(source.root)&.locked_ruby).run
         @out.puts(result.to_s)
         if options[:record]
           FileUtils.mkdir_p(options[:record])

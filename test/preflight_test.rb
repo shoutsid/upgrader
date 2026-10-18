@@ -69,16 +69,20 @@ class PreflightTest < Minitest::Test
       @asked << gems
       raise Corpus::Refused, @refuse if @refuse
 
-      { "migrations" => @entries.select { |entry| gems.include?(entry["gem"]) },
+      # The service's own rule, mirrored so the double cannot lie: a `declared` entry is for a gem
+      # the caller does not hold, so it travels with every answer.
+      { "migrations" => @entries.select { |entry|
+        gems.include?(entry["gem"]) || entry["kind"] == "declared"
+      },
         "counts" => { "selected" => 0, "total" => @entries.size }, "stored" => false,
         "next_step" => "the digest's own sentence" }
     end
   end
 
   def entry(gem:, kind: "replaced", replacement: nil, requirement: nil, mechanical: true,
-            note: "the digest's reason", source: "the index")
+            note: "the digest's reason", source: "the index", condition: nil)
     { "gem" => gem, "kind" => kind, "replacement" => replacement, "requirement" => requirement,
-      "mechanical" => mechanical, "note" => note, "source" => source }
+      "mechanical" => mechanical, "note" => note, "source" => source, "when" => condition }
   end
 
   def setup
@@ -89,6 +93,11 @@ class PreflightTest < Minitest::Test
     @dirs.each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
   end
 
+  # The Gemfile the declaration tests use: the same application, without the `github:` pins the
+  # protocol rule rewrites — so a test about the digest's declarations asserts the declaration rather
+  # than counting repairs that were already there. (`PLAIN_LOCKFILE`, above, is that lockfile.)
+  PLAIN_GEMFILE = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\n)
+
   def app(gemfile: GEMFILE, lockfile: LOCKFILE)
     dir = Dir.mktmpdir
     File.write(File.join(dir, "Gemfile"), gemfile)
@@ -97,11 +106,74 @@ class PreflightTest < Minitest::Test
     dir
   end
 
-  def preflight(dir, corpus: FakeCorpus.new)
-    Preflight.new(root: dir, corpus: corpus).run
+  def preflight(dir, corpus: FakeCorpus.new, ruby: nil)
+    Preflight.new(root: dir, corpus: corpus, ruby: ruby).run
   end
 
   def read(dir, name) = File.read(File.join(dir, name))
+
+  # **A declaration is the repair for a gem the application does not hold yet, and there is no line
+  # of the application's to rewrite.** Rails 4.2 brings `rails-html-sanitizer` in, that brings loofah
+  # in, and on an interpreter too old for nokogiri 1.12 the newest loofah's code needs a constant no
+  # nokogiri this Ruby can install provides — measured, the 4.2 rung's `rails:update` died on
+  # `uninitialized constant Nokogiri::HTML4`. So the digest's answer is a line to *add*, and the
+  # record renders it as one rather than quoting a line that does not exist.
+  def test_a_declared_entry_adds_the_line_when_its_condition_holds
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "loofah", kind: "declared",
+      requirement: "~> 2.0.3", condition: { "ruby_below" => "2.5" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.1")
+
+    declared = result.repairs.select { |repair| repair.subject == "loofah" }
+    assert_equal 1, declared.size, "the declaration was not made: #{result.details.inspect}"
+    assert_nil declared.first.text, "an addition has no line to quote"
+    assert_includes read(dir, "Gemfile"), %(gem "loofah", "~> 2.0.3")
+    assert_includes result.details, %(Gemfile: `gem "loofah", "~> 2.0.3"` declared (loofah))
+  end
+
+  # The condition is what keeps a digest entry from being applied to an application it is not
+  # about: above the Ruby that can run nokogiri 1.12, the newest loofah is the right one.
+  def test_a_declaration_the_interpreter_can_do_without_is_not_made
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "loofah", kind: "declared",
+      requirement: "~> 2.0.3", condition: { "ruby_below" => "2.5" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "3.2")
+
+    assert_empty result.repairs
+    refute_includes read(dir, "Gemfile"), "loofah"
+    assert_equal 1, result.notes.size, "the skip was silent: #{result.details.inspect}"
+    assert_includes result.notes.first, "was not declared"
+  end
+
+  # A condition this stage cannot evaluate is a note, not a silent pass — the failure that would
+  # hide a broken rung behind a preflight that looked like it had nothing to do.
+  def test_a_condition_this_cannot_evaluate_is_a_note_and_not_a_silent_pass
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "loofah", kind: "declared",
+      requirement: "~> 2.0.3", condition: { "ruby_below" => "2.5" })])
+
+    result = preflight(dir, corpus: corpus)
+
+    assert_empty result.repairs
+    assert_equal 1, result.notes.size
+    assert_includes result.notes.first, "cannot name the interpreter"
+  end
+
+  # A gem the application already declares is the application's line: the digest is not asked about
+  # a line it did not write, and adding a second one would be the duplicate bundler refuses outright.
+  def test_a_gem_the_application_already_declares_is_left_alone
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\ngem "loofah"\n)
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "loofah", kind: "declared",
+      requirement: "~> 2.0.3", condition: { "ruby_below" => "2.5" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.1")
+
+    assert_empty result.repairs
+    assert_equal gemfile, read(dir, "Gemfile")
+  end
 
   # **The protocol rule touches both files.** Bundler reads a git source's remote out of
   # the lockfile, so rewriting only the Gemfile leaves the lockfile naming a protocol

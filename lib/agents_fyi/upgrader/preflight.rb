@@ -85,8 +85,16 @@ module AgentsFyi
         # The details, one per line, in the record's bounded tail.
         def details
           lines = repairs.map do |repair|
-            "#{repair.path}:#{repair.line} `#{repair.text.strip}` -> `#{repair.after.strip}` " \
-              "(#{repair.subject})"
+            # **An addition has no line to quote.** A declaration the digest asks for is a line
+            # the application does not have, so `text` is nil and there is nothing to render
+            # before the arrow — and a renderer that called `.strip` on nil would turn a repair
+            # into a crash in the one place a record is being written.
+            if repair.text.nil?
+              "#{repair.path}: `#{repair.after.strip}` declared (#{repair.subject})"
+            else
+              "#{repair.path}:#{repair.line} `#{repair.text.strip}` -> `#{repair.after.strip}` " \
+                "(#{repair.subject})"
+            end
           end
           lines += decisions.map do |decision|
             "decide #{decision.subject}: #{decision.reason}"
@@ -116,9 +124,15 @@ module AgentsFyi
         end
       end
 
-      def initialize(root:, corpus: nil)
+      # `ruby` is the interpreter the move will run on, as far as the caller knows it — the
+      # *lowest* one the rung allows, because this stage runs before the machine is chosen (the
+      # choice is itself a `bundle install`, so the Gemfile has to be installable first). It is
+      # what a digest entry's `when` is evaluated against, and a caller that cannot name one is
+      # told which entries it therefore could not apply rather than being served them silently.
+      def initialize(root:, corpus: nil, ruby: nil)
         @root = File.expand_path(root)
         @corpus = corpus
+        @ruby = ruby.to_s.strip
       end
 
       def run
@@ -234,6 +248,8 @@ module AgentsFyi
       def digest_repair(entry, repairs, decisions, notes)
         name = entry["gem"].to_s
         found = declaration(name)
+        return declare(entry, found, repairs, decisions, notes) if entry["kind"].to_s == "declared"
+
         if found.nil?
           return unless locked_gems.include?(name)
 
@@ -276,6 +292,64 @@ module AgentsFyi
         File.binwrite(File.join(@root, "Gemfile"), lines.join("\n"))
         repairs << Repair.new(path: "Gemfile", line: index + 1, text: line, after: after,
           subject: name, note: entry["note"])
+      end
+
+      # **A declaration is the repair, and it is for a gem the application does not hold yet.**
+      # The kind exists because the hold the pin keeps cannot see this case: a gem that *arrives*
+      # with the framework has no earlier version in the lock to be put back, so the resolver takes
+      # its newest — and on an old interpreter that newest can be a release whose code needs a
+      # nokogiri the interpreter cannot install. Measured at the 4.2 rung: Rails 4.2 brings in
+      # `rails-html-sanitizer`, which brings in loofah 2.21.1, whose code needs `Nokogiri::HTML4`
+      # while Ruby 2.1 caps nokogiri at 1.9.1, and `rails:update` died on the constant.
+      #
+      # The application's own line is the application's: a gem it already declares is left alone
+      # (the digest is not asked about a line it did not write). And a condition that cannot be
+      # evaluated is a *note*, not a silent pass — the honest half of this is saying which
+      # declarations were not applied and why.
+      def declare(entry, found, repairs, decisions, notes)
+        name = entry["gem"].to_s
+        return if found
+
+        unless entry["mechanical"] == true
+          decisions << decision(entry, path: "Gemfile", line: nil, reason: entry["note"])
+          return
+        end
+
+        unless holds?(entry)
+          notes << "the digest would declare #{name} #{entry["requirement"]} when the move runs " \
+                   "on #{below(entry) || "an interpreter its condition names"} " \
+                   "(#{@ruby.empty? ? "this stage cannot name the interpreter" : "this move runs " \
+                   "on #{@ruby}"}), so it was not declared: #{entry["note"]}"
+          return
+        end
+
+        line = %(gem "#{name}", "#{entry["requirement"]}")
+        gemfile = File.join(@root, "Gemfile")
+        text = File.binread(gemfile)
+        separator = text.empty? || text.end_with?("\n") ? "" : "\n"
+        File.binwrite(gemfile, "#{text}#{separator}#{line}\n")
+        repairs << Repair.new(path: "Gemfile", line: nil, text: nil, after: line,
+          subject: name, note: entry["note"])
+      end
+
+      # Whether the entry's condition holds for the interpreter this move will run on. The one
+      # condition the digest states so far is a Ruby floor, and no interpreter means the condition
+      # cannot be evaluated at all — which is `false` here and a note at the call site.
+      def holds?(entry)
+        floor = below(entry)
+        return true if floor.nil?
+        return false if @ruby.empty?
+
+        Gem::Version.new(@ruby) < Gem::Version.new(floor)
+      end
+
+      # The Ruby floor an entry's condition names, or nil when it names none.
+      def below(entry)
+        condition = entry["when"]
+        return nil unless condition.is_a?(Hash)
+
+        value = condition["ruby_below"].to_s.strip
+        value.empty? ? nil : value
       end
 
       # The line the Gemfile declares this gem on, or nil. `DECLARATION` matches the whole
