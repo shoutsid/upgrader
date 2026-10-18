@@ -77,12 +77,18 @@ module AgentsFyi
              whose suite was green before it and failed after
       TEXT
 
-      def initialize(argv, out: $stdout, err: $stderr, env: ENV, corpus: nil, inspector: Open3)
+      def initialize(argv, out: $stdout, err: $stderr, env: ENV, corpus: nil, inspector: Open3,
+                     step_class: Step)
         @argv = argv
         @out = out
         @err = err
         @env = env
         @corpus = corpus
+        # **The process environment reaches the step**, and that is a fix rather than a detail: a `step`
+        # built without it read `UPGRADER_COMMAND_TIMEOUT` (and every other knob the step owns) as *absent*,
+        # so the bound the run was started with was the default and a walk asked for two minutes got fifteen.
+        # `step_class` is a seam for the same reason `inspector` is — the suite asserts what *would* be built.
+        @step_class = step_class
         # What `prune` asks the daemon with. Injectable for the same reason every other seam
         # is: the suite asserts the command that *would* run rather than running one.
         @inspector = inspector
@@ -192,12 +198,12 @@ module AgentsFyi
 
         services = services_for(options)
         begin
-          record = Step.new(
+          record = @step_class.new(
             repository: options[:repo], ref: options[:ref], to: target(options), api: options[:api],
             home: options[:home], out: @out, work: options[:work], record: options[:record],
             ledger: Ledger.load(File.join(options[:home], "ledger.json")),
             suite_timeout: options[:step_timeout], force: options[:force],
-            suite_env: options[:suite_env], services: services
+            suite_env: options[:suite_env], services: services, env: @env
           ).run
           return step_status(record) unless options[:publish]
 
@@ -258,7 +264,7 @@ module AgentsFyi
             to: options[:to], repos: options[:repos], interval: options[:interval],
             step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
             walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
-            suite_env: options[:suite_env], services: services
+            suite_env: options[:suite_env], services: services, env: @env
           ).run
         ensure
           services&.stop!

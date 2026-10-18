@@ -56,10 +56,13 @@ module AgentsFyi
                      step_timeout: 3600, out: $stdout, ledger: nil, cycles: nil,
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
-                     publish_class: Publish, suite_env: nil, services: nil)
+                     publish_class: Publish, suite_env: nil, services: nil, env: ENV)
         @api = api
         @home = home
         @to = to
+        # The environment the steps are built with, for the same reason the CLI passes one: a knob the loop
+        # reads and the step does not is a knob that does nothing.
+        @env = env
         # `walk` is the difference between a loop that takes one rung per cycle and one that
         # walks a repository to its target in a cycle: it chains rungs while they pass, up to
         # `rungs` (a budget, because one rung can take half an hour and a cycle that never
@@ -264,7 +267,7 @@ module AgentsFyi
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
-          corpus: @corpus, reuse: true, services: @services
+          corpus: @corpus, reuse: true, services: @services, env: @env
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
