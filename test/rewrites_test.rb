@@ -966,6 +966,51 @@ class RewritesTest < Minitest::Test
       files: { "app/models/profile.rb" => bare }).edits
   end
 
+  # **Every rule applied to a recorded call site is idempotent**, and the lines come from the frozen recording
+  # rather than from a fixture of my own — the same rule the `button_to` family learned the hard way ("a test
+  # fixture that tidies a name tests a spelling no row carries").
+  #
+  # What it does **not** do is catch the mangle, and saying so is the point of writing it down: this test was
+  # added to catch `:data => { :confirm => "x", :method => :delete }` becoming
+  # `:data => { data: { confirm: "x" }, :method => :delete }`, and reverting the guard's spelling coverage
+  # leaves it *green*. The mangled output satisfies both the rule's own lookahead and the broken guard, so no
+  # property read off the rule's output can see it — the check that catches it is the spelling coverage itself,
+  # in the `:confirm` test beside this one, which does fail on the reverted guard. Idempotence is a real
+  # property and a cheap regression guard; it is not a proof that a rewrite is well-formed, and a docstring
+  # claiming otherwise is the kind of thing this repository keeps paying for.
+  #
+  # The count is asserted because a recording that stopped carrying located lines would make this pass
+  # vacuously, and a check that cannot fail is not a check.
+  def test_every_rule_applied_to_a_recorded_call_site_is_idempotent
+    recording = JSON.parse(File.read(File.join(__dir__, "..", "..", "..",
+      "test", "agents_fyi", "fixtures", "rails_scan_golden.json")))
+    located = recording["requests"].flat_map { |request| request.dig("scan", "manual") || [] }
+
+    checked = 0
+    located.each do |entry|
+      subject = entry["subject"].to_s
+      next if Rewrites::RULES.none? { |rule| rule.subject == subject }
+
+      checked += 1
+      text = entry["text"].to_s
+      path = entry["path"].to_s
+      first = Rewrites.apply([entry], files: { path => [text] })
+      next if first.edits.empty?
+
+      after = first.edits.first["after"].to_s
+      second = Rewrites.apply([{ "path" => path, "line" => entry["line"], "text" => after,
+                                 "subject" => subject }], files: { path => [after] })
+      # The message is a proc, so it is built only when the assertion fails: a message that reads
+      # `second.edits.first` eagerly raises on the pass, which is how this test first arrived.
+      assert_empty second.edits, lambda {
+        "#{subject} rewrote its own output again:\n  #{text}\n=> #{after}\n" \
+          "=> #{second.edits.first["after"]}"
+      }
+    end
+
+    assert_operator checked, :>=, 2, "the recording stopped carrying call sites a rule covers"
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
