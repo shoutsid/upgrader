@@ -77,7 +77,7 @@ module AgentsFyi
       #   made", and it is a field rather than a trick inside each pattern because it is the same
       #   question every appending rule asks.
       Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already, :file,
-        keyword_init: true) do
+        :all, keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
@@ -101,19 +101,42 @@ module AgentsFyi
           # symbol) cannot be asked of the masked one, where the string's contents are blanked.
           return nil if context && !context.call(Array(lines), found, line)
 
-          region = line[found.begin(0)...found.end(0)]
-          written =
-            if replace.respond_to?(:call)
-              # The region's own match, because the write is against the *raw* line: a capture the
-              # masked line matched inside a string is a different one here, and a family that
-              # re-matched for itself could see a different extent than the one being replaced.
-              own = pattern.match(region)
-              own ? replace.call(own) : region
-            else
-              region.sub(pattern, replace)
-            end
-          text = "#{line[0, found.begin(0)]}#{written}#{line[found.end(0)..]}"
+          # **Every match on the line, for a family whose change is a *respelling*.** One string key
+          # rewritten and the second left behind is a line that is half-fixed while the change is reported
+          # as applied — `Rails.application.secrets["smtp"]["address"]` is the case that found it, and the
+          # half-fixed half is a `nil` where the change says a `nil` or a raise. `all` is opt-in because it
+          # is wrong for the families that *append*: `option_added` would add its option twice.
+          spans = all ? matches(masked) : [found]
+          return nil if stop && spans.any? { |span| span.end(0) > stop }
+
+          text = line.dup
+          spans.reverse_each do |span|
+            region = line[span.begin(0)...span.end(0)]
+            # The region's own match, because the write is against the *raw* line: a capture the masked
+            # line matched inside a string is a different one here, and a family that re-matched for
+            # itself could see a different extent than the one being replaced.
+            own = pattern.match(region)
+            written =
+              if replace.respond_to?(:call)
+                own ? replace.call(own) : region
+              else
+                region.sub(pattern, replace)
+              end
+            text[span.begin(0)...span.end(0)] = written
+          end
           text == line ? nil : text
+        end
+
+        # Every match of this rule's pattern in the masked line, left to right. `Regexp#match` with a
+        # position is what makes it one pass rather than a scan that re-finds its own first match.
+        def matches(masked)
+          found = []
+          position = 0
+          while (span = pattern.match(masked, position))
+            found << span
+            position = span.end(0) > span.begin(0) ? span.end(0) : span.begin(0) + 1
+          end
+          found
         end
       end
 
@@ -768,11 +791,10 @@ module AgentsFyi
                                            "controller *that streams*, and that is a fact about the " \
                                            "file. A controller that streams through a helper defined " \
                                            "elsewhere stays a decision",
-        "Rails.application.secrets" => "the fix is to read a nested *string* key as a symbol " \
-                                        "(`secrets[:smtp][\"address\"]` is `secrets[:smtp][:address]`), " \
-                                        "and a rule cannot see a string's contents: the mask blanks " \
-                                        "them, which is the same property that stops a rule " \
-                                        "rewriting a log message",
+        "Rails.application.secrets" => "the rule respells a *literal* key — `secrets[\"smtp\"]` is " \
+                                       "`secrets[:smtp]` — and it reads the string because a callable " \
+                                       "`replace` is handed the raw region. A key held in a variable is " \
+                                       "not matched, and the survey beside the rule names those lines",
         "to_xml" => "the bridge declares the gem; a Gemfile whose group blocks this tool cannot read " \
                     "(a string where the group name is, a block nested in one) is left",
         "content_tag_for / div_for" => "the bridge declares the gem — the behaviour-preserving half " \
@@ -1484,7 +1506,26 @@ module AgentsFyi
           from: 'ActionCable\.startDebugging\(\)', to: "ActionCable.logger.enabled = true"),
         javascript_moved(subject: "ActionCable JavaScript adapters",
           file: "app/{assets/javascripts,javascript}/**/*.js",
-          from: 'ActionCable\.stopDebugging\(\)', to: "ActionCable.logger.enabled = false")
+          from: 'ActionCable\.stopDebugging\(\)', to: "ActionCable.logger.enabled = false"),
+
+        # "Nested keys in secrets.yml are loaded as symbols now, so `secrets[:smtp]["address"]` raises or
+        # returns nil where it used to work."
+        #
+        # **The rule reads a string's contents, and a callable `replace` is what makes that possible.** The
+        # *pattern* matches the quotes — which the mask keeps, and which decide the extent of the match —
+        # and the *write* is handed the raw region, so what was between them is readable. Without that this
+        # change would be out of reach for the same reason `config.secret_token`'s value is, and
+        # `docs/known-limits.md` said exactly that until this rule was written and measured.
+        #
+        # Only a *literal* key is rewritten: `secrets[:smtp][key]`, with the key in a variable, does not
+        # match, and the survey beside this rule is what names those lines.
+        Rule.new(family: :key_respelled, subject: "Rails.application.secrets", all: true,
+          pattern: /(?<head>\[\s*)["'](?<name>[^"']*)["'](?<tail>\s*\])/,
+          replace: lambda do |match|
+            name = match[:name].to_s
+            symbol = name.match?(/\A[a-zA-Z_]\w*\z/) ? ":#{name}" : ":#{name.inspect}"
+            "#{match[:head]}#{symbol}#{match[:tail]}"
+          end)
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the

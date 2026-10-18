@@ -154,7 +154,7 @@ The pipeline has three stages that make the rest mean anything:
    `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`,
    `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
    `option_renamed`, `call_unwrapped`, `parameter_added`, `block_captured`,
-   `concern_included`), so the next lighthouse writes an instance of
+   `concern_included`, `key_respelled`), so the next lighthouse writes an instance of
    an existing family — and a rule whose change lives in a file the scanner never reads
    (a `package.json` line, a JavaScript call) carries a `file` glob and finds its own
    call sites there, matching the raw line because in that file the quoted text *is*

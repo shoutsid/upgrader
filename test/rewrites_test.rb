@@ -733,6 +733,42 @@ class RewritesTest < Minitest::Test
     assert_empty Rewrites.sourced(Rewrites::RULES.reject(&:file), sources, changes)
   end
 
+  # **A rule can read a string's contents, and that is what a callable `replace` is for.** The *pattern*
+  # matches the quotes — which the mask keeps, and which decide the extent of the match — and the *write*
+  # is handed the raw region, so what was between them is readable. This is the rule that proved it: the
+  # known-limits doc said a string's contents were out of reach until this was written and measured.
+  def test_a_respelling_rule_reads_the_string_the_mask_blanks_and_rewrites_every_key_on_the_line
+    assert_equal ["  Rails.application.secrets[:smtp][:address]"],
+      secrets_after(%q{  Rails.application.secrets["smtp"]["address"]}),
+      "both keys on the line, because a half-fixed line is a nil where the change says a nil or a raise"
+    assert_equal ["  address: Rails.application.secrets[:smtp][:address],"],
+      secrets_after(%q{  address: Rails.application.secrets[:smtp]["address"],})
+    assert_equal [%q{  Rails.application.secrets[:"smtp-2"]}],
+      secrets_after(%q{  Rails.application.secrets["smtp-2"]}),
+      "a key that is not an identifier still has a symbol spelling"
+    assert_empty secrets_after(%q{  Rails.application.secrets[:smtp][:address]}), "already a symbol"
+    assert_empty secrets_after(%q{  x = Rails.application.secrets[:smtp][key]}),
+      "a key in a variable is not matched, and the survey names those lines"
+  end
+
+  def secrets_after(text)
+    Rewrites.apply([entry(subject: "Rails.application.secrets", text: text)])
+      .edits.map { |edit| edit["after"] }
+  end
+
+  # **`all` is opt-in**, because it is wrong for the families that append: a rule that added its option to
+  # every match would add it twice to a line with two calls. This drives the distinction directly.
+  def test_rewriting_every_match_is_opt_in_because_appending_twice_is_wrong
+    twice = entry(subject: "probe", text: %(  x = alpha(a) + alpha(b)))
+    rule = Rewrites::Rule.new(family: :probe, subject: "probe", pattern: /alpha\((\w)\)/, replace: "beta(\\1)")
+    everything = Rewrites::Rule.new(family: :probe, subject: "probe", pattern: /alpha\((\w)\)/,
+      replace: "beta(\\1)", all: true)
+
+    assert_equal ["  x = beta(a) + alpha(b)"], Rewrites.apply([twice], rules: [rule]).edits.map { |e| e["after"] }
+    assert_equal ["  x = beta(a) + beta(b)"],
+      Rewrites.apply([twice], rules: [everything]).edits.map { |e| e["after"] }
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
