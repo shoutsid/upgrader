@@ -950,19 +950,34 @@ module AgentsFyi
         nil
       end
 
-      # One research pass over the gems the routing could not answer about, and the routing
-      # asked again. Both halves are reported in the stages the caller writes: a pass that
-      # fetched ten documents and closed nothing is a fact about the index, and a walk that
-      # hid it would look like a walk that had nothing to fetch.
+      # **Research is asked for as many times as the unknowns need, because one pass is a slice of
+      # the lockfile.** `Research::MAX_GEMS` bounds a single pass, and the pins beyond it stay
+      # unknown: measured at the 5.0 rung, the first pass recorded 60 of 104 and the gem the pin
+      # then failed on — `sass-rails`, whose `railties < 5.0` is the very conflict — was in the other
+      # 44, so the route answered `unknown` for the line the resolve needed moved and the rung failed
+      # with a conflict the corpus could have answered. Each pass covers what the last one left, and
+      # the loop stops when a pass records nothing new, so a gem the index will not answer is asked
+      # about once rather than for ever. Both halves are reported: a pass that fetched ten documents
+      # and closed nothing is a fact about the index, and a walk that hid it would look like a walk
+      # that had nothing to fetch.
+      RESEARCH_PASSES = 4
+
       def research(corpus, route, ruby:, rails:, stages:)
-        unknown = route.fetch("gems", []).select { |gem| gem["verdict"] == "unknown" }
         pass = @research || Research.new(corpus: corpus, cache: File.join(@home, "index"), out: @out)
-        result = pass.run(unknown.map { |gem| [gem["name"], gem["version"]] })
-        stages << Record::Command.new(
-          stage: Record::RESEARCH, command: "research: #{result}",
-          ran: true, exit_code: 0, seconds: 0.0, output_tail: result.details.first(20).join("\n")
-        )
-        corpus.route(ruby: ruby, rails: rails, lockfile: lockfile_text)
+        RESEARCH_PASSES.times do
+          unknown = route.fetch("gems", []).select { |gem| gem["verdict"] == "unknown" }
+          break if unknown.empty?
+
+          result = pass.run(unknown.map { |gem| [gem["name"], gem["version"]] })
+          stages << Record::Command.new(
+            stage: Record::RESEARCH, command: "research: #{result}",
+            ran: true, exit_code: 0, seconds: 0.0, output_tail: result.details.first(20).join("\n")
+          )
+          break if result.researched.empty?
+
+          route = corpus.route(ruby: ruby, rails: rails, lockfile: lockfile_text)
+        end
+        route
       rescue Corpus::Unreachable, Corpus::Refused => e
         stages << Record::Command.new(stage: Record::RESEARCH, command: "research: not run",
           ran: false, exit_code: nil, seconds: 0.0,

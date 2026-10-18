@@ -662,6 +662,41 @@ class StepTest < Minitest::Test
       "a closed unknown should not also be a decision")
   end
 
+  # **One pass is a slice of the lockfile, so the step takes another.** `Research::MAX_GEMS` bounds
+  # a pass and the pins beyond it stay unknown — measured at the 5.0 rung, where the first pass
+  # recorded 60 of 104 and the gem the pin then failed on (`sass-rails`) was in the other 44, so the
+  # route answered `unknown` for the very line the resolve needed moved. The loop closes the rest,
+  # and stops when a pass records nothing new.
+  def test_research_takes_another_pass_while_the_routing_still_has_unknowns
+    dir = track(app)
+    unknown = ->(name) do
+      { "name" => name, "version" => "1.0.0", "verdict" => "unknown",
+        "reason" => "no facts are recorded for #{name} 1.0.0 — an unknown gem is not a pass" }
+    end
+    route = ->(gems, counts, next_step) do
+      { "ruby" => "2.1.10", "rails" => "5.0.0", "gems_read" => 2, "gems" => gems,
+        "counts" => counts, "stored" => false, "next_step" => next_step }
+    end
+    counts = ->(keep, unknown) do
+      { "keep" => keep, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0, "unknown" => unknown }
+    end
+    corpus = FakeCorpus.new(payload: plan, routes: [
+      route.call([unknown.call("a-gem"), unknown.call("z-gem")], counts.call(0, 2),
+        "2 pin(s) are unknown"),
+      route.call([unknown.call("z-gem")], counts.call(1, 1), "1 pin is unknown"),
+      route.call([], counts.call(2, 0), "every pin is recorded")
+    ])
+    research = FakeResearch.new
+
+    record = step(dir, corpus: corpus, research: research).run
+
+    assert_equal [["z-gem", "1.0.0"]], research.pins,
+      "the second pass has to be handed the unknowns the first left, not the whole lockfile again"
+    assert_equal 3, corpus.asked_routes.length, "the routing was not asked again after each pass"
+    assert_equal 2, record.stages.count { |stage| stage.stage == "research" },
+      "both passes have to be in the record"
+  end
+
   # **The agentic half, from the pipeline's side.** A green baseline and a red suite is the
   # one shape a repair may be attempted on — the failure is then attributable to the move —
   # and the verdict afterwards is the *suite's* again: a repaired step passes because the
