@@ -1530,9 +1530,9 @@ class StepTest < Minitest::Test
   def test_the_scan_looks_below_the_rung_and_says_which_rung_a_call_site_came_from
     dir = track(app)
     with_source(dir, "app/models/category.rb",
-      "class Category < ActiveRecord::Base\n  def tech\n    find(:all, conditions: [\"url LIKE ?\", \"tech%\"])\n  end\nend\n")
+      "class Category < ActiveRecord::Base\n  def tech\n    find(:all, conditions: {url: \"x\"}, order: \"name\")\n  end\nend\n")
     earlier = { "path" => "app/models/category.rb", "line" => 3,
-                "text" => "    find(:all, conditions: [\"url LIKE ?\", \"tech%\"])", "after" => nil,
+                "text" => "    find(:all, conditions: {url: \"x\"}, order: \"name\")", "after" => nil,
                 "step" => "4.0.0", "subject" => "find(:all, ...)", "kind" => "removed",
                 "replacement" => "where(...)", "note" => "the old hash-based finder options are gone",
                 "automatic" => false }

@@ -826,6 +826,27 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.gap_for("the protected_attributes gem"), "leaves the line as a decision"
   end
 
+  # **The conditions may be an array, and the lighthouse is what found that.** The note's own example is the
+  # hash form; the first real application uses `find(:all, conditions: ["url LIKE ?", "tech%"])`, and a rule
+  # that knew only the hash refused the one form the application has — so the suite kept failing on a change
+  # the ladder documents. The hash's braces are the call's and the array's brackets are the *argument's*.
+  def test_a_finder_whose_conditions_are_an_array_unwraps_the_same_way
+    assert_equal [%(    @categories = Category.where(["url LIKE ?", "tech-1%"]))],
+      finder_after(%(    @categories = Category.find(:all, conditions: ["url LIKE ?", "tech-1%"])))
+    assert_equal [%(    @last = User.where(["x = ?", 1]).last)],
+      finder_after(%(    @last = User.find(:last, conditions: ["x = ?", 1])))
+    assert_equal [%(    @items = Item.where(sold: false))],
+      finder_after(%(    @items = Item.find(:all, conditions: {sold: false})))
+
+    # A second option is still a refusal, because the note's replacement is the conditions alone.
+    assert_empty finder_after(%(    @first = User.find(:first, conditions: {name: "a"}, order: "name")))
+  end
+
+  def finder_after(text)
+    Rewrites.apply([entry(subject: "find(:all, ...)", path: "app/models/category.rb", text: text)])
+      .edits.map { |edit| edit["after"] }
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a

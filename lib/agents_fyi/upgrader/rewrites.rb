@@ -1101,15 +1101,25 @@ module AgentsFyi
 
       # **A finder whose options became a `where` chain.** `find(:all, conditions: {name: 'x'})` is
       # `where(name: 'x')`; the family owns the two parts every instance shares — the scope maps to the
-      # method that replaces it, and the conditions hash is unwrapped rather than rewritten. Anything
+      # method that replaces it, and the conditions are unwrapped rather than rewritten. Anything
       # else in the options (`order:`, `limit:`, a second key) does not match, because the note's
       # replacement is the conditions alone and a rule that dropped the other options would be
       # changing what the query returns.
+      #
+      # **The conditions may be an array, and the lighthouse is what found that.** The note's own example is
+      # the hash form; `find(:all, conditions: ["url LIKE ?", "tech%"])` is the same unwrap into
+      # `where(["url LIKE ?", "tech%"])`, and the rule knew only the hash — so it refused the one form the
+      # first real application uses, and the suite kept failing on a change the ladder documents. The
+      # brackets are part of the capture because `where` takes them; the value's *contents* are masked and
+      # do not need to be read, since the whole condition moves as it is.
       def self.find_conditions(subject:, finder: "find")
         Rule.new(family: :find_conditions, subject: subject,
-          pattern: /#{Regexp.escape(finder)}\(\s*:(?<scope>all|first|last)\s*,\s*conditions:\s*\{(?<conditions>[^{}]*)\}\s*\)/,
+          pattern: /#{Regexp.escape(finder)}\(\s*:(?<scope>all|first|last)\s*,\s*conditions:\s*(?:\{(?<hash>[^{}]*)\}|(?<array>\[[^\[\]]*\]))\s*\)/,
           replace: lambda do |found|
-            format(FIND_SCOPES.fetch(found[:scope].to_sym), conditions: found[:conditions].strip)
+            # The hash's braces are the call's, the array's brackets are the *argument's*: `where(name: 'x')`
+            # is what the note writes, and `where(["x = ?", 1])` is the array that takes its own.
+            conditions = (found[:hash] || found[:array]).to_s.strip
+            format(FIND_SCOPES.fetch(found[:scope].to_sym), conditions: conditions)
           end)
       end
 
