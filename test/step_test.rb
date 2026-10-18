@@ -1788,6 +1788,54 @@ class StepTest < Minitest::Test
       "a second preparation ran for a rung that changed no migration: #{quiet.calls.inspect}")
   end
 
+  # **A migration `app:update` copies for an engine the application does not have is not kept.**
+  # Measured at the 6.1 rung: `app:update` ran `active_storage:update`, which copied two
+  # `.active_storage.rb` migrations into a 2013 application whose `db/schema.rb` mentions
+  # `active_storage` zero times, and the step's own `db:migrate` died on
+  # `PG::UndefinedTable: ERROR: relation "active_storage_blobs" does not exist` — after which the
+  # suite aborted on `ActiveRecord::Migration.check_pending!` before an example ran. Rails' engines
+  # name their migrations with their own suffix, so the test is mechanical: an addition under
+  # `db/migrate/` whose engine suffix names an engine with no table in the schema is a migration for
+  # a component this application does not use, and it is removed with the reason recorded.
+  def test_an_engine_migration_the_application_has_no_tables_for_is_not_kept
+    dir = track(app)
+    with_source(dir, "config/database.yml", "test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n")
+    with_source(dir, "db/schema.rb",
+      "ActiveRecord::Schema.define(version: 1) do\n  create_table \"bids\" do |t|\n  end\nend\n")
+    path = "db/migrate/20261018235537_add_service_name_to_active_storage_blobs.active_storage.rb"
+    runner = MigratingRunner.new(dir, path: path)
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner).run
+
+    refute File.exist?(File.join(dir, path)),
+      "a migration for a component this application does not have was kept"
+    decision = record.decisions.find { |each| each.subject.to_s.include?("active_storage") }
+    refute_nil decision, "the removal was not recorded: #{record.decisions.map(&:subject).inspect}"
+    assert_includes decision.reason, "no `active_storage_*` table"
+    assert_includes decision.reason, "active_storage:install",
+      "the reason has to say what to do next"
+    refute_includes runner.calls.join("\n"), "db:migrate",
+      "the second preparation ran for a migration that was not kept: #{runner.calls.inspect}"
+  end
+
+  # And the other side of the same rule: an application that *has* the engine's tables keeps the
+  # migration and applies it, because that is what the migration is for.
+  def test_an_engine_migration_is_kept_when_the_application_has_the_tables
+    dir = track(app)
+    with_source(dir, "config/database.yml", "test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n")
+    with_source(dir, "db/schema.rb",
+      "ActiveRecord::Schema.define(version: 1) do\n  create_table \"active_storage_blobs\" do |t|\n  end\nend\n")
+    path = "db/migrate/20261018235537_add_service_name_to_active_storage_blobs.active_storage.rb"
+    runner = MigratingRunner.new(dir, path: path)
+
+    step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner).run
+
+    assert File.exist?(File.join(dir, path)),
+      "a migration for a component this application has was removed"
+    assert_includes runner.calls.join("\n"), "db:migrate",
+      "the migration was kept and never applied: #{runner.calls.inspect}"
+  end
+
   # **The scan looks below the rung, because an application can be behind the release it declares.** The
   # lighthouse says 4.0.0.rc1 and still calls `find(:all, conditions: ...)` — a change the ladder documents
   # for the rung that *arrives at* 4.0, which kept working until 4.1 because Rails 4.0 depended on

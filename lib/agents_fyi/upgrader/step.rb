@@ -2128,6 +2128,50 @@ module AgentsFyi
           answers.close
         end
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
+        drop_engine_migrations(@adopted)
+      end
+
+      # **A migration `app:update` copies for an engine this application does not have is not kept.**
+      # Measured at the 6.1 rung: `app:update` runs `active_storage:update`, which copies
+      # `db/migrate/*.active_storage.rb` into the application — `add_service_name_to_active_storage_blobs`
+      # and `create_active_storage_variant_records` — and this 2013 application has **no** Active
+      # Storage at all: `db/schema.rb` mentions it zero times, and 6.0's own generated migration was
+      # guarded for exactly that. The first of the two is not guarded, so the step's own database
+      # preparation fails on it —
+      #
+      #     PG::UndefinedTable: ERROR:  relation "active_storage_blobs" does not exist
+      #     db/migrate/…_add_service_name_to_active_storage_blobs.active_storage.rb:4:in `up'
+      #
+      # — and the suite then aborts on `ActiveRecord::Migration.check_pending!` before a single
+      # example runs. Rails' engines name their migrations with their own suffix (`.active_storage.rb`),
+      # which is what makes this a mechanical test rather than a guess: an addition under `db/migrate/`
+      # whose engine suffix names an engine whose tables the application's schema does not declare is a
+      # migration for a component this application does not use. It is removed and the reason recorded
+      # as a decision, because an application that *does* want the component installs it
+      # (`bin/rails active_storage:install`) — and a migration kept for a table that does not exist is
+      # a rung that cannot pass. The safe direction when there is no `db/schema.rb` to read is to keep
+      # it: the failure is then the one this mechanism exists to name, not a silent deletion.
+      def drop_engine_migrations(adopted)
+        schema = File.join(@worktree.root, "db", "schema.rb")
+        return if adopted.empty? || !File.file?(schema)
+
+        declared = File.read(schema)
+        adopted.dup.each do |path|
+          engine = path[/\Adb\/migrate\/[^\/]+\.([a-z_]+)\.rb\z/, 1]
+          next if engine.nil?
+          next if declared.match?(/create_table "#{engine}_/)
+
+          File.delete(File.join(@worktree.root, path))
+          @adopted.delete(path)
+          @decisions << Record::Decision.new(path: path, line: nil,
+            subject: "#{engine} migration #{File.basename(path)}",
+            reason: "`app:update` copied this migration for #{engine}, and the application's " \
+                    "`db/schema.rb` declares no `#{engine}_*` table — so it is a migration for a " \
+                    "component this application does not use, and running it fails on the table it " \
+                    "assumes. Install the component first (`bin/rails #{engine}:install`) if the " \
+                    "application wants it",
+            kind: "removed", replacement: nil, source: "app:update")
+        end
       end
 
       # **The runner and the task are one decision, because Rails 5.0 moved both commands from
