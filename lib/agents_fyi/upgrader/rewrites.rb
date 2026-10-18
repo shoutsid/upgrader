@@ -294,6 +294,39 @@ module AgentsFyi
           end)
       end
 
+      # **A key whose spelling the release changed, in either direction.** Two instances now: the 4.1
+      # json/hstore change makes a *column* string-keyed, so `self.settings[:theme]` is
+      # `self.settings["theme"]`; the 5.1 secrets change makes nested keys *symbols*, so `secrets["smtp"]` is
+      # `secrets[:smtp]`. The family is the shape of the edit — the key's spelling and nothing else — and the
+      # key is read out of the **raw** line, because what is inside a string is what the mask blanks.
+      #
+      # `receiver` is a pattern the key has to hang off, and it is what makes the json direction safe: a
+      # column's accessor is *provably* the column when the receiver is `self` and the same file declares the
+      # `store_accessor`, while a bare name could be a local. `context` is where that second half is asked.
+      def self.key_respelled(subject:, to:, receiver: nil, context: nil, all: false, file: nil)
+        key =
+          if to == :symbol
+            /(?<head>\[\s*)["'](?<name>[^"']*)["'](?<tail>\s*\])/
+          else
+            /(?<head>\[\s*):(?<name>\w+)(?<tail>\s*\])/
+          end
+        # The group is always *there*, empty when the rule has no receiver: `match[:receiver]` raises when a
+        # pattern has no such group, and a rule that reads its own replacement is the wrong place to find out.
+        prefix = receiver ? "(?<receiver>#{receiver})\\s*" : "(?<receiver>)"
+        Rule.new(family: :key_respelled, subject: subject, context: context, all: all, file: file,
+          pattern: Regexp.new("#{prefix}#{key.source}"),
+          replace: lambda do |match|
+            name = match[:name].to_s
+            written =
+              if to == :symbol
+                name.match?(/\A[a-zA-Z_]\w*\z/) ? ":#{name}" : ":#{name.inspect}"
+              else
+                name.inspect
+              end
+            "#{match[:receiver]}#{match[:head]}#{written}#{match[:tail]}"
+          end)
+      end
+
       # **A survey whose whole evidence is the call sites.** A decision names *one* line, so a change with
       # five call sites has four the residue never shows — and for these changes the list *is* the work:
       # the sanitizer calls to review, the tests to rewrite, the models whose lists have to become strong
@@ -385,7 +418,8 @@ module AgentsFyi
         # The accessors `store_accessor` defines are *methods* and are unaffected; what stops working is
         # indexing into the column with a symbol, so the evidence is a line that does exactly that.
         Survey.new(subject: "json and hstore columns",
-          sentence: "the lines that index into the column with a symbol, which is what stops working",
+          sentence: "the lines that index into the column with a symbol, which is what stops working — " \
+                    "the ones the rule cannot prove are the column",
           read: lambda do |tree, located|
             columns = located.flat_map { |entry| entry["text"].to_s.scan(/store_accessor\s+:(\w+)/).flatten }.uniq
             next [] if columns.empty?
@@ -671,9 +705,10 @@ module AgentsFyi
         "default_scope" => "the survey names the callers that chain a condition on the same column, and " \
                            "the edit is not a rule because the candidate patch (`unscope`, `rewhere`, " \
                            "`unscoped`) is a choice between three intentions",
-        "json and hstore columns" => "the survey names the lines that index into the column with a " \
-                                     "symbol; the patch is per call site and its value is the key, which " \
-                                     "is a decision about what the code meant",
+        "json and hstore columns" => "the rule rewrites `self.<column>[:key]` in the file that declares " \
+                                     "the `store_accessor` — the receiver and the declaration together are " \
+                                     "what prove the name is the column. A bare `settings[:key]` could be a " \
+                                     "local holding any hash, so it is left, and the survey names those lines",
         "alias_attribute" => "the survey names the aliases whose original attribute the file defines " \
                              "itself; whether to define the alias method by hand or to use " \
                              "`alias_method` is a choice about the method's body, which the line does " \
@@ -1581,12 +1616,19 @@ module AgentsFyi
         #
         # Only a *literal* key is rewritten: `secrets[:smtp][key]`, with the key in a variable, does not
         # match, and the survey beside this rule is what names those lines.
-        Rule.new(family: :key_respelled, subject: "Rails.application.secrets", all: true,
-          pattern: /(?<head>\[\s*)["'](?<name>[^"']*)["'](?<tail>\s*\])/,
-          replace: lambda do |match|
-            name = match[:name].to_s
-            symbol = name.match?(/\A[a-zA-Z_]\w*\z/) ? ":#{name}" : ":#{name.inspect}"
-            "#{match[:head]}#{symbol}#{match[:tail]}"
+        key_respelled(subject: "Rails.application.secrets", to: :symbol, all: true),
+
+        # "These columns now map to a string-keyed Hash rather than a HashWithIndifferentAccess, so symbol
+        # access stops working — including store_accessors built on them." The mirror of the rule above, and
+        # **`self.` plus the declaring file is what makes it safe**: `self.settings` in the class that says
+        # `store_accessor :settings` is provably that column, where a bare `settings[:x]` could be a local
+        # holding any hash. A bare name is left as a decision, and the survey beside this rule names those
+        # lines.
+        key_respelled(subject: "json and hstore columns", to: :string,
+          file: "app/models/**/*.rb", receiver: /\bself\.\w+/,
+          context: lambda do |lines, found, _raw, _tree|
+            column = found[:receiver].to_s.split(".").last
+            lines.any? { |line| line.match?(/store_accessor\s+:#{Regexp.escape(column)}\b/) }
           end),
 
         # "A different argument shape, so this is a test to rewrite." `assert_tag` is gone in 4.2, and

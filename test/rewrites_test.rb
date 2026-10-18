@@ -923,6 +923,38 @@ class RewritesTest < Minitest::Test
     end
   end
 
+  # **The mirror of `key_respelled`, where the *receiver* is the doubt.** The 4.1 json/hstore change makes a
+  # column string-keyed, so `settings[:theme]` stops finding anything — but a bare name could be a local
+  # holding any hash, and rewriting that would change a lookup silently. `self.settings` in the class that
+  # declares `store_accessor :settings` is *provably* the column, so that is what the rule takes; a bare name
+  # is left, and the survey beside it names those lines.
+  def test_the_json_column_rule_takes_the_accessor_it_can_prove_and_leaves_a_bare_name
+    declaring = ["class Profile < ApplicationRecord", "  store_accessor :settings, :theme",
+      "  def dark?", %(    self.settings[:theme] == "dark"), "  end", "end"]
+    changes = [{ "subject" => "json and hstore columns", "kind" => "default_changed",
+                 "note" => "the column is string-keyed now" }]
+
+    proved = Rewrites.apply([], sources: { "app/models/profile.rb" => declaring }, changes: changes,
+      files: { "app/models/profile.rb" => declaring })
+    assert_equal [%(    self.settings["theme"] == "dark")], proved.edits.map { |edit| edit["after"] }
+
+    # The same line in a file that does not declare the accessor is a refusal — the rule will not guess that
+    # `settings` is the column.
+    plain = ["class Profile < ApplicationRecord", "  def dark?", %(    self.settings[:theme] == "dark"),
+      "  end", "end"]
+    refused = Rewrites.apply([], sources: { "app/models/profile.rb" => plain }, changes: changes,
+      files: { "app/models/profile.rb" => plain })
+    assert_empty refused.edits
+    assert_equal ["json and hstore columns"], refused.left
+
+    # And a bare name is not matched at all: `settings[:x]` could be anything, so the rule does not claim it
+    # and the survey is what reports it.
+    bare = ["class Profile < ApplicationRecord", "  store_accessor :settings, :theme",
+      %(    settings[:theme])]
+    assert_empty Rewrites.apply([], sources: { "app/models/profile.rb" => bare }, changes: changes,
+      files: { "app/models/profile.rb" => bare }).edits
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
