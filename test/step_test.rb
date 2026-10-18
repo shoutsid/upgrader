@@ -365,9 +365,15 @@ class StepTest < Minitest::Test
   class FakeRunner
     attr_reader :calls, :envs, :timeouts, :stdins
 
-    def initialize(fail_on: nil, ran: true)
+    # `fail_times` bounds the failure, because the pipeline can run the same command twice for two
+    # different reasons: a `bundle install` that fails, a lock that resolves, and the install that
+    # follows it are the same command line, and a double that failed every one of them could not tell
+    # "the retry never happened" from "the retry happened and its install failed too".
+    def initialize(fail_on: nil, ran: true, fail_times: nil)
       @fail_on = fail_on
       @ran = ran
+      @fail_times = fail_times
+      @failed = 0
       @calls = []
       @envs = []
       @timeouts = []
@@ -383,7 +389,9 @@ class StepTest < Minitest::Test
       @envs << [argv.join(" "), env]
       @timeouts << [argv.join(" "), timeout]
       @stdins << [argv.join(" "), stdin.respond_to?(:read) ? stdin.read : stdin]
-      failing = @fail_on && argv.join(" ").include?(@fail_on)
+      failing = @fail_on && argv.join(" ").include?(@fail_on) &&
+        (@fail_times.nil? || @failed < @fail_times)
+      @failed += 1 if failing
       Command.new(stage: stage, command: argv.join(" "), ran: failing ? @ran : true,
         exit_code: failing ? (@ran ? 1 : nil) : 0, seconds: 0.1,
         output_tail: failing ? "boom" : "")
@@ -443,12 +451,13 @@ class StepTest < Minitest::Test
   # to a *source* — it adds what the Gemfile gained and leaves the rest where the move found it
   # — but a move into a different line of the same gem's own releases leaves the snapshot's
   # pins as the thing bundler refuses. Measured on the lighthouse, `rspec-rails ~> 2.14.0`
-  # against a snapshot holding `rspec-core (= 2.13.1)`: `bundle install` *and*
-  # `bundle update rspec-rails --conservative` both answer "could not find compatible versions
-  # for gem rspec-mocks", because `--conservative` keeps the *meta*-gem where the lock has it
-  # and the meta-gem drags its siblings back. Naming the whole line resolves it, which is what
-  # the widened retry is for.
-  def test_a_move_that_changes_a_requirement_retries_the_bundle_conservatively
+  # against a snapshot holding `rspec-core (= 2.13.1)`: `bundle install` answers "could not find
+  # compatible versions for gem rspec-mocks", because the *meta*-gem stays where the lock has it and
+  # the meta-gem drags its siblings back. Naming the whole line resolves it, which is what the widened
+  # retry is for — and the resolve is `bundle lock --update`, which holds every gem the move does not
+  # name (measured against `bundle update … --conservative`, which does not), followed by the install
+  # that puts the resolved set in place.
+  def test_a_move_that_changes_a_requirement_resolves_the_lock_and_installs_it
     lockfile = <<~LOCK
       GEM
         remote: https://rubygems.org/
@@ -477,12 +486,17 @@ class StepTest < Minitest::Test
         "requirement" => "~> 2.14.0", "mechanical" => true,
         "note" => "the adapter gained a minitest branch", "source" => "the gem" }
     ])
-    runner = FakeRunner.new(fail_on: "bundle install")
+    runner = FakeRunner.new(fail_on: "bundle install", fail_times: 1)
 
     record = step(dir, corpus: corpus, runner: runner).run
 
-    assert_includes runner.calls, "bundle update rspec-rails --conservative",
+    assert_includes runner.calls, "bundle lock --update rspec-rails",
       "the install failed and nothing re-resolved the lock: #{runner.calls.inspect}"
+    # And the resolve is followed by an install, because writing the lock does not install it.
+    lock = runner.calls.index("bundle lock --update rspec-rails")
+    assert lock, "the lock was never resolved: #{runner.calls.inspect}"
+    assert_equal "bundle install", runner.calls[lock + 1],
+      "the resolved lock was never installed: #{runner.calls.inspect}"
     assert_includes record.patch, %(gem "rspec-rails", "~> 2.14.0")
   end
 

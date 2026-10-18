@@ -258,12 +258,14 @@ class StepMachineTest < Minitest::Test
     assert_equal ["2.2"], tests.machines.map(&:era).uniq
   end
 
-  # **A rung moves Rails; it does not move the world.** `bundle update rails` resolves every
-  # dependency afresh, and the lighthouse showed what that costs: a 2013 application pinned
-  # rake 10.0.4, the unconstrained update pulled 12.3.3, and Rails 4.1's own `rails:update`
-  # then died on `Rake::Application#last_comment`, which rake 11 removed — the rung failed on
-  # a gem the move had no reason to touch. `--conservative` keeps the locked versions of
-  # everything the resolution does not have to change.
+  # **A rung moves Rails; it does not move the world — and only one of the two commands knows
+  # that.** The lighthouse showed what it costs when the resolve moves a gem the move has no
+  # reason to touch: a 2013 application pinned rake 10.0.4, the update pulled 12.3.3, and the
+  # next rung's `db:create` died on `NoMethodError: undefined method 'last_comment' for
+  # Rake::Application`, an API rake 11 removed. Measured on that tree: `bundle update rails …
+  # --conservative` moves rake anyway (railties 4.1 asks only `rake >= 0.8.7`), while
+  # `bundle lock --update rails …` leaves rake exactly where it was and moves rails to 4.2.0.
+  # So the resolve is the lock command, and it is followed by an install.
   def test_the_pin_moves_rails_and_leaves_the_rest_of_the_bundle_where_it_was
     record = step(app, machines: machines).run
 
@@ -271,7 +273,7 @@ class StepMachineTest < Minitest::Test
 
     assert pin, "the pin stage is not in the record"
     # The era is whatever the fleet settles on; what is asserted is the command's own shape.
-    assert_equal "bundle update rails --conservative", pin.command.split(" ", 3).last
+    assert_equal "bundle lock --update rails", pin.command.split(" ", 3).last
   end
 
   # **The framework's own gems are named with the meta-gem; nothing else is unlocked.** A
@@ -288,7 +290,7 @@ class StepMachineTest < Minitest::Test
 
     assert_includes command, "actionpack", command
     assert_includes command, "railties", command
-    assert_includes command, "--conservative", command
+    assert_includes command, "bundle lock --update", command
     refute_includes command, "rake ", command
     refute_includes command, "sprockets-rails", command
   end
@@ -302,7 +304,7 @@ class StepMachineTest < Minitest::Test
   def test_a_pin_bundler_could_not_resolve_names_what_bundler_named_and_tries_again
     runner = FakeRunner.new(answers: {
       "i18n" => [0, ""],
-      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+      "bundle lock --update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
                              "versions for gem \"i18n\":\n  In snapshot (Gemfile.lock):\n    " \
                              "i18n (= 0.6.4)\n"]
     })
@@ -361,7 +363,7 @@ class StepMachineTest < Minitest::Test
     LOCK
     runner = FakeRunner.new(answers: {
       "rspec-mocks" => [0, ""],
-      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+      "bundle lock --update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
                              "versions for gem \"rspec-mocks\":\n  In Gemfile:\n    rspec " \
                              "was resolved to 2.13.0, which depends on\n      " \
                              "rspec-mocks (~> 2.13.0)\n"]
@@ -372,9 +374,10 @@ class StepMachineTest < Minitest::Test
     pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
 
     assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
-    refute_includes pins.first.command, "rspec", pins.first.command
-    assert_includes pins.last.command, "rspec ", "#{pins.last.command} (the requirer, not the conflict)"
-    assert_includes pins.last.command, "rspec-mocks", pins.last.command
+    refute_includes pins.first.command.split, "rspec", pins.first.command
+    assert_includes pins.last.command.split, "rspec",
+      "#{pins.last.command} (the requirer, not only the conflict)"
+    assert_includes pins.last.command.split, "rspec-mocks", pins.last.command
     assert pins.last.ok?, pins.last.output_tail
   end
 
