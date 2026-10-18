@@ -1127,6 +1127,16 @@ module AgentsFyi
       def self.option_added(subject:, call:, option:, context: nil, argument: nil, already: nil)
         key = option[/[a-z_]\w*(?=:)/]
         named = argument ? "\\s+#{argument}" : ""
+        # **A line that already carries the option is satisfied, not refused.** The pattern's negative
+        # lookahead is what stops the rule writing the option twice, and `satisfied` is the same
+        # predicate — so a line that asks for it again is *named* rather than handed to a person as work.
+        # Measured on the lighthouse: the 5.0 step applied this family to
+        # `protect_from_forgery with: :exception, prepend: true`, and every rung after it re-listed that
+        # line as a decision whose reason said the call site had been "carried unfixed since 5.0" — the
+        # line already read what the rule writes. The predicate is derived from the family's own
+        # argument rather than written per instance, because it is the same string the lookahead uses.
+        already ||= Regexp.new("#{Regexp.escape(call)}\\b[^\\n]*" \
+                               "#{Regexp.escape(option.sub(/\A[,\s]+/, ''))}")
         Rule.new(family: :option_added, subject: subject, context: context, already: already,
           pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
                               "(?<call>#{Regexp.escape(call)}\\b#{named}[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),

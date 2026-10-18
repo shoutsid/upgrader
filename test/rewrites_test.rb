@@ -646,9 +646,15 @@ class RewritesTest < Minitest::Test
   # **The order restored explicitly.** 5.0 inserts the callback where it is called rather than
   # prepending it, so an authentication filter declared above it runs first — and the note's own
   # answer is `prepend: true`. It goes on unconditionally, because the line does not show what runs
-  # before it, and the residue's gap says which of the two cases this application is. A line that
-  # already names the option is left, which is what makes a second walk a no-op.
-  def test_the_forgery_callback_has_its_order_restored_and_a_restored_line_is_left
+  # before it, and the residue's gap says which of the two cases this application is.
+  #
+  # **A line that already names the option is satisfied rather than left**, which is what makes a second
+  # walk a no-op *and* keeps the record from calling the site unfixed: measured on the lighthouse, where
+  # the 5.0 step applied the option and every rung from 5.1 on re-listed `protect_from_forgery with:
+  # :exception, prepend: true` as a decision whose reason said it had been "carried unfixed since 5.0".
+  # The predicate is the family's own — the same string the pattern's negative lookahead refuses — so it
+  # is derived from `option` rather than written per instance.
+  def test_the_forgery_callback_has_its_order_restored_and_a_restored_line_is_satisfied
     result = Rewrites.apply([
       entry(subject: "protect_from_forgery", text: "  protect_from_forgery with: :exception"),
       entry(subject: "protect_from_forgery", text: "  protect_from_forgery"),
@@ -660,7 +666,9 @@ class RewritesTest < Minitest::Test
       "  protect_from_forgery with: :exception, prepend: true",
       "  protect_from_forgery, prepend: true"
     ], result.edits.map { |edit| edit["after"] }
-    assert_equal ["protect_from_forgery"], result.left
+    assert_equal ["protect_from_forgery"], result.satisfied,
+      "the option is already there, so the line is named rather than handed over as work"
+    assert_empty result.left
     assert_includes Rewrites.gap_for("protect_from_forgery"), "unconditionally"
   end
 
@@ -831,8 +839,10 @@ class RewritesTest < Minitest::Test
       %(  <%= button_to "Delete", item, class: "btn", method: :post %>)],
       views.edits.map { |edit| edit["after"] },
       "the declaration goes inside the ERB tag, not after it"
-    assert_equal 3, views.left.size,
-      "a button that already names the method, one built from a path, and a line with two tags"
+    assert_equal 2, views.left.size,
+      "a button built from a path and a line with two tags"
+    assert_equal ["button_to"], views.satisfied,
+      "a button that already names the method is named, not left as work"
     assert_includes Rewrites.gap_for("match without via:"), "which verbs this route wants"
     assert_includes Rewrites.gap_for("button_to"), "the default it already had"
   end
