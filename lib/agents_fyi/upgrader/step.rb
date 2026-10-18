@@ -771,10 +771,12 @@ module AgentsFyi
       # declares is fetched here — the service has no route to an index — and recorded
       # through the operator-authenticated facts route.
       #
-      # What the routing says is treated exactly as the digest's entries are: a declaration
-      # this tool can rewrite is rewritten and recorded, and everything else is a decision.
-      # `replace` and `remove` are deliberately *not* acted on here — the preflight owns the
-      # digest's moves, and applying one twice would rewrite a line that already moved.
+      # What the routing says is treated exactly as the digest's entries are: a move this tool can
+      # rewrite is rewritten and recorded, and everything else is a decision. **A `replace`/`remove`
+      # the preflight already made is not made twice** (`already_applied?`, consulted by both the
+      # `move` and the `replace` branch — a facts-derived `move` for a line the digest had just
+      # written was the hole the `move` branch left), and one the preflight left as a *decision* is
+      # made here: this pass runs after the baseline, at the rung where the move belongs.
       def gem_moves(stages, step)
         path = File.join(@worktree.root, "Gemfile.lock")
         return nil unless File.file?(path)
@@ -791,9 +793,16 @@ module AgentsFyi
         route.fetch("gems", []).each do |gem|
           case gem["verdict"]
           when "move"
+            # **A line the preflight already wrote is not rewritten by the routing.** The digest is
+            # keyed by gem *name* while the lock still pins the old release, so a route asked after
+            # the preflight can answer `move` for a line that has already moved — and the `replace`
+            # branch's guard did not cover this one, so a facts-derived `move` could overwrite the
+            # line the digest had just written.
+            next if already_applied?(gem)
+
             edit = apply_gem_change(gem, step)
             applied << edit
-            companions.concat(apply_companions(gem, edit))
+            companions.concat(apply_companions(gem))
           when "replace", "remove"
             # The preflight applies the digest's *mechanical* entries, and it must not apply
             # the others: an entry that can only move once Rails itself has moved is exactly
@@ -806,7 +815,7 @@ module AgentsFyi
 
             edit = apply_gem_change(gem, step)
             applied << edit
-            companions.concat(apply_companions(gem, edit))
+            companions.concat(apply_companions(gem))
           when "blocked", "unknown"
             # **A framework gem the pin itself moves is not a decision.** The routing reads recorded
             # facts, and for the framework's own components it has none for the target release — so
@@ -827,12 +836,13 @@ module AgentsFyi
           command: "gems: #{route.dig("counts", "move")} move(s), " \
                    "#{route.dig("counts", "unknown")} unknown, #{applied.size} applied",
           ran: true, exit_code: 0, seconds: 0.0,
-          output_tail: (route.fetch("gems", []).reject { |gem| gem["verdict"] == "keep" }.map { |gem|
+          output_tail: (companion_lines(companions) +
+                        route.fetch("gems", []).reject { |gem| gem["verdict"] == "keep" }.map { |gem|
                           heading = "#{gem["verdict"].upcase} #{gem["name"]} #{gem["version"]}"
                           heading += " -> #{gem["to"]}" if gem["to"]
                           heading += " -> #{gem["replacement"]} #{gem["requirement"]}" if gem["replacement"]
                           "#{heading}: #{gem["reason"] || gem["note"]}"
-                        } + companion_lines(companions) +
+                        } +
                         [route.fetch("next_step", "").to_s]).first(20).join("\n")
         )
         @out.puts("  gems: #{route.dig("counts", "move")} move(s), " \
@@ -954,15 +964,14 @@ module AgentsFyi
         edit
       end
 
-      # **The edits a gem's own upgrade needs, once the move has been made.** The companion is keyed by
-      # the line the move declares, and it runs only when `apply_gem_change` actually rewrote the line:
-      # a second walk at the same rung finds the line already moved, so the trigger is the idempotence
-      # guard rather than each rule's own. The edits go through the same applier every other repair
-      # does — line-checked against what the file said when it was read, refused rather than
-      # half-written, and carried into the patch.
-      def apply_companions(gem, edit)
-        return [] if edit.nil?
-
+      # **The edits a gem's own upgrade needs, keyed to the move's own line rather than to whether this
+      # pass rewrote it.** A tree whose line already reads `~> 3.5.0` — a person moved it, or a run died
+      # between the Gemfile write and the companion — must still get the edits, and the companion's own
+      # guards make that idempotent (the insert asks the file, the rules ask the line). The edits go
+      # through the same applier every other repair does — line-checked against what the file said when
+      # it was read, refused rather than half-written, and carried into the patch — and a refusal is
+      # recorded where every other refusal is, so an edit that could not be made is not a silent zero.
+      def apply_companions(gem)
         requirement = gem["to"].to_s.empty? ? gem["requirement"].to_s : "~> #{gem["to"]}"
         companion = Companions.for(gem["name"], requirement)
         return [] if companion.nil?
@@ -972,6 +981,7 @@ module AgentsFyi
 
         result = @applier.new(@worktree.root).apply(edits.map(&:to_h))
         @applied.concat(result.applied)
+        @refused.concat(result.refused)
         result.applied
       end
 
@@ -2065,6 +2075,7 @@ module AgentsFyi
       end
 
       def build(step, stages, verdict, why)
+        settle_decisions_against_the_lock
         Record.new(
           repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
           from_version: step["from_version"], to_version: step["to_version"], name: step["name"],
@@ -2075,6 +2086,33 @@ module AgentsFyi
           patch: capture_patch, baseline: @baseline, suite: @suite,
           verdict: verdict, why: why
         )
+      end
+
+      # **A residue line the lock this step ended with already answers is not work.** The routing is
+      # asked before the pin, against the lockfile the step *starts* with, so a gem the Rails move
+      # itself carries forward is a verdict this tool cannot apply — it is not declared, so the pin's
+      # own update is what moves it — and it reaches the record as a decision at `Gemfile.lock`.
+      # Measured at the 5.0 rung: `rails-dom-testing 1.0.9` was the record's one *located* decision
+      # beside a lock that ended at 2.1.1, which the pin had just resolved. So the filter runs at the
+      # end, and only on decisions whose subject names a gem: the question is the lock's own answer,
+      # not the route's.
+      def settle_decisions_against_the_lock
+        final = begin
+          Lockfile.read(@worktree.root).specs
+        rescue Lockfile::Missing, Lockfile::Unreadable
+          nil
+        end
+        return if final.nil?
+
+        @decisions.reject! do |decision|
+          next false unless decision.path.to_s == "Gemfile.lock"
+
+          name, version = decision.subject.to_s.split(" ", 2)
+          settled = !name.to_s.empty? && !version.to_s.empty? && final.key?(name) && final[name] != version
+          @out.puts("  residue: #{decision.subject} is settled by the lock (#{name} #{final[name]})") if
+            settled && @out
+          settled
+        end
       end
 
       # Every command a step runs is bounded (`Shell::DEFAULT_COMMAND_TIMEOUT`, or the operator's

@@ -337,6 +337,12 @@ module AgentsFyi
                          { "path" => edit.path, "line" => edit.line,
                                                "text" => edit.text, "after" => edit.after,
                                                "subject" => edit.subject,
+                                               # **Who made the edit**, where the edit knows: `rule` is
+                                               # the ladder's own rewrites, `companion` a gem's own
+                                               # upgrade, absent a preflight repair. A reader that
+                                               # cannot tell them apart reads a gem's edit as a
+                                               # framework change.
+                                               "origin" => edit.respond_to?(:origin) ? edit.origin : nil,
                                                # A preflight repair carries the digest's reason for
                                                # the move; a scanned edit does not, because the
                                                # ladder's note for it lives in the plan the step was
@@ -410,15 +416,22 @@ module AgentsFyi
         lines << "   applied #{@applied.size} edit(s), refused #{@refused.size}, " \
                  "#{@decisions.size} need(s) a decision" \
                  "#{@decisions.empty? ? "" : " (#{located} located, #{carried} carried)}"}"
-        # **The applied list holds two kinds of edit, and only one of them has an origin.** A preflight
+        # **The applied list holds three kinds of edit, and only two of them have an origin.** A preflight
         # repair (`Preflight::Repair`) is a Gemfile line this step rewrote on the digest's authority,
         # and it has no `origin` because there is no other side to tell it apart from; a scanned or
-        # rule-written edit (`Applier::Applied`) does. Reading `origin` without asking first is a
-        # `NoMethodError` in the one place that renders a finished run — so every run whose preflight
-        # repaired a Gemfile raised while printing its summary, which is the shape `AGENTS.md` keeps
-        # paying for: a `to_s` the tests never call with the input a real run has.
-        by_rule = @applied.count { |edit| edit.respond_to?(:origin) && edit.origin.to_s == "rule" }
+        # rule-written edit (`Applier::Applied`) does, and a companion's edits say `companion` because
+        # they are neither a ladder rule nor a Gemfile repair — they are the edits a *gem's* own upgrade
+        # needed. Reading `origin` without asking first is a `NoMethodError` in the one place that
+        # renders a finished run — so every run whose preflight repaired a Gemfile raised while printing
+        # its summary, which is the shape `AGENTS.md` keeps paying for: a `to_s` the tests never call
+        # with the input a real run has.
+        origins = @applied.select { |edit| edit.respond_to?(:origin) }
+          .map { |edit| edit.origin.to_s }.tally
+        by_rule = origins.fetch("rule", 0)
+        by_companion = origins.fetch("companion", 0)
         lines << "   #{by_rule} of those edit(s) were made by this tool's own rules" if by_rule.positive?
+        lines << "   #{by_companion} of those edit(s) were made by a gem's own upgrade" if
+          by_companion.positive?
         @refused.first(5).each { |edit| lines << "     refused: #{edit.path}:#{edit.line} — #{edit.reason}" }
         @decisions.first(5).each { |change| lines << "     decide: #{change.subject} — #{change.reason}" }
         lines << "   patch: #{@patch.empty? ? "no diff" : "#{@patch.lines.size} line(s)"}"

@@ -78,7 +78,8 @@ module AgentsFyi
           ),
           # The other place a generated rspec-rails 3 application puts the block. An absent file is no
           # edit, so naming both costs a file read and covers the application that moved its
-          # configuration when it upgraded.
+          # configuration when it upgraded — and an application that keeps the block in *both* gets the
+          # call in both, which is harmless because the setting is idempotent.
           Insert.new(
             path: "spec/rails_helper.rb",
             anchor: "RSpec.configure do |config|",
@@ -91,11 +92,18 @@ module AgentsFyi
           Rewrites::Rule.new(
             family: :argument_dropped,
             subject: "rspec-rails 3",
-            # `should_not` with `.by(N)` is not "the count did not move by N" in rspec 3, it is an
-            # error: a negative change matcher with a positive delta cannot be evaluated. The examples
-            # mean "no record was written", which is exactly the matcher without the delta.
-            pattern: /(?<call>\.should_not\s+change\([^)]*\))\s*\.by\(\s*-?\d+\s*\)/,
-            replace: '\k<call>'
+            # `not_to change(...).by(N)` is not "the count did not move by N" in rspec 3, it is an
+            # error: a negated change matcher with a delta cannot be evaluated. The examples mean "no
+            # record was written", which is exactly the matcher without the delta. **Both spellings of
+            # the negation, and both forms of the matcher**: this application writes
+            # `lambda { … }.should_not change(Item, :count).by(1)`, and an application that has moved to
+            # rspec 3's own syntax writes `expect { … }.not_to change { Item.count }.by(1)` — a rule
+            # that knew only the first would leave the second failing with the same NotImplementedError.
+            # `all: true` because a one-line example can carry two of them, and a rule that rewrote the
+            # first and reported the line applied would leave the second failing.
+            pattern: /(?<call>\.(?:should_not|not_to)\s+change(?:\([^)]*\)|\s*\{[^{}]*\}))\s*\.by\(\s*-?\d+\s*\)/,
+            replace: '\k<call>',
+            all: true
           )
         ]
       )

@@ -15,6 +15,7 @@ require "agents_fyi/upgrader"
 class CompanionsTest < Minitest::Test
   Companions = AgentsFyi::Upgrader::Companions
   Rewrites = AgentsFyi::Upgrader::Rewrites
+  Applier = AgentsFyi::Upgrader::Applier
   ROOT = File.expand_path("../../..", __dir__)
   DIGEST = File.join(ROOT, "data", "gem_migrations.json")
 
@@ -129,6 +130,49 @@ class CompanionsTest < Minitest::Test
       edits.find { |edit| edit.path == "config/initializers/some.rb" }.after.split("\n").last
     refute_match(/\.by\(/, edits.find { |edit| edit.path == "spec/x_spec.rb" }.after.to_s,
       "a rule whose subject disagreed with its entry applied nothing")
+  end
+
+  # **The other spelling of the same refusal.** This application writes `lambda { … }.should_not
+  # change(X, :count).by(N)`; an application already on rspec 3's syntax writes `expect { … }.not_to
+  # change { X.count }.by(N)`. Both raise the same NotImplementedError and both mean "no record was
+  # written", so the rule reads both — a rule that knew only the first would leave the second failing.
+  def test_the_not_to_spelling_and_the_block_form_are_the_same_change
+    root = tree("spec/x_spec.rb" => <<~RUBY)
+      expect { post :create }.not_to change(Item, :count).by(1)
+      expect { delete :destroy }.not_to change { Item.count }.by(-1)
+    RUBY
+
+    edits = Companions.edits(entry, root: root)
+
+    assert_equal 2, edits.size, "the not_to spellings were not read: #{edits.map(&:after).inspect}"
+    edits.each { |edit| refute_match(/\.by\(/, edit.after.to_s) }
+  end
+
+  # A one-line example can carry two, and a rule that rewrote only the first would report the line
+  # applied while the second still raised.
+  def test_two_matchers_on_one_line_are_both_rewritten
+    root = tree("spec/x_spec.rb" =>
+      "expect { a }.not_to change(X, :count).by(1); expect { b }.not_to change(Y, :count).by(1)\n")
+
+    edits = Companions.edits(entry, root: root)
+
+    assert_equal 1, edits.size
+    refute_match(/\.by\(/, edits.first.after.to_s, "the second matcher kept its delta")
+  end
+
+  # **A multi-line edit carries the file's own terminator, line by line.** A CRLF checkout must not
+  # gain bare LF lines: the applier's terminator ends only the *last* line it writes, so an insert's
+  # own newline had to be translated — measured writing `RSpec.configure do |config|\n  config.infer…`
+  # into a `\r\n` file.
+  def test_an_insert_into_a_crlf_file_writes_crlf_lines
+    root = tree("spec/spec_helper.rb" => "RSpec.configure do |config|\r\nend\r\n")
+
+    edits = Companions.edits(entry, root: root)
+    Applier.new(root).apply(edits.map(&:to_h))
+
+    bytes = File.binread(File.join(root, "spec/spec_helper.rb"))
+    refute_match(/(?<!\r)\n/, bytes, "a bare LF was written into a CRLF file: #{bytes.inspect}")
+    assert_includes bytes, "config.infer_spec_type_from_file_location!\r\n"
   end
 
   # The trigger is the move's own line: a companion for `~> 2.14.0` would be the edits for a move the

@@ -152,7 +152,14 @@ module AgentsFyi
           # would refuse every edit in that file — or rewrite it as LF, which is a
           # whole-file change nobody asked for. So the `\r` is ignored for the
           # comparison and put back on the way out.
-          lines[index] = "#{edit["after"]}#{found.end_with?("\r") ? "\r" : ""}".b
+          # **And on the way out it belongs to every line the edit writes.** The terminator below ends
+          # the *last* line only, so a multi-line replacement — a line a companion inserts — put bare
+          # LF lines into a CRLF file and dropped the `\r` from the line it replaced. Measured with a
+          # `Companions::Insert` against a CRLF `spec_helper.rb`: `RSpec.configure do |config|\n
+          # config.infer…\r\n`. A `\r\n` the replacement already carries is left alone.
+          written = edit["after"].to_s
+          written = written.gsub(/(?<!\r)\n/, "\r\n") if found.end_with?("\r")
+          lines[index] = "#{written}#{found.end_with?("\r") ? "\r" : ""}".b
           dirty[full] = true
           applied << Applied.new(
             path: path, line: edit["line"], text: edit["text"], after: edit["after"],

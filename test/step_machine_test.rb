@@ -280,6 +280,21 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A routing that answers `move` for a gem the Gemfile does not declare — the shape the 5.0 rung's
+  # `rails-dom-testing 1.0.9` had, where the pin itself is what moved it.
+  class UndeclaredMoveCorpus < FakeCorpus
+    def route(ruby:, rails:, lockfile:)
+      super.merge(
+        "gems" => [
+          { "name" => "rails-dom-testing", "version" => "1.0.9", "verdict" => "move", "to" => "2.1.1",
+            "reason" => "requires activesupport < 5.0, which Rails 5.0.0 does not meet" }
+        ],
+        "counts" => { "keep" => 0, "move" => 1, "replace" => 0, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 }
+      )
+    end
+  end
+
   # A routing that answers for a gem whose own upgrade needs edits to the application's code — the
   # shape the 5.0 rung's rspec-rails move has.
   class CompanionCorpus < FakeCorpus
@@ -489,6 +504,38 @@ class StepMachineTest < Minitest::Test
     assert_includes first.split, "rspec-rails",
       "the first resolve did not name the line this step moved, so its rounds are spent on a conflict " \
       "this step already answered: #{first}"
+  end
+
+  # **A residue line the lock this step ended with already answers is not work.** The routing is asked
+  # before the pin, against the lockfile the step starts with, so a gem the Rails move carries forward is
+  # a `move` verdict this tool cannot apply — it is not declared, so the pin's own update is what moves
+  # it — and it reaches the record as a decision at `Gemfile.lock`. Measured at the 5.0 rung:
+  # `rails-dom-testing 1.0.9` was the record's one *located* decision beside a lock that ended at 2.1.1.
+  def test_a_gem_the_lock_moved_is_not_a_decision
+    lock = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          activesupport (4.0.0.rc1)
+          rails (4.0.0.rc1)
+          rails-dom-testing (1.0.9)
+            activesupport (= 4.0.0.rc1)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.0.0.rc1)
+    LOCK
+    dir = app(lockfile: lock)
+    runner = ResolvingRunner.new(bump: { "activesupport" => %w[4.0.0.rc1 5.0.0],
+      "rails-dom-testing" => %w[1.0.9 2.1.1] })
+
+    record = step(dir, machines: machines, runner: runner, corpus: UndeclaredMoveCorpus.new).run
+
+    refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
+      "the lock moved it and the residue still asks for it: " \
+      "#{record.decisions.map(&:subject).inspect}"
   end
 
   # **A gem's own upgrade is not finished when its Gemfile line is.** Measured at the 5.0 rung: the
