@@ -96,8 +96,13 @@ class MachineTest < Minitest::Test
     # `--user` on every exec, and never on the container: the container's own process runs as
     # root so it can name the walker's uid (`agents-fyi-start`), and every command that
     # touches the application runs as the account that owns the mounted home.
-    assert_equal ["docker", "exec", "--user", "1000:1000", "--workdir", "/agents-fyi/work/tree",
-                  "abc123", "bundle", "install"], argv
+    #
+    # **`--interactive` is the other half, and a walk is what proved it**: without it `docker exec`
+    # leaves the process with no stdin at all, so `app:update`'s `Overwrite config/boot.rb?` read
+    # nothing, asked again, and repeated the question until the command bound killed it — with the
+    # answer pipe the walker had just started giving it sitting unread on the host side.
+    assert_equal ["docker", "exec", "--interactive", "--user", "1000:1000", "--workdir",
+                  "/agents-fyi/work/tree", "abc123", "bundle", "install"], argv
     assert_empty env, "a container command's environment is the flags, not this process's"
   end
 

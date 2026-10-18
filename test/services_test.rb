@@ -155,8 +155,8 @@ class ServicesTest < Minitest::Test
 
     argv = started.command(["agents-fyi-services"], chdir: work)
 
-    assert_equal ["docker", "exec", "--user", "#{Process.uid}:#{Process.gid}", "--workdir",
-      "/agents-fyi/work/abc/run-1", "c0ffee", "agents-fyi-services"], argv
+    assert_equal ["docker", "exec", "--interactive", "--user", "#{Process.uid}:#{Process.gid}",
+      "--workdir", "/agents-fyi/work/abc/run-1", "c0ffee", "agents-fyi-services"], argv
   end
 
   # A path outside the walker's home is refused rather than translated into a directory nobody

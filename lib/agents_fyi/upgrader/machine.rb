@@ -369,10 +369,17 @@ module AgentsFyi
           ["docker", "exec", "--workdir", CONTAINER_ROOT, @container_id, "ruby", "-v"]
         end
 
+        # **`-i` is what makes stdin reach the container's process**, and a walk is the reason it is here:
+        # without it `docker exec` leaves the process with no stdin at all, so `app:update`'s
+        # `Overwrite config/boot.rb?` read nothing, asked again, and repeated the question until the command
+        # bound killed it — with the answer pipe the walker had just started giving it sitting unread on the
+        # host side. Every other command is unaffected (they are handed `File::NULL`), and `-t` is
+        # deliberately absent: a tty would make a generator decorate its output and would make a killed
+        # process leave the terminal in a strange state.
         def exec_argv(argv, chdir:, env:)
           workdir = translate(chdir)
           flags = env.flat_map { |name, value| ["-e", "#{name}=#{translate_value(value)}"] }
-          ["docker", "exec", "--user", "#{@uid}:#{@gid}", "--workdir", workdir, *flags,
+          ["docker", "exec", "--interactive", "--user", "#{@uid}:#{@gid}", "--workdir", workdir, *flags,
            @container_id, *argv]
         end
 
@@ -603,8 +610,11 @@ module AgentsFyi
         # A command inside the services container — the script that starts them, with the
         # application's directory as the working directory, because that is where it reads the
         # `database.yml` whose roles and databases it creates.
+        # `--interactive` for the same reason the step container's exec has it: one shape for a command
+        # inside a container, and a service script that ever asks a question is not the place to find out
+        # that stdin was never attached.
         def command(argv, chdir:)
-          ["docker", "exec", "--user", "#{@uid}:#{@gid}", "--workdir",
+          ["docker", "exec", "--interactive", "--user", "#{@uid}:#{@gid}", "--workdir",
            Machine.translate(chdir, @home), @container_id.to_s, *argv]
         end
 
