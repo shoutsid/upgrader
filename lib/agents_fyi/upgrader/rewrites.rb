@@ -825,7 +825,16 @@ module AgentsFyi
         "Active Storage variant processor" => "the note's replacement is an application-wide " \
                                               "setting (`config.active_storage.variant_processor`), " \
                                               "so a rule would be choosing the processor for the " \
-                                              "deployment rather than for the line"
+                                              "deployment rather than for the line",
+        "signed and encrypted cookies" => "the rollback flag is a fact about a *deploy* rather than " \
+                                          "about the tree: a walk moves one release at a time, while " \
+                                          "`use_authenticated_cookie_encryption = false` exists for the " \
+                                          "window where two releases answer the same session cookie — " \
+                                          "so it is turned on once every process is on 5.2, and which " \
+                                          "of the two a line should say is not readable from the line. " \
+                                          "The survey beside this sentence is the other half: it is " \
+                                          "what reports that this application sets no rollback flag at " \
+                                          "all"
       }.freeze
 
       # **A gap for a subject a rule covers only partly.** `gap_for` answers "does a rule know this
