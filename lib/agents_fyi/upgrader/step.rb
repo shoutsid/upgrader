@@ -2168,8 +2168,30 @@ module AgentsFyi
         end
         contribute(record) if @contribute
         @out.puts(record.to_s) if @out
+        print_failure_evidence(record) if @out
         record.write(@record_dir) if @record_dir
         record
+      end
+
+      # **A failed step prints the evidence, not only the command it ran.** The summary names the stage
+      # that failed and quotes its command; the *reason* is in that stage's own output, and an operator
+      # who has to re-run the step with `--record` to read it has been told a walk failed and not why.
+      # Measured: the 5.1 rung's `bin/rails app:update` exit 1 was visible only as `— exit 1 in 2.2s`,
+      # and the reason needed a second, recorded run.
+      #
+      # The stage is chosen by the verdict's own sentence, which quotes the command of the stage that
+      # decided it, rather than by "the first non-zero exit": a step runs stages that are *expected* to
+      # fail (`bundle install` refusing a changed line, the pin's widening rounds), and printing those
+      # would bury the one that mattered.
+      def print_failure_evidence(record)
+        why = record.why.to_s
+        record.stages.select do |stage|
+          stage.ran && stage.exit_code.to_i != 0 && !stage.command.to_s.empty? &&
+            why.include?(stage.command.to_s)
+        end.first(2).each do |stage|
+          @out.puts("  #{stage.stage} failed (exit #{stage.exit_code}); its output:")
+          stage.output_tail.to_s.lines.last(20).each { |line| @out.puts("    #{line.chomp}") }
+        end
       end
 
       # The run, and — if it failed — the report.: a step that fails is evidence with the

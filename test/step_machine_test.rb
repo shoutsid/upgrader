@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require "fileutils"
+require "stringio"
 require "tmpdir"
 require "agents_fyi/upgrader"
 
@@ -377,9 +378,9 @@ class StepMachineTest < Minitest::Test
   end
 
   def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
-           to: "4.1.0")
+           to: "4.1.0", out: nil)
     Step.new(
-      repository: "acme/old", to: to, home: dir, out: nil,
+      repository: "acme/old", to: to, home: dir, out: out,
       source: FakeSource.new(dir), corpus: corpus || FakeCorpus.new,
       tests: tests || FakeTests.new, runner: runner || FakeRunner.new, ledger: ledger,
       runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) }
@@ -556,6 +557,25 @@ class StepMachineTest < Minitest::Test
       "the rung's failure is the gem's, and the move left the type inference unasked-for"
     refute_includes File.read(File.join(dir, "spec", "items_spec.rb")), ".by(1)",
       "rspec 3 refuses a negated change matcher with a delta"
+  end
+
+  # **A failed step prints the evidence, not only the command.** The summary quotes the command of the
+  # stage that decided the verdict; the reason is in that stage's own output, and an operator who has to
+  # re-run with `--record` to read it has been told a walk failed and not why — measured on the 5.1
+  # rung, whose `bin/rails app:update` exit 1 was visible only as that command and an exit code.
+  # Stages that are *expected* to fail (`bundle install` refusing a changed line, the pin's widening
+  # rounds) are not printed: the stage is chosen by the verdict's own sentence, not by the first
+  # non-zero exit.
+  def test_a_failed_stage_prints_its_own_output
+    out = StringIO.new
+    runner = FakeRunner.new(answers: {
+      "rails:update" => [1, "NoMethodError: undefined method `last_comment' for #<Rake::Application>"]
+    })
+
+    step(app, machines: machines, runner: runner, out: out).run
+
+    assert_includes out.string, "undefined method `last_comment'",
+      "the failure's own output was not printed: #{out.string.lines.last(6).inspect}"
   end
 
   def test_a_framework_gem_the_pin_moves_is_not_a_decision_when_the_routing_calls_it_a_move
