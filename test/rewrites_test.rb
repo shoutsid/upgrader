@@ -365,6 +365,24 @@ class RewritesTest < Minitest::Test
       "the two associations the models already require, and the migration's column"
   end
 
+  # **A `belongs_to` that names no association is not a call this change is about.** The lighthouse's
+  # 2013 fixture file carries two empty `belongs_to:` keys per fixture — the generator's own junk — and
+  # the rule, recognising the call by its name alone, wrote `belongs_to:, optional: true` into them:
+  # measured in the 5.0 rung's own commit, where `test/fixtures/items.yml` is edited by that line and
+  # nothing else. A YAML key is not an association declaration, and the association's name is what
+  # says which is which.
+  def test_belongs_to_with_no_association_named_is_left_alone
+    files = { "test/fixtures/items.yml" => ["one:", "  name: MyString", "  belongs_to: ", "  belongs_to: "] }
+
+    result = Rewrites.apply(
+      [entry(subject: "belongs_to", text: "  belongs_to: ", path: "test/fixtures/items.yml")],
+      files: files
+    )
+
+    assert_empty result.edits,
+      "the rule rewrote a fixture: #{result.edits.map { |edit| edit["after"] }.inspect}"
+  end
+
   # The rule degrades to the unconditional one when it cannot read the file, because the edit it makes
   # is the behaviour-preserving one either way — and refusing everything it could not read would leave
   # an association to fail validation silently, which is the note's own warning.

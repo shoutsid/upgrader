@@ -972,7 +972,12 @@ module AgentsFyi
                         "instead, and an association whose options run past the line (a lambda " \
                         "scope, a trailing comma) is left alone. A migration's `t.belongs_to :user` " \
                         "is a column definition rather than this change at all, and it is left " \
-                        "because the rule is anchored on the association declaration",
+                        "because the rule is anchored on the association declaration — and a " \
+                        "fixture's `belongs_to:` key is not a call at all: measured on the " \
+                        "lighthouse, whose 2013 `test/fixtures/items.yml` carries two empty " \
+                        "`belongs_to:` keys per fixture, and the rule (before it required the " \
+                        "association's name) wrote `belongs_to:, optional: true` into them, so a " \
+                        "YAML file the change is not about was edited rather than left",
         "ActiveJob::Base as a job's superclass" => "the rule covers a job whose superclass is written " \
                                                    "on one line; a job that inherits from another job " \
                                                    "is left"
@@ -1090,11 +1095,19 @@ module AgentsFyi
       # the option would never be added. `satisfied` is a claim about the line, so it has to be true; a
       # guard too loose to support it leaves the line a decision, which is the honest answer and the one
       # the person can still read.
-      def self.option_added(subject:, call:, option:, context: nil)
+      # **`argument:` is a required part of the call, for a name too common to recognise on its own.**
+      # `belongs_to` is why: the call's own name does not say whether an association is being named, and
+      # a *fixture's* `belongs_to:` is a YAML key with no arguments at all. Measured on the lighthouse,
+      # whose 2013 `test/fixtures/items.yml` carries two empty `belongs_to:` keys per fixture — the
+      # generator's own junk — and the rule wrote `belongs_to:, optional: true` into them: this tool
+      # editing a file the change is not about. The pattern the rule then needs is the association's
+      # name, and it is the *call* that carries it, so the group still re-emits the whole call.
+      def self.option_added(subject:, call:, option:, context: nil, argument: nil)
         key = option[/[a-z_]\w*(?=:)/]
+        named = argument ? "\\s+#{argument}" : ""
         Rule.new(family: :option_added, subject: subject, context: context,
           pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
-                              "(?<call>#{Regexp.escape(call)}\\b[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
+                              "(?<call>#{Regexp.escape(call)}\\b#{named}[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
           replace: "\\k<open>\\k<call>#{option}\\k<close>")
       end
 
@@ -1479,6 +1492,7 @@ module AgentsFyi
         # behaviour changed. A file the rule could not read answers "nothing validates it", which is the
         # safe direction — the edit is the behaviour-preserving one either way.
         option_added(subject: "belongs_to", call: "belongs_to", option: ", optional: true",
+          argument: ":[a-z_]\\w*",
           context: lambda do |lines, found, _raw, _tree|
             association = found[:call][/:\K[a-z_]\w*/]
             # **`presence`, with no boundary around it**: `validates_presence_of` has no word
