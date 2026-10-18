@@ -47,6 +47,29 @@ class VocabularyTest < Minitest::Test
     assert_empty rewrites.inert(changes), "a rule outlives the change it belongs to"
   end
 
+  # **The other direction, and it is the one the residue is judged by: every carried change is
+  # accounted for.** A rule or a bridge handles it, or a survey names the lines it lands on, or a gap
+  # says what would close it — and "says what would close it" excludes the *generic* sentence, which is
+  # what a change nobody has looked at gets. That is the difference between a residue that is a queue
+  # with reasons and one that is a list of shrugs, and it is the property the whole file exists for:
+  # `gap_for` never returns nil, so without this test a change could go unmentioned for ever and every
+  # suite would stay green.
+  def test_every_carried_change_is_handled_surveyed_or_has_a_sentence_of_its_own
+    changes = JSON.parse(File.read(LADDER))["steps"].flat_map { |step| step["changes"] }
+    rewrites = AgentsFyi::Upgrader::Rewrites
+    carried = changes.reject { |change| change["rewrite"] }.map { |change| change["subject"] }.uniq
+    covered = (rewrites::RULES.map(&:subject) + rewrites::BRIDGES.map(&:subject)).uniq
+    surveyed = rewrites::SURVEYS.map(&:subject)
+
+    assert_operator carried.size, :>=, 70, "the ladder stopped being read, so this proves nothing"
+    shrugs = carried.reject do |subject|
+      covered.include?(subject) || surveyed.include?(subject) ||
+        rewrites.gap_for(subject) != rewrites::GENERIC_GAP
+    end
+    assert_empty shrugs,
+      "these carried changes are neither handled nor surveyed nor given a reason of their own"
+  end
+
   # The values `upgrade_verdict` declares, read out of the schema of record.
   #
   # The pattern is narrow — the type's own block and the `'value'` lines inside it — and the
