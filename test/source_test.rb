@@ -30,6 +30,23 @@ class SourceTest < Minitest::Test
     [root, bundle]
   end
 
+  # **A bundle command's environment carries the build flag for nokogiri, and it is the environment the
+  # real class builds.** Driven on `Source` itself rather than through a double, because a double that
+  # carried the flag would make this pass while the walker sent nothing — which is the shape of test
+  # that holds a bug in place. The measurement behind it is in `bundle_env`'s own comment: on the share
+  # `install -c` of a multi-megabyte file is refused, so nokogiri's vendored libxml2 cannot be installed
+  # there, and the image already ships the libraries it would vendor.
+  def test_every_bundle_command_builds_nokogiri_against_the_image_s_own_libraries
+    worktree = Source.new(root: @home, commit: "abc12345", description: "fixture", home: @home)
+
+    env = worktree.bundle_env
+
+    assert_equal "--use-system-libraries", env["BUNDLE_BUILD__NOKOGIRI"],
+      "a bundle installed without this builds nokogiri's own libxml2 and dies on the share"
+    assert_equal File.join(@home, "Gemfile"), env["BUNDLE_GEMFILE"]
+    assert_equal "development", env["BUNDLE_WITHOUT"]
+  end
+
   def dead_pid
     pid = Process.spawn("true")
     Process.wait(pid)

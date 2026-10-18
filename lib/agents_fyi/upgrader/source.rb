@@ -149,10 +149,20 @@ module AgentsFyi
       # step. Keyed by the working copy, so a kept tree keeps its bundle across its own steps
       # (the application is one application, moving forward) while two trees never share one:
       # a gemset is evidence, not an artifact.
+      # **Nokogiri is built against the image's own libxml2, and the reason is measured rather than
+      # taste.** By default it vendors libxml2 and builds it with libtool, whose install step copies
+      # the static library and then `chmod`s it — and on the Docker Desktop share this walker's home
+      # is a bind mount of, `/usr/bin/install -c` of a multi-megabyte file answers "setting
+      # permissions for .../libxml2.a: Operation not permitted" and exits 1. Measured at the 4.2 rung:
+      # the pin *resolved* correctly and then died installing nokogiri 1.9.1, while `cp -r`, `tar` and
+      # a plain `chmod` of the same tree into the same share all succeed — it is `install -c` of a
+      # large file that does not. The image ships libxml2-dev 2.9.1 and libxslt1-dev 1.1.28, so the
+      # flag skips the vendored build entirely and the gem installs.
       def bundle_env
         { "BUNDLE_PATH" => File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16]),
          "BUNDLE_GEMFILE" => File.join(root, "Gemfile"),
-         "BUNDLE_WITHOUT" => "development" }
+         "BUNDLE_WITHOUT" => "development",
+         "BUNDLE_BUILD__NOKOGIRI" => "--use-system-libraries" }
       end
 
       # **The bundles of runs that are over.** A gemset is per-run on purpose — a killed step
