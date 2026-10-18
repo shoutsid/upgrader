@@ -155,7 +155,10 @@ The pipeline has three stages that make the rest mean anything:
    `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
    `option_renamed`, `call_unwrapped`, `parameter_added`, `block_captured`,
    `concern_included`), so the next lighthouse writes an instance of
-   an existing family, and every change no rule covers carries a **gap** saying what
+   an existing family — and a rule whose change lives in a file the scanner never reads
+   (a `package.json` line, a JavaScript call) carries a `file` glob and finds its own
+   call sites there, matching the raw line because in that file the quoted text *is*
+   the data. Every change no rule covers carries a **gap** saying what
    would close it — the residue is a queue with reasons, not a list. A change whose fix
    is a *judgement* rather than an edit gets a **survey** instead: it reads the
    application and names the lines the decision is about (which callers of a

@@ -1458,6 +1458,26 @@ class StepTest < Minitest::Test
       "the line the model already requires is not written to"
   end
 
+  # **The step reads the file a rule names for itself**, which is the half a pure test cannot drive: a rule
+  # that finds its own call sites is useless if the walker never reads the file it named. This is the shape
+  # of every change whose fix is not in Ruby — `package.json` is the first, and the mechanism is the point
+  # rather than the package.
+  def test_the_step_reads_the_file_a_rule_names_for_itself
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item\nend\n")
+    with_source(dir, "package.json", %({\n  "dependencies": {\n    "actioncable": "^5.2.0"\n  }\n}\n))
+    payload = plan(changes: [change(subject: "@rails npm packages", kind: "renamed", source: "6.0",
+      replacement: nil, note: "the npm packages moved under the @rails scope")])
+
+    record = step(dir, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+
+    assert record.passed?, record.why
+    assert_includes File.read(File.join(dir, "package.json")), "\"@rails/actioncable\""
+    assert_empty record.decisions, "the rule applied, so the change is not a decision"
+    tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
+    assert_includes tail, "by this tool's own rules (@rails npm packages)"
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

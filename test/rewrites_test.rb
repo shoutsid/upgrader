@@ -698,6 +698,41 @@ class RewritesTest < Minitest::Test
       text: "    set_callback :save, :around, &handler")]).edits
   end
 
+  # **A rule that finds its own call sites**, for a change whose file the scan never sends. `package.json`
+  # is not Ruby, the ladder has no detect for it, and the scanner reads the languages this tool tells it
+  # about — so the client reads the file the rule's `file` names and matches it here. Two things are
+  # different about such a rule and both are measured: it matches the **raw** line (in JSON the quoted text
+  # *is* the data, which is exactly what the mask blanks), and its edit travels in the scan's own shape so
+  # the applier's line re-check and the record's rendering are the ones every other edit gets.
+  def test_a_rule_that_names_its_own_file_finds_its_call_sites_there
+    sources = {
+      "package.json" => ["{", "  \"dependencies\": {", "    \"actioncable\": \"^5.2.0\",",
+                         "    \"rails-ujs\": \"^5.2.0\",", "    \"jquery\": \"^3.4.0\"", "  }", "}"],
+      "app/assets/javascripts/application.js" => [
+        "ActionCable.WebSocket = MySocket", "ActionCable.logger = console",
+        "ActionCable.startDebugging()", "ActionCable.logger.enabled = true"
+      ]
+    }
+    changes = [{ "subject" => "@rails npm packages", "kind" => "renamed", "note" => "the packages moved" },
+      { "subject" => "ActionCable JavaScript adapters", "kind" => "renamed", "note" => "the adapters moved" }]
+
+    result = Rewrites.apply([], sources: sources, changes: changes)
+
+    assert_equal ["    \"@rails/actioncable\": \"^5.2.0\",", "    \"@rails/rails-ujs\": \"^5.2.0\","],
+      result.edits.select { |edit| edit["path"] == "package.json" }.map { |edit| edit["after"] }
+    assert_equal ["ActionCable.adapters.WebSocket = MySocket", "ActionCable.logger.enabled = console",
+      "ActionCable.logger.enabled = true"],
+      result.edits.select { |edit| edit["path"].end_with?(".js") }.map { |edit| edit["after"] },
+      "the line that already reads `logger.enabled` is not renamed twice"
+    assert_equal ["the adapters moved", "the packages moved"], result.edits.map { |edit| edit["note"] }.uniq.sort,
+      "the change's own note travels with the edit, because a rule that applied it withdraws its decision"
+    assert_empty result.left
+
+    # A rule with no `file` is applied to what the scan located and never to a file it did not name —
+    # which is the whole safety of the mechanism: the file is what says the pattern belongs to it.
+    assert_empty Rewrites.sourced(Rewrites::RULES.reject(&:file), sources, changes)
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a

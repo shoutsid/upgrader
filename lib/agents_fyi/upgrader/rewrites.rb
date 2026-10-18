@@ -76,7 +76,7 @@ module AgentsFyi
       #   appends a second one. `already` is a pattern over the whole line that means "this edit is
       #   made", and it is a field rather than a trick inside each pattern because it is the same
       #   question every appending rule asks.
-      Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already,
+      Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already, :file,
         keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
@@ -1228,6 +1228,57 @@ module AgentsFyi
       # **The rules, by the subject the ladder and the scan both use.** Each is here because its own
       # note sanctions the shape, and `MultiJson` is here because its note forbids a *different* edit
       # than the one written.
+      # **The call sites a rule finds for itself**, in a file the scan never sends.
+      #
+      # A change whose note names a `package.json` line has no detect in the ladder and no Ruby to match,
+      # and the scanner reads the languages this tool tells it about. So the client reads the file the
+      # rule's `file` names and matches it here — and the entry is shaped exactly like the scan's, because
+      # everything downstream is built for that shape: the applier's line re-check, the refusal reasons,
+      # the record's own rendering. A second shape would be a second set of bugs.
+      #
+      # The change's own words travel with the entry (`kind`, `replacement`, `note`, the guide chapter),
+      # because a rule that applies a change withdraws its decision and the note is where the caveat a
+      # reviewer needs lives — the same reason the service's edits carry them.
+      def self.sourced(rules, sources, changes)
+        by_subject = Array(changes).to_h { |change| [change["subject"].to_s, change] }
+        rules.select(&:file).flat_map do |rule|
+          change = by_subject[rule.subject].to_h
+          sources.flat_map do |path, lines|
+            Array(lines).each_with_index.filter_map do |line, index|
+              next unless rule.pattern.match?(line)
+
+              { "path" => path, "line" => index + 1, "text" => line.chomp, "after" => nil,
+                "subject" => rule.subject, "kind" => change["kind"],
+                "replacement" => change["replacement"], "note" => change["note"],
+                "source" => change["source"], "automatic" => true, "origin" => "rule" }
+            end
+          end
+        end
+      end
+
+      # **A file a rule reads for its own call sites is bounded**, and the bound is a file count rather
+      # than a size: a glob the walker writes (`app/{assets/javascripts,javascript}/**/*.js`) matches a
+      # handful in any application, and one that matched thousands would be a rule reading a tree rather
+      # than a file.
+      SOURCE_LIMIT = 64
+
+      # **A package name that moved under a scope**, in `package.json`. The file is not Ruby, so the rule
+      # matches its raw lines; the closing quote and the colon are part of the match because the write
+      # re-matches the region, and a trailing lookahead would have nothing to look at.
+      def self.package_scoped(subject:, from:)
+        Rule.new(family: :name_moved, subject: subject, file: "package.json",
+          pattern: /(?<open>["'])#{Regexp.escape(from)}(?<close>["'])(?<colon>\s*:)/,
+          replace: "\\k<open>@rails/#{from}\\k<close>\\k<colon>")
+      end
+
+      # **A JavaScript call the release moved or renamed.** The scan does not read JavaScript, so the rule
+      # finds its own lines — and it matches the raw line, because there is no Ruby string here whose
+      # contents the mask should hide.
+      def self.javascript_moved(subject:, file:, from:, to:)
+        Rule.new(family: :name_moved, subject: subject, file: file,
+          pattern: Regexp.new(from.to_s), replace: to)
+      end
+
       RULES = [
         # `link_to 'Delete', path, confirm: 'Sure?'` becomes `data: {confirm: 'Sure?'}`, and the
         # helpers built on link_to go the same way.
@@ -1410,7 +1461,30 @@ module AgentsFyi
         # condition — and the concern's method is the marker.
         concern_included(subject: "ActiveStorage::BaseController",
           superclass: "ActiveStorage::BaseController", concern: "ActiveStorage::Streaming",
-          marker: /send_blob_stream/)
+          marker: /send_blob_stream/),
+
+        # "actioncable, activestorage and rails-ujs are published under the `@rails` scope — a
+        # package.json change, and the build fails loudly without it." Three instances of one family,
+        # because the note names three packages; the file is not Ruby, so the rules find their own lines.
+        package_scoped(subject: "@rails npm packages", from: "actioncable"),
+        package_scoped(subject: "@rails npm packages", from: "activestorage"),
+        package_scoped(subject: "@rails npm packages", from: "rails-ujs"),
+
+        # "The adapter settings moved under `ActionCable.adapters`, and startDebugging/stopDebugging
+        # became `ActionCable.logger.enabled`." Four instances, one per name the note gives — and the
+        # file is JavaScript, which the scan does not read at all.
+        javascript_moved(subject: "ActionCable JavaScript adapters",
+          file: "app/{assets/javascripts,javascript}/**/*.js",
+          from: 'ActionCable\.WebSocket\b', to: "ActionCable.adapters.WebSocket"),
+        javascript_moved(subject: "ActionCable JavaScript adapters",
+          file: "app/{assets/javascripts,javascript}/**/*.js",
+          from: 'ActionCable\.logger(?<tail>\s*=)', to: "ActionCable.logger.enabled\\k<tail>"),
+        javascript_moved(subject: "ActionCable JavaScript adapters",
+          file: "app/{assets/javascripts,javascript}/**/*.js",
+          from: 'ActionCable\.startDebugging\(\)', to: "ActionCable.logger.enabled = true"),
+        javascript_moved(subject: "ActionCable JavaScript adapters",
+          file: "app/{assets/javascripts,javascript}/**/*.js",
+          from: 'ActionCable\.stopDebugging\(\)', to: "ActionCable.logger.enabled = false")
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
@@ -1419,7 +1493,7 @@ module AgentsFyi
       #
       # `files` is what a rule that reads more than its own line gets (`Rule#context`), by path, from
       # the same read the scan used — so a rule and the service are looking at the same bytes.
-      def self.apply(manual, rules: RULES, files: {})
+      def self.apply(manual, rules: RULES, files: {}, sources: {}, changes: [])
         # **A subject may have more than one rule, and the first that matches wins.** `MultiJson` is
         # two edits (`dump` and `load`), and a lookup that kept only the last one silently dropped
         # half of it — measured by this file's own test, which is why the rules are grouped rather
@@ -1429,7 +1503,7 @@ module AgentsFyi
         applied = []
         left = []
         scaffolds = []
-        Array(manual).each do |entry|
+        (Array(manual) + sourced(rules, sources, changes)).each do |entry|
           subject = entry["subject"].to_s
           candidates = by_subject[subject].to_a
           if candidates.empty?
@@ -1443,7 +1517,10 @@ module AgentsFyi
           chosen = nil
           written = nil
           candidates.each do |candidate|
-            written = candidate.after(text, masked, lines: lines)
+            # **A rule with a `file` matches the raw line**, because the file it names is not Ruby: in
+            # `package.json` the quoted text *is* the data, and the mask exists to stop a pattern
+            # matching inside a Ruby string.
+            written = candidate.after(text, candidate.file ? text : masked, lines: lines)
             next if written.nil?
 
             chosen = candidate

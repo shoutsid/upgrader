@@ -1011,7 +1011,8 @@ module AgentsFyi
             # read the files the scan would have sent, so a repository with none gets neither. It is the
             # degenerate case — a Rails application has Ruby — but a stage that quietly did less than its
             # name says is the shape `AGENTS.md` keeps paying for.
-            output_tail: "no bridge declared and no survey run: both read the files the scan would have sent")
+            output_tail: "no bridge declared, no survey run and no rule's own file read: all three " \
+                         "read what the scan would have sent")
           # The plan's half is still this step's half: a repository with no Ruby source
           # this tool reads has not thereby moved, and the changes no machine may make
           # are exactly the ones a person still has to.
@@ -1039,10 +1040,13 @@ module AgentsFyi
         # between the read and the write is refused rather than half-rewritten. A change a rule
         # applies stops being a decision, because it is no longer one.
         manual = scan["manual"] || []
-        # Read once and given to both: a rule's context and a survey read the same lines, and the scan
-        # already bounded which files those are.
-        tree = file_lines(files)
-        rules = Rewrites.apply(manual, files: tree)
+        # **Read once, and three things read it**: a rule's context, a survey, and a rule that finds its
+        # own call sites in a file the scan never sends. The scan bounded which files *it* read; the rules
+        # name their own, and the two maps are merged rather than kept apart so that "the file's lines"
+        # means one thing everywhere.
+        named = rule_sources
+        tree = file_lines(files).merge(named)
+        rules = Rewrites.apply(manual, files: tree, sources: named, changes: step["changes"] || [])
         inert = Rewrites.inert(step["changes"] || [])
         # **What the surveys found, before the decisions are built** — the evidence travels *in* the
         # decision rather than beside it, because a residue read one line at a time is what a person
@@ -1268,6 +1272,19 @@ module AgentsFyi
           path = File.join(@worktree.root, evidence.path)
           [evidence.path, File.file?(path) ? File.read(path, encoding: "utf-8") : ""]
         end
+      end
+
+      # **The files this tool's own rules name for themselves**, read from the working copy — the same
+      # shape as `bridge_evidence`, and bounded (`Rewrites::SOURCE_LIMIT`). The bound is stated rather than
+      # silent: a glob a rule writes matches a handful of files in any application, and one that matched
+      # thousands would be a rule reading a tree rather than a file.
+      def rule_sources
+        Rewrites::RULES.filter_map(&:file).uniq.flat_map do |glob|
+          Dir.glob(glob, base: @worktree.root).sort.first(Rewrites::SOURCE_LIMIT).filter_map do |path|
+            full = File.join(@worktree.root, path)
+            [path, File.file?(full) ? File.read(full, encoding: "utf-8").lines.map(&:chomp) : nil]
+          end
+        end.to_h
       end
 
       # The file contents the scan sent, by path and line — what a rule that reads more than its own
