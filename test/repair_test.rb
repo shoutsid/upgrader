@@ -78,8 +78,8 @@ class RepairTest < Minitest::Test
     }
   end
 
-  def budget(attempts: 2, timeout: 5, model: "opencode-go/deepseek-v4.1-flash")
-    { attempts: attempts, timeout: timeout, model: model, agent: "repair", binary: "opencode" }
+  def budget(attempts: 2, timeout: 5, models: ["opencode-go/deepseek-v4.1-flash"])
+    { attempts: attempts, timeout: timeout, models: models, agent: "repair", binary: "opencode" }
   end
 
   # An agent process that does whatever the test says and records the invocation.
@@ -97,10 +97,11 @@ class RepairTest < Minitest::Test
     end
   end
 
-  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil)
+  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil, models: nil)
     reruns = suites.dup
     Repair.new(
-      root: @root, evidence: evidence, budget: budget(attempts: attempts),
+      root: @root, evidence: evidence,
+      budget: (models ? budget(attempts: attempts, models: models) : budget(attempts: attempts)),
       env: env, out: nil, runner: agent, config_dir: config_dir,
       rerun: -> { reruns.shift || FakeSuite.new(ok: false, output: "still red") },
       on_attempt: on_attempt
@@ -132,9 +133,37 @@ class RepairTest < Minitest::Test
 
     assert_equal 3, tuned[:attempts]
     assert_equal 90, tuned[:timeout]
-    assert_equal "opencode-go/x", tuned[:model]
+    assert_equal ["opencode-go/x"], tuned[:models]
     assert_equal "fixer", tuned[:agent]
     assert_equal "/opt/opencode", tuned[:binary]
+  end
+
+  # **A model chain, because a free tier is what needs one.** Measured on the 6.0 rung: the free
+  # variant of a model ran one attempt to the 600-second deadline and the next attempt answered
+  # `Rate limit exceeded. Please try again later.` in two seconds — so the budget was spent against
+  # a provider rather than against the application, and the paid sibling that answers was never
+  # asked. The list is read left to right, one model per attempt, and each attempt's command in the
+  # record carries the model it actually ran with.
+  def test_the_budget_reads_a_model_chain_left_to_right
+    chain = Repair.budget({ Repair::ENV_ATTEMPTS => "2",
+                            Repair::ENV_MODEL => "opencode/deepseek-v4.1-flash-free, opencode-go/deepseek-v4.1-flash" })
+
+    assert_equal ["opencode/deepseek-v4.1-flash-free", "opencode-go/deepseek-v4.1-flash"], chain[:models]
+    assert_equal [], Repair.budget({ Repair::ENV_ATTEMPTS => "1", Repair::ENV_MODEL => "" })[:models]
+  end
+
+  def test_the_nth_attempt_runs_the_nth_model_and_the_last_one_repeats
+    agent = FakeAgent.new { |_argv, _chdir, _n| [1, "boom", :ran] }
+    repair = repair(agent: agent, attempts: 3, models: ["free-model", "paid-model"],
+      suites: [FakeSuite.new(ok: false, output: "red"), FakeSuite.new(ok: false, output: "red")])
+
+    result = repair.run
+
+    ran = agent.calls.map { |call| call[:argv][call[:argv].index("--model") + 1] }
+    assert_equal ["free-model", "paid-model", "paid-model"], ran,
+      "the chain is per attempt and the last model carries the rest: #{agent.calls.map { |c| c[:argv] }.inspect}"
+    assert(result.attempts.all? { |attempt| attempt.command.include?("--model") },
+      "the record's command has to name the model each attempt ran: #{result.attempts.map(&:command).inspect}")
   end
 
   # --- the capability set -----------------------------------------------------------------

@@ -81,13 +81,23 @@ module AgentsFyi
 
       # The budget, or nil when this process does not repair at all. Read once per step; the
       # default is off for the reason the class documents.
+      #
+      # **`UPGRADER_REPAIR_MODEL` names one model or a chain of them, and the chain is what a
+      # free tier needs.** Measured here: the free variant of a model ran one attempt to the
+      # 600-second deadline (it was working — reading the patch, the views, the controller and
+      # the specs — and simply did not finish) and the next attempt answered
+      # `Rate limit exceeded. Please try again later.` in two seconds, which spent the budget
+      # against a provider rather than against the application. A comma- or space-separated list
+      # is read left to right, one model per attempt, so `free,paid` is "try the free one, then
+      # the one that answers" — and each attempt's command in the record carries the model it
+      # actually ran with.
       def self.budget(env = ENV)
         attempts = env[ENV_ATTEMPTS].to_s.to_i
         return nil if attempts <= 0
 
         { attempts: attempts,
           timeout: (env[ENV_TIMEOUT].to_s.empty? ? DEFAULT_TIMEOUT : env[ENV_TIMEOUT].to_i),
-          model: env[ENV_MODEL].to_s,
+          models: env[ENV_MODEL].to_s.split(/[,\s]+/).reject(&:empty?),
           agent: env[ENV_AGENT].to_s.empty? ? AGENT : env[ENV_AGENT],
           binary: env[ENV_BINARY].to_s.empty? ? "opencode" : env[ENV_BINARY] }
       end
@@ -118,7 +128,7 @@ module AgentsFyi
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
         @timeout = budget.fetch(:timeout)
-        @model = budget.fetch(:model).to_s
+        @models = Array(budget.fetch(:models)).map(&:to_s).reject(&:empty?)
         @agent = budget.fetch(:agent)
         @binary = budget.fetch(:binary)
         @env = env
@@ -171,37 +181,48 @@ module AgentsFyi
 
       def attempt(number, failure)
         prompt = prompt_for(failure)
+        model = model_for(number)
         before = changed_files
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        exit_code, output, outcome = run_agent(prompt)
+        exit_code, output, outcome = run_agent(prompt, model)
         Attempt.new(
-          number: number, command: command_label(prompt), ran: outcome != :not_started,
+          number: number, command: command_label(prompt, model), ran: outcome != :not_started,
           timed_out: outcome == :timed_out, exit_code: exit_code,
           seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
           output_tail: tail(output), changed: changed_files - before
         )
       end
 
+      # **The Nth model for the Nth attempt, and the last one for everything after it.** A chain
+      # shorter than the budget repeats its final model rather than running with none: an attempt
+      # with no model is opencode's own default, which is the model this environment turned out
+      # not to have a key for.
+      def model_for(number)
+        return "" if @models.empty?
+
+        @models[[number - 1, @models.size - 1].min]
+      end
+
       # The document, written once per attempt (the model may be pinned per run, so it is not
       # memoised across instances) and named to the agent through `OPENCODE_CONFIG`.
-      def config_path
+      def config_path(model)
         dir = @config_dir.empty? ? File.join(Dir.tmpdir, "agents-fyi-repair") : @config_dir
         FileUtils.mkdir_p(dir)
         path = File.join(dir, CONFIG)
-        File.write(path, "#{JSON.pretty_generate(self.class.document(model: @model, agent: @agent))}\n")
+        File.write(path, "#{JSON.pretty_generate(self.class.document(model: model, agent: @agent))}\n")
         path
       end
 
-      def run_agent(prompt)
+      def run_agent(prompt, model)
         argv = [@binary, "run", "--standalone", "--agent", @agent]
-        argv += ["--model", @model] unless @model.empty?
+        argv += ["--model", model] unless model.empty?
         argv << prompt
         # **`to_h`, because the live caller hands this `ENV`.** `ENV` answers `[]`, `each` and
         # `to_h` but *not* `merge`, and its class is `Object` — so the failure read
         # `undefined method 'merge' for #<Object:0x...>`, which names neither the environment
         # nor the method's real subject. Every test had passed a Hash, which is why the first
         # live repair was where this was found.
-        env = @env.to_h.merge("OPENCODE_CONFIG" => config_path)
+        env = @env.to_h.merge("OPENCODE_CONFIG" => config_path(model))
         answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)
         exit_code, output, outcome = answer
         # An injected runner answers `[exit_code, output]`, the way the first tests wrote it;
@@ -236,8 +257,8 @@ module AgentsFyi
         [nil, "the repair agent could not be started: #{e.message}", :not_started]
       end
 
-      def command_label(prompt)
-        "#{@binary} run --agent #{@agent}#{@model.empty? ? "" : " --model #{@model}"} " \
+      def command_label(prompt, model)
+        "#{@binary} run --agent #{@agent}#{model.to_s.empty? ? "" : " --model #{model}"} " \
           "(prompt: #{prompt.bytesize} bytes)"
       end
 
