@@ -192,11 +192,11 @@ class ServeTest < Minitest::Test
   end
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
-            ledger: nil, out: nil, walk: false, publish: false, rungs: nil)
+            ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
-      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish)
+      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish, force: force)
   end
 
   # One repository in the queue, walked once per cycle. Two cycles is the acceptance
@@ -288,6 +288,21 @@ class ServeTest < Minitest::Test
     assert_equal "https://github.com/acme/storefront.git", FakeStep.calls.first[:repository]
     assert_equal "v2022.01.04", FakeStep.calls.first[:ref],
       "the queue named a ref and the step was handed something else"
+  end
+
+  # **A flag the loop swallows is worse than no flag at all.** `--force` is documented as "walk a move
+  # even though the ledger has settled it — the ledger is a memory, not a lock", and `serve` never read
+  # it: measured, `serve --walk --force` printed "already settled: passed" and ran nothing, which reads
+  # as a walk that finished rather than one that was skipped. The loop has no opinion of its own about
+  # the ledger's answer; the step is where it is read, so the step is where the flag has to arrive.
+  def test_serve_hands_the_force_flag_to_the_step
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+
+    serve(repos: ["acme/storefront"], force: true).run
+
+    assert FakeStep.calls.all? { |call| call[:force] == true },
+      "the loop swallowed --force, so a settled move is skipped however the caller asks: " \
+      "#{FakeStep.calls.map { |call| call[:force] }.inspect}"
   end
 
   # `nil` from a step means the ledger already settled that move. It is not a failure, it

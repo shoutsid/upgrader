@@ -56,7 +56,8 @@ module AgentsFyi
                      step_timeout: 3600, out: $stdout, ledger: nil, cycles: nil,
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
-                     publish_class: Publish, suite_env: nil, services: nil, env: ENV)
+                     publish_class: Publish, suite_env: nil, services: nil, env: ENV,
+                     force: false)
         @api = api
         @home = home
         @to = to
@@ -74,6 +75,11 @@ module AgentsFyi
         # `Machine::Services`): a step must not own it, because the next step needs it too.
         @services = services
         @publish = publish
+        # **`force` reaches the step, because the step is where the ledger's "settled" answer is read.**
+        # The loop has no opinion about it of its own, and a flag the loop swallowed would look like it
+        # had walked a rung it never touched — measured, `serve --walk --force` printed "already settled:
+        # passed" and ran nothing, which reads as a walk that finished rather than one that was skipped.
+        @force = force
         @rungs = rungs || DEFAULT_RUNGS_PER_CYCLE
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
@@ -267,7 +273,7 @@ module AgentsFyi
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
-          corpus: @corpus, reuse: true, services: @services, env: @env
+          corpus: @corpus, reuse: true, services: @services, env: @env, force: @force
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
