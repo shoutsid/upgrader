@@ -173,8 +173,10 @@ module AgentsFyi
         # The interpreter is read from the lockfile here, because this mode is asked about a
         # repository rather than about a rung: `RUBY VERSION` is what the application last
         # succeeded against, which is the closest thing to "the Ruby this move will run on" that
-        # a caller with no machine can name. A lockfile without it leaves a conditioned digest
-        # entry unapplied, and the record says so.
+        # a caller with no machine can name. **No rung is passed**, and that is deliberate: this
+        # mode's job is the Gemfile an old application cannot install at all, and a move scoped to
+        # a rung is not that. An entry whose condition needs the rung is therefore unapplied and
+        # the record says so — which is the honest half of a mode that was not told the target.
         result = Preflight.new(root: source.root,
           corpus: @corpus || Corpus.new(base: options[:api]),
           ruby: lockfile_for(source.root)&.locked_ruby).run

@@ -129,10 +129,14 @@ module AgentsFyi
       # choice is itself a `bundle install`, so the Gemfile has to be installable first). It is
       # what a digest entry's `when` is evaluated against, and a caller that cannot name one is
       # told which entries it therefore could not apply rather than being served them silently.
-      def initialize(root:, corpus: nil, ruby: nil)
+      def initialize(root:, corpus: nil, ruby: nil, rails: nil)
         @root = File.expand_path(root)
         @corpus = corpus
         @ruby = ruby.to_s.strip
+        # The release the move *ends at*, which is what makes an entry rung-scoped. Nil in the
+        # standalone `preflight` mode, which is asked about a repository rather than about a move —
+        # and a rung condition this cannot evaluate is a note at the call site, not a guess.
+        @rails = rails.to_s.strip
       end
 
       def run
@@ -247,6 +251,16 @@ module AgentsFyi
       # rewrite name the same line.
       def digest_repair(entry, repairs, decisions, notes)
         name = entry["gem"].to_s
+        # **A condition guards every kind, not only a declaration.** A digest entry is a fact about an
+        # era, and the era is not always the one being walked: measured at the 4.2 rung, the digest's
+        # `devise ~> 3.0.0` is the line 4.0 and 4.1 need and the wrong one at 4.2. The entry that does
+        # not apply says so rather than being applied blind.
+        unless holds?(entry)
+          notes << "the digest's entry for #{name} was not applied: #{why_not(entry)} " \
+                   "(#{condition_sentence(entry)}) — #{entry["note"]}"
+          return
+        end
+
         found = declaration(name)
         return declare(entry, found, repairs, decisions, notes) if entry["kind"].to_s == "declared"
 
@@ -315,14 +329,6 @@ module AgentsFyi
           return
         end
 
-        unless holds?(entry)
-          notes << "the digest would declare #{name} #{entry["requirement"]} when the move runs " \
-                   "on #{below(entry) || "an interpreter its condition names"} " \
-                   "(#{@ruby.empty? ? "this stage cannot name the interpreter" : "this move runs " \
-                   "on #{@ruby}"}), so it was not declared: #{entry["note"]}"
-          return
-        end
-
         line = %(gem "#{name}", "#{entry["requirement"]}")
         gemfile = File.join(@root, "Gemfile")
         text = File.binread(gemfile)
@@ -335,21 +341,69 @@ module AgentsFyi
       # Whether the entry's condition holds for the interpreter this move will run on. The one
       # condition the digest states so far is a Ruby floor, and no interpreter means the condition
       # cannot be evaluated at all — which is `false` here and a note at the call site.
+      # **Whether an entry's condition holds for this move, clause by clause, and every clause must.**
+      # The vocabulary is small on purpose — a digest entry is a fact about an era, and an era is named
+      # by the two things a move knows about itself:
+      #
+      # * `ruby_below` — the interpreter the move will run on, which this stage knows as the rung's
+      #   floor (see `initialize`: the machine is chosen after this, and the choice is a
+      #   `bundle install`);
+      # * `rails_below` / `rails_at_least` — the release the move ends at, which is what lets a gem
+      #   have to move twice in one walk.
+      #
+      # A clause this stage cannot evaluate makes the whole entry inapplicable: an unnamed interpreter,
+      # a rung in a mode that was not told one, or a clause this build does not know. The call site
+      # says which, so a skipped entry is visible rather than silent.
       def holds?(entry)
-        floor = below(entry)
-        return true if floor.nil?
-        return false if @ruby.empty?
+        condition = entry["when"]
+        return true unless condition.is_a?(Hash)
 
-        Gem::Version.new(@ruby) < Gem::Version.new(floor)
+        condition.all? { |clause, value| clause_holds?(clause.to_s, value.to_s.strip) }
       end
 
-      # The Ruby floor an entry's condition names, or nil when it names none.
-      def below(entry)
-        condition = entry["when"]
-        return nil unless condition.is_a?(Hash)
+      # The clauses this build knows. Named once, because the evaluator and the sentence that says
+      # *why* an entry did not apply have to agree about the vocabulary — an unknown clause is a note,
+      # not a silent skip.
+      KNOWN_CLAUSES = %w[ruby_below rails_below rails_at_least].freeze
 
-        value = condition["ruby_below"].to_s.strip
-        value.empty? ? nil : value
+      def clause_holds?(clause, value)
+        return true if value.empty?
+        return false unless KNOWN_CLAUSES.include?(clause)
+
+        named = clause.start_with?("ruby") ? @ruby : @rails
+        return false if named.empty?
+
+        clause == "rails_at_least" ? Gem::Version.new(named) >= Gem::Version.new(value) :
+          Gem::Version.new(named) < Gem::Version.new(value)
+      end
+
+      # **Why an entry did not apply, in the cases that differ.** A condition this move does not meet,
+      # a clause this build does not know, and a clause whose fact this stage was never told (no
+      # interpreter in a mode that has no machine, no rung in a mode asked about a repository) are
+      # three different reasons, and a sentence that said "did not apply" for all of them would hide
+      # the one a caller can act on — telling the walker the rung, or the digest author the clause.
+      def why_not(entry)
+        condition = entry["when"]
+        return "this move does not meet it" unless condition.is_a?(Hash)
+
+        unknown = condition.keys.reject { |clause| KNOWN_CLAUSES.include?(clause.to_s) }
+        return "it states #{unknown.join(", ")}, which this build does not know" if unknown.any?
+
+        unnamed = condition.keys.select { |clause| (clause.to_s.start_with?("ruby") ? @ruby : @rails).empty? }
+        if unnamed.any?
+          return "it is scoped by #{unnamed.join(", ")}, and this stage was not told " \
+                 "#{unnamed.map { |clause| clause.to_s.start_with?("ruby") ? "the interpreter" : "the rung" }.uniq.join(" or ")}"
+        end
+
+        "this move does not meet it"
+      end
+
+      # The condition as a reader can check it, for the note that says why an entry did not apply.
+      def condition_sentence(entry)
+        condition = entry["when"]
+        return "none stated" unless condition.is_a?(Hash)
+
+        condition.map { |clause, value| "#{clause} #{value}" }.join(", ")
       end
 
       # The line the Gemfile declares this gem on, or nil. `DECLARATION` matches the whole

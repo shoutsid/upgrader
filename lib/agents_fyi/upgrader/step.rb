@@ -437,16 +437,18 @@ module AgentsFyi
       # A repository with no Gemfile at all still gets a stage, saying so: `planned`
       # requires a lockfile but not a Gemfile, and a preflight that silently did nothing
       # would leave an install failure to report it in a sentence about gems.
-      # **The rung's own floor is what a digest entry's condition is read against.** This stage runs
-      # before the machine is chosen — the choice *is* a `bundle install`, so the Gemfile has to be
-      # installable first — so the honest interpreter to name here is the lowest one the move may
-      # run on, which is the ladder's own statement of it. The lockfile's own `RUBY VERSION` is the
-      # fallback for a rung that states no floor; with neither, a conditioned entry is a note rather
+      # **A digest entry's condition is read against the rung's own floor and the rung itself.** This
+      # stage runs before the machine is chosen — the choice *is* a `bundle install`, so the Gemfile has
+      # to be installable first — so the honest interpreter to name here is the lowest one the move may
+      # run on, which is the ladder's own statement of it (the lockfile's `RUBY VERSION` is the fallback
+      # for a rung that states no floor). The release the move ends at is `@to`, which is what lets an
+      # entry be scoped to a rung: measured, the digest's `devise ~> 3.0.0` is the line 4.0 and 4.1 need
+      # and the wrong one at 4.2. With neither fact available a conditioned entry is a *note* rather
       # than a silent pass.
       def preflight_stage(stages, step)
         corpus = @corpus || Corpus.new(base: @api)
         result = Preflight.new(root: @worktree.root, corpus: corpus,
-          ruby: step["requires_ruby"] || @lockfile.locked_ruby).run
+          ruby: step["requires_ruby"] || @lockfile.locked_ruby, rails: @to).run
         stages << Record::Command.new(
           stage: Record::PREFLIGHT, command: "preflight: #{result.summary}",
           ran: true, exit_code: 0, seconds: 0.0,

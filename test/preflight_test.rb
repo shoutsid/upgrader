@@ -106,8 +106,8 @@ class PreflightTest < Minitest::Test
     dir
   end
 
-  def preflight(dir, corpus: FakeCorpus.new, ruby: nil)
-    Preflight.new(root: dir, corpus: corpus, ruby: ruby).run
+  def preflight(dir, corpus: FakeCorpus.new, ruby: nil, rails: nil)
+    Preflight.new(root: dir, corpus: corpus, ruby: ruby, rails: rails).run
   end
 
   def read(dir, name) = File.read(File.join(dir, name))
@@ -144,7 +144,8 @@ class PreflightTest < Minitest::Test
     assert_empty result.repairs
     refute_includes read(dir, "Gemfile"), "loofah"
     assert_equal 1, result.notes.size, "the skip was silent: #{result.details.inspect}"
-    assert_includes result.notes.first, "was not declared"
+    assert_includes result.notes.first, "this move does not meet it"
+    assert_includes result.notes.first, "ruby_below 2.5", "the note has to name the condition"
   end
 
   # A condition this stage cannot evaluate is a note, not a silent pass — the failure that would
@@ -158,7 +159,42 @@ class PreflightTest < Minitest::Test
 
     assert_empty result.repairs
     assert_equal 1, result.notes.size
-    assert_includes result.notes.first, "cannot name the interpreter"
+    assert_includes result.notes.first, "was not told the interpreter",
+      "an unevaluable condition and a condition this move does not meet are different reasons, and " \
+      "the sentence has to say which: #{result.notes.inspect}"
+  end
+
+  # **A digest entry can be scoped to the rung, and that is what lets one gem move twice in a walk.**
+  # Measured at the 4.2 rung: Rails 4.2 removed `ActionDispatch::Routing::Mapper::Scope#merge!` and
+  # devise 3.0.4's own routes file calls it, so the `~> 3.0.0` line that 4.0 and 4.1 need is the wrong
+  # one there. The walker takes the entry whose condition holds, applies it, and says in a note which
+  # entry it did not apply and why.
+  def test_a_digest_entry_scoped_to_a_rung_is_the_one_that_applies
+    gemfile = %(source "https://rubygems.org"\ngem "devise", "~> 3.0.0"\n)
+    corpus = lambda do
+      FakeCorpus.new(entries: [
+        entry(gem: "devise", replacement: "devise", requirement: "~> 3.0.0",
+          condition: { "rails_below" => "4.2" }),
+        entry(gem: "devise", replacement: "devise", requirement: "~> 3.2",
+          condition: { "rails_at_least" => "4.2" })
+      ])
+    end
+
+    up = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    up_result = preflight(up, corpus: corpus.call, rails: "4.2.0")
+
+    assert_includes read(up, "Gemfile"), %(gem "devise", "~> 3.2"),
+      "the entry scoped at 4.2 and above is the one that applies here"
+    refute_includes read(up, "Gemfile"), "3.0.0"
+    assert_equal 1, up_result.notes.size, "the entry that does not apply has to say so"
+    assert_includes up_result.notes.first, "rails_below 4.2"
+
+    before = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    before_result = preflight(before, corpus: corpus.call, rails: "4.1.0")
+
+    assert_includes read(before, "Gemfile"), %(gem "devise", "~> 3.0.0")
+    refute_includes read(before, "Gemfile"), "3.2"
+    assert_includes before_result.notes.first, "rails_at_least 4.2"
   end
 
   # A gem the application already declares is the application's line: the digest is not asked about
