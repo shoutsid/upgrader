@@ -235,6 +235,34 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A digest entry the preflight leaves as a decision, for a line the application has already moved:
+  # the shape the 5.0 rung's residue had, where `simple_form` was recorded as owing a move its Gemfile
+  # already made.
+  class SettledMoveCorpus < FakeCorpus
+    ENTRY = {
+      "gem" => "simple_form", "kind" => "replaced", "replacement" => "simple_form",
+      "requirement" => "~> 3.1", "mechanical" => false,
+      "note" => "the move belongs to the rung that takes Rails past 4.0.0",
+      "source" => "index.rubygems.org", "when" => nil
+    }.freeze
+
+    def initialize
+      super(migrations: [ENTRY])
+    end
+
+    def route(ruby:, rails:, lockfile:)
+      super.merge(
+        "gems" => [
+          { "name" => "simple_form", "version" => "3.0.0.rc", "verdict" => "replace",
+            "replacement" => "simple_form", "requirement" => "~> 3.1", "mechanical" => false,
+            "note" => ENTRY["note"] }
+        ],
+        "counts" => { "keep" => 0, "move" => 0, "replace" => 1, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 }
+      )
+    end
+  end
+
   # A routing that answers for a gem whose own upgrade needs edits to the application's code — the
   # shape the 5.0 rung's rspec-rails move has.
   class CompanionCorpus < FakeCorpus
@@ -409,6 +437,22 @@ class StepMachineTest < Minitest::Test
   # target") and the walk after the digest grew routed the same components `move`, so they fell
   # through to the branch that asks whether a person has a line to edit — and five *located*
   # decisions appeared for gems whose lines the pin's own `bundle update` names.
+  # **A move the line already makes is not a decision.** The preflight records a non-mechanical digest
+  # entry as a decision because it must not rewrite a line that can only move once Rails has; at the
+  # rung where the move is made the line may already say it, and then the residue is asking a person
+  # to make a move the tree has made. Measured on the lighthouse's 5.0 record, where `decide:
+  # simple_form` sat beside `gem "simple_form", "~> 3.1"`.
+  def test_a_move_the_line_already_makes_stops_being_a_decision
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\ngem "simple_form", "~> 3.1"\n)
+    dir = app(lockfile: LOCKFILE, gemfile: gemfile)
+
+    record = step(dir, machines: machines, corpus: SettledMoveCorpus.new).run
+
+    refute record.decisions.any? { |decision| decision.subject.to_s == "simple_form" },
+      "the line already reads the move the routing asked for: " \
+      "#{record.decisions.map(&:subject).inspect}"
+  end
+
   # **A gem's own upgrade is not finished when its Gemfile line is.** Measured at the 5.0 rung: the
   # rspec-rails 3 move alone took the lighthouse's suite from 47 failures to 133, because the gem
   # stopped inferring an example group's type and rspec 3 refuses a negated change matcher with a

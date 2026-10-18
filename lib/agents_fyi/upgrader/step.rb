@@ -921,7 +921,17 @@ module AgentsFyi
           else
             "#{line[/\A\s*/]}gem \"#{replacement}\", \"#{requirement}\""
           end
-        return nil if after == line
+        # **A line that already reads the way the digest says is a move nobody owes.** The preflight
+        # records a non-mechanical entry as a decision — it must not rewrite a line that can only move
+        # once Rails has — and here, at the rung where the move is made, the line may already say it:
+        # the 4.1 rung moved `simple_form` to `~> 3.1`, and the 5.0 rung's route then answers `replace`
+        # for a line that is already there. Leaving the decision in place asks a person to make a move
+        # the tree has made, and the residue is what a person works from. Measured on the lighthouse's
+        # 5.0 record: `decide: simple_form` sat beside a Gemfile reading `gem "simple_form", "~> 3.1"`.
+        if after == line
+          withdraw_decision(gem)
+          return nil
+        end
 
         lines = File.binread(File.join(@worktree.root, "Gemfile")).split("\n", -1)
         unless lines[index] == line
