@@ -238,6 +238,18 @@ module AgentsFyi
                "which reads as an application error; the change's own answer is Spring 3.0.0 or newer")
       ].freeze
 
+      # **A survey whose whole evidence is the call sites.** A decision names *one* line, so a change with
+      # five call sites has four the residue never shows — and for these changes the list *is* the work:
+      # the sanitizer calls to review, the tests to rewrite, the models whose lists have to become strong
+      # parameters. It is a family the way a rule is, so the next such change is one line rather than a
+      # new lambda.
+      def self.survey_calls(subject:, sentence:)
+        Survey.new(subject: subject, sentence: sentence,
+          read: lambda do |_tree, located|
+            located.map { |entry| [entry["path"], entry["line"].to_i, entry["text"].to_s] }
+          end)
+      end
+
       # **The surveys, by the subject the ladder and the scan both use.** Each is here because its
       # change's *fix* is a decision and its *evidence* is a fact: which call sites read differently,
       # which assignments the new behaviour changes, which alias the deprecation warned about.
@@ -346,6 +358,80 @@ module AgentsFyi
             beside = key_base ? "secret_key_base is set elsewhere" : "secret_key_base is not set anywhere"
             located.map do |entry|
               [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
+            end
+          end),
+
+        # **The five whose evidence is simply the call sites.** Each note names a change whose work is a
+        # review or a rewrite rather than an edit this tool can make, and each decision would otherwise
+        # show one of its call sites — the first — and hide the rest.
+        survey_calls(subject: "attr_accessible",
+          sentence: "the models whose list has to become a controller's strong parameters"),
+        survey_calls(subject: "after_commit / after_rollback",
+          sentence: "the callbacks whose errors now propagate instead of being swallowed"),
+        survey_calls(subject: "sanitize / strip_tags",
+          sentence: "the calls whose output changed, which is what has to be reviewed"),
+        survey_calls(subject: "assert_tag",
+          sentence: "the assertions to rewrite — the note says the argument shape differs, so this is a " \
+                    "test to move rather than a name to rename"),
+        survey_calls(subject: "format.any",
+          sentence: "the blocks whose Content-Type now comes from the block rather than the request"),
+
+        # "The controller method is deprecated and gone in 6.1. Application-wide enforcement is
+        # config.force_ssl, with config.ssl_options for endpoints that have to be exempt."
+        #
+        # **Both facts a person needs are in the tree**: which controllers ask for it, and whether the
+        # application-wide setting is already on. Moving one to the other is a decision, because a
+        # controller's `force_ssl` covers *its* actions and `config.force_ssl` covers everything.
+        Survey.new(subject: "force_ssl in a controller",
+          sentence: "the controllers that ask for it, and whether config.force_ssl is set anywhere",
+          read: lambda do |tree, located|
+            app_wide = tree.select { |_path, lines| lines.any? { |line| line.match?(/config\.force_ssl\b/) } }
+            beside =
+              if app_wide.empty?
+                "config.force_ssl is not set anywhere"
+              else
+                "config.force_ssl is set in #{app_wide.keys.sort.join(", ")}"
+              end
+            located.map do |entry|
+              [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
+            end
+          end),
+
+        # "All tests respect the configured adapter now. A test environment that sets something other
+        # than :test and relies on the test adapter being used anyway starts behaving differently."
+        #
+        # So the fact is the *value*: `:test` is the one setting this change does not touch.
+        Survey.new(subject: "config.active_job.queue_adapter in tests",
+          sentence: "the lines that set the adapter, and which of them set something other than :test",
+          read: lambda do |tree, located|
+            located.map do |entry|
+              text = entry["text"].to_s
+              value = text[/queue_adapter\s*=\s*([^#\s]+)/, 1].to_s
+              note =
+                if value == ":test"
+                  "the test adapter, which this change does not touch"
+                else
+                  "#{value} — every test now runs on it"
+                end
+              [entry["path"], entry["line"].to_i, "#{text.strip} (#{note})"]
+            end
+          end),
+
+        # "Nested keys in secrets.yml are loaded as symbols now, so `secrets[:smtp][\"address\"]` raises or
+        # returns nil where it used to work."
+        #
+        # The *indexing* is what breaks and the string key is what marks it, so the survey reads the tree
+        # rather than the located line: the change's own detect finds the assignment, and these are lines
+        # the scan did not stop on.
+        Survey.new(subject: "Rails.application.secrets",
+          sentence: "the lines that index into secrets with a string key, which is what stops working",
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next unless line.match?(/\bsecrets\b.*\[\s*["']/)
+
+                [path, index + 1, line]
+              end
             end
           end)
       ].freeze

@@ -160,7 +160,8 @@ The pipeline has three stages that make the rest mean anything:
    is a *judgement* rather than an edit gets a **survey** instead: it reads the
    application and names the lines the decision is about (which callers of a
    `default_scope` read differently, which lines assign to a `has_many_attached`
-   collection, which aliases shadow a method the file defines), and the evidence travels
+   collection, which aliases shadow a method the file defines, and — through
+   `survey_calls` — the call sites a decision can only show one of), and the evidence travels
    in the decision, so "none found" is a sentence a reader gets rather than silence.
    A rule may also need
    a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class

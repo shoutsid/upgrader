@@ -839,6 +839,105 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.findings_sentence(found.findings), "secret_key_base is set elsewhere"
   end
 
+  # **The call sites themselves are the evidence** for a change whose work is a review: a decision names
+  # one line, so a change with three call sites has two the residue never shows. This is the family that
+  # fixes that, and the assertion that matters is that *all* of them come back.
+  def test_a_survey_of_call_sites_returns_all_of_them_and_not_only_the_first
+    located = [entry(subject: "assert_tag", path: "test/controllers/posts_controller_test.rb", line: 12,
+      text: "    assert_tag tag: \"div\", attributes: { id: \"post\" }"),
+      entry(subject: "assert_tag", path: "test/controllers/posts_controller_test.rb", line: 18,
+        text: "    assert_tag tag: \"span\""),
+      entry(subject: "assert_tag", path: "test/views/posts_test.rb", line: 4,
+        text: "    assert_tag tag: \"h1\"")]
+
+    found = Rewrites.survey([{ "subject" => "assert_tag" }], tree: {}, located: located)
+      .fetch("assert_tag")
+
+    assert_equal ["test/controllers/posts_controller_test.rb:12",
+      "test/controllers/posts_controller_test.rb:18", "test/views/posts_test.rb:4"],
+      found.findings.map { |path, line, _| "#{path}:#{line}" }
+    assert_includes Rewrites.findings_sentence(found.findings), "test/views/posts_test.rb:4"
+    assert_includes found.sentence, "the assertions to rewrite"
+  end
+
+  # **A setting's own value is the fact**, and for `force_ssl` there are two: which controllers ask for it
+  # and whether the application-wide setting is on. Moving one to the other changes what it covers — a
+  # controller's `force_ssl` is its actions, `config.force_ssl` is everything — so the survey says both
+  # rather than making the move.
+  def test_the_force_ssl_survey_names_the_controllers_and_the_application_wide_setting
+    tree = {
+      "app/controllers/checkouts_controller.rb" => [
+        "class CheckoutsController < ApplicationController\n",
+        "  force_ssl only: [:create]\n"
+      ],
+      "config/environments/production.rb" => [
+        "Rails.application.configure do\n",
+        "  config.force_ssl = true\n"
+      ]
+    }
+    located = [entry(subject: "force_ssl in a controller", path: "app/controllers/checkouts_controller.rb",
+      line: 2, text: "  force_ssl only: [:create]")]
+
+    found = Rewrites.survey([{ "subject" => "force_ssl in a controller" }], tree: tree, located: located)
+      .fetch("force_ssl in a controller")
+    assert_includes Rewrites.findings_sentence(found.findings),
+      "config.force_ssl is set in config/environments/production.rb"
+
+    without = Rewrites.survey([{ "subject" => "force_ssl in a controller" }],
+      tree: tree.except("config/environments/production.rb"), located: located)
+      .fetch("force_ssl in a controller")
+    assert_includes Rewrites.findings_sentence(without.findings),
+      "config.force_ssl is not set anywhere"
+  end
+
+  # `:test` is the one adapter this change does not touch, and the survey is what tells the two apart —
+  # the difference between a test environment that behaves the same and one that quietly does not.
+  def test_the_queue_adapter_survey_reads_the_value_rather_than_the_line
+    tree = {
+      "config/environments/test.rb" => [
+        "Rails.application.configure do\n",
+        "  config.active_job.queue_adapter = :test\n",
+        "  config.active_job.queue_adapter = :sidekiq # the suite drives the real one\n"
+      ]
+    }
+    located = [
+      entry(subject: "config.active_job.queue_adapter in tests", path: "config/environments/test.rb",
+        line: 2, text: "  config.active_job.queue_adapter = :test"),
+      entry(subject: "config.active_job.queue_adapter in tests", path: "config/environments/test.rb",
+        line: 3, text: "  config.active_job.queue_adapter = :sidekiq # the suite drives the real one")
+    ]
+
+    found = Rewrites.survey([{ "subject" => "config.active_job.queue_adapter in tests" }],
+      tree: tree, located: located).fetch("config.active_job.queue_adapter in tests")
+    sentence = Rewrites.findings_sentence(found.findings)
+
+    assert_includes sentence, "the test adapter, which this change does not touch"
+    assert_includes sentence, ":sidekiq — every test now runs on it"
+  end
+
+  # **The indexing is what breaks, and the string key is what marks it** — and those are lines the scan
+  # did not stop on, because the change's own detect finds the assignment. So this survey reads the tree
+  # rather than the located entries, which is the other half of what a survey is for.
+  def test_the_secrets_survey_finds_the_string_key_indexing_the_scan_did_not_stop_on
+    tree = {
+      "config/initializers/smtp.rb" => [
+        "Rails.application.config.action_mailer.smtp_settings = {\n",
+        "  address: Rails.application.secrets[:smtp][\"address\"],\n",
+        "  user_name: Rails.application.secrets[:smtp][:user_name]\n",
+        "}\n"
+      ]
+    }
+    located = [entry(subject: "Rails.application.secrets", path: "config/initializers/smtp.rb", line: 1,
+      text: "Rails.application.config.action_mailer.smtp_settings = {")]
+
+    found = Rewrites.survey([{ "subject" => "Rails.application.secrets" }], tree: tree, located: located)
+      .fetch("Rails.application.secrets")
+
+    assert_equal ["config/initializers/smtp.rb:2"],
+      found.findings.map { |path, line, _| "#{path}:#{line}" },
+      "the symbol key is the shape the release wants, so it is not a finding"
+  end
+
   def test_a_finding_list_is_bounded_and_says_how_many_it_left_out
     findings = (1..9).map { |n| ["app/models/item.rb", n, "  where(active: #{n})\n"] }
     sentence = Rewrites.findings_sentence(findings)
