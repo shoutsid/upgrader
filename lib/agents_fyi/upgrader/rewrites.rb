@@ -958,6 +958,14 @@ module AgentsFyi
       # pattern carved out of one would be a guess about where the value goes. It is asked twice (stop the
       # edit, stop the decision), which is what makes an already-migrated call site an *answer* rather than a
       # refusal.
+      #
+      # **It has to cover every spelling the input can take, and a guard that misses one mangles a line.**
+      # Measured: `:data => { :confirm => "Sure?", :method => :delete }` — a valid Rails call with the
+      # hash-rocket spelling — matched the rule and came out as
+      # `:data => { data: { confirm: "Sure?" }, :method => :delete }`, which is not a call at all. The first
+      # real application's own devise view is one comma away from that shape. The value's lookahead is what
+      # saves the two spellings where the value is last (a ` }` after it), and nothing saves the one where a
+      # second option follows.
       def self.option_wrapped(subject:, option:, wrapper:, already: nil)
         head = /(?::\s*#{Regexp.escape(option)}\s*=>|\b#{Regexp.escape(option)}:)\s*/
         Rule.new(family: :option_wrapped, subject: subject, already: already,
@@ -1358,7 +1366,8 @@ module AgentsFyi
         # `link_to 'Delete', path, confirm: 'Sure?'` becomes `data: {confirm: 'Sure?'}`, and the
         # helpers built on link_to go the same way.
         option_wrapped(subject: ":confirm option on link_to", option: "confirm",
-          wrapper: 'data: { confirm: \k<value> }', already: /data:\s*\{\s*confirm:/),
+          wrapper: 'data: { confirm: \k<value> }',
+          already: /(?::data\s*=>|data:)\s*\{\s*:?confirm\s*(?::|=>)/),
         # The top-level constant is soft-deprecated — no warning, and it still works — so this is the
         # step to move the references rather than the step that breaks them.
         name_moved(subject: "HashWithIndifferentAccess", from: "HashWithIndifferentAccess",

@@ -55,11 +55,21 @@ class RewritesTest < Minitest::Test
 
     # And a line that already carries the wrapper is *satisfied* rather than refused: the rule's own guard is
     # the reader that can tell "this application already reads the new way" from "nobody can read this line".
-    already = Rewrites.apply([entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
-      text: %(<%= link_to 'Delete', post, data: { confirm: 'Sure?' } %>))])
-    assert_empty already.edits
-    assert_empty already.left
-    assert_equal [":confirm option on link_to"], already.satisfied
+    # **Every spelling of the wrapper, because a guard that misses one mangles a line**: the hash-rocket form
+    # with a second option after it came out as `:data => { data: { confirm: … }, :method => :delete }`, and
+    # the first real application's own devise view is one comma away from that shape.
+    [
+      %(<%= link_to 'Delete', post, data: { confirm: 'Sure?' } %>),
+      %(<%= link_to 'Delete', post, data: { confirm: 'Sure?', class: 'btn' } %>),
+      %(<%= button_to 'Cancel', path, :data => { :confirm => "Sure?" } %>),
+      %(<%= button_to 'Cancel', path, :data => { :confirm => "Sure?", :method => :delete } %>)
+    ].each do |text|
+      done = Rewrites.apply([entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
+        text: text)])
+      assert_empty done.edits, "no edit for #{text}"
+      assert_empty done.left, "and not a refusal either: #{text}"
+      assert_equal [":confirm option on link_to"], done.satisfied
+    end
   end
 
   # **A value whose end the rule cannot see is not touched.** `confirm: t(:x, count: 1)` has an
