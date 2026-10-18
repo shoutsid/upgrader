@@ -34,6 +34,23 @@ class StepMachineTest < Minitest::Test
       rails (= 4.0.0.rc1)
   LOCK
 
+  # A lockfile that holds a gem the application's suite brings in, so a step that moves that gem's line
+  # has something in the snapshot to name.
+  RSPEC_LOCK = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        rails (4.0.0.rc1)
+        rspec-rails (2.14.2)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 4.0.0.rc1)
+      rspec-rails (~> 2.14.0)
+  LOCK
+
   GEMFILE = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\n)
 
   # A lockfile shaped like a real application's: the meta-gem pins its components at its own
@@ -451,6 +468,27 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s == "simple_form" },
       "the line already reads the move the routing asked for: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **The pin's first resolve names the gems this step has already moved.** Its rounds *are* the
+  # widening, and a widening spends a round per conflict — so a gem the step has already decided to move
+  # has to be named from the first round. Measured at the 5.0 rung: `guard-rspec 3.1.0` declares
+  # `rspec ~> 2.13`, rspec-rails 3.5 needs `rspec-core ~> 3.5.0`, and the resolve named `rspec-core`,
+  # `rspec` and `rspec-rails` over two rounds and never named `guard-rspec` — the line the routing had
+  # already moved at that rung — so the pin failed with the move made. The bundle stage's fallback
+  # already names exactly this set, and the two naming the same gems is the point.
+  def test_the_pins_first_resolve_names_a_gem_this_step_moved
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\ngem "rspec-rails", "~> 2.14.0"\n)
+    dir = app(lockfile: RSPEC_LOCK, gemfile: gemfile)
+    runner = FakeRunner.new
+
+    step(dir, machines: machines, runner: runner, corpus: CompanionCorpus.new).run
+
+    first = runner.calls.find { |call| call.include?("bundle update rails ") }
+    assert first, "the pin's own resolve is not among the commands: #{runner.calls.grep(/bundle update/).inspect}"
+    assert_includes first.split, "rspec-rails",
+      "the first resolve did not name the line this step moved, so its rounds are spent on a conflict " \
+      "this step already answered: #{first}"
   end
 
   # **A gem's own upgrade is not finished when its Gemfile line is.** Measured at the 5.0 rung: the

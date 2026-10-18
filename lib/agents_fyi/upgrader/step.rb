@@ -1678,10 +1678,23 @@ module AgentsFyi
       # refuses is *released* rather than forced, and bundler names it, the same way it names what
       # has to move: a gem the move really needs is a gem that has to move.
       def pin(stages)
-        resolved = conservative_update(stages, pin_gems, stage: Record::PIN)
+        resolved = conservative_update(stages, pin_named, stage: Record::PIN)
         return resolved unless resolved.ok?
 
         hold_what_the_move_did_not_need(stages, @lockfile)
+      end
+
+      # **The framework plus every gem this step has rewritten a line for.** The pin's own rounds are
+      # the widening, and a widening spends a round per conflict — so a gem the step has already decided
+      # to move has to be named from the first round, or the resolve spends its early rounds on a line
+      # this step has already changed and may run out before it reaches the real one. Measured at the
+      # 5.0 rung: `guard-rspec 3.1.0` declares `rspec ~> 2.13`, rspec-rails 3.5 needs `rspec-core
+      # ~> 3.5.0`, and the resolve named `rspec-core`, `rspec` and `rspec-rails` over two rounds and
+      # never named `guard-rspec` — the line the routing had already moved at this rung — so the pin
+      # failed with the move made. The bundle stage's fallback already names exactly this set
+      # (`moved_gems`), and the two naming the same gems is the point rather than a coincidence.
+      def pin_named
+        (pin_gems + moved_gems).uniq
       end
 
       # The gems the resolve moved that it was not asked to, and the versions it moved them from.
@@ -1722,7 +1735,7 @@ module AgentsFyi
       # move something else, and the property this stage is for is about the lock it ends on.
       def holdable(before, gemfile_text, refused)
         lockfile = Lockfile.read(@worktree.root)
-        moved = moved_without_need(before.specs, pin_gems, lockfile.specs)
+        moved = moved_without_need(before.specs, pin_named, lockfile.specs)
         undeclared(moved, gemfile_text)
           .select { |name, was| fits_both_ways?(before, lockfile, name, was) }
           .except(*refused)
@@ -1770,7 +1783,7 @@ module AgentsFyi
           break if held.empty? && attempt.ok?
 
           File.binwrite(gemfile, held_gemfile(original, held))
-          attempt = conservative_update(stages, pin_gems + held.keys, stage: Record::PIN)
+          attempt = conservative_update(stages, pin_named + held.keys, stage: Record::PIN)
           return attempt if attempt.ok? && holdable(before, original, refused).empty?
           # A resolve that succeeded and still moved something is not a failure: the next round holds
           # that too. Only a *failed* resolve is read for a name.
@@ -1783,7 +1796,7 @@ module AgentsFyi
             # more without them: a rung that moves Rails and leaves one gem where the resolve put it is
             # the outcome this stage must never trade for a failure.
             File.binwrite(gemfile, original)
-            return conservative_update(stages, pin_gems, stage: Record::PIN)
+            return conservative_update(stages, pin_named, stage: Record::PIN)
           end
 
           refused |= named
