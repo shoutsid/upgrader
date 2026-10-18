@@ -1432,6 +1432,32 @@ class StepTest < Minitest::Test
     assert_empty record.decisions, "a change about a gem the application does not have is not its work"
   end
 
+  # **A line a rule knows and will not touch is a reason before it is a count.** `belongs_to` is the case:
+  # the rule adds `optional: true` where the model does *not* already validate the association, and a
+  # model that does validate it needs nothing — so the count alone would read as work left when it is
+  # work already done. The sentence is the rule's `PARTIAL`, and a `left` line produces no *decision*, so
+  # without this the record would be the one place the explanation cannot be found.
+  def test_the_apply_tail_says_why_a_rule_would_not_touch_a_line
+    dir = track(app)
+    with_source(dir, "app/models/bid.rb",
+      "class Bid < ApplicationRecord\n  belongs_to :item\n  validates_presence_of :item\nend\n")
+    located = { "path" => "app/models/bid.rb", "line" => 2, "text" => "  belongs_to :item",
+                "after" => nil, "subject" => "belongs_to", "kind" => "default_changed",
+                "replacement" => nil, "source" => "5.0", "note" => "required by default now",
+                "automatic" => false }
+    payload = plan(changes: [change(subject: "belongs_to", kind: "default_changed", source: "5.0",
+      replacement: nil, note: "required by default now")])
+
+    record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
+    assert_includes tail, "1 line(s) a rule knows and would not touch (belongs_to)"
+    assert_includes tail, "already validate"
+    assert_includes File.read(File.join(dir, "app/models/bid.rb")), "belongs_to :item\n",
+      "the line the model already requires is not written to"
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

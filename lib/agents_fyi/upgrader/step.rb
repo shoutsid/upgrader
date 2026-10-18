@@ -1093,9 +1093,19 @@ module AgentsFyi
           inert.any?
         unless rules.left.empty?
           parts << "#{rules.left.size} line(s) a rule knows and would not touch " \
-                   "(#{rules.left.uniq.join(", ")})"
+                   "(#{rules.left.uniq.join(", ")})#{left_reasons(rules.left)}"
         end
         parts.join("; ")
+      end
+
+      # **A line a rule knows and will not touch is a *reason* before it is a count.** The count alone
+      # reads as work left, and for `belongs_to` the reason is the opposite: the model already validates
+      # the association, so the new default agrees with it and there is nothing to write. That sentence
+      # is the `PARTIAL` beside the rule — and a `left` line produces no *decision*, so without this the
+      # record would be the one place the explanation cannot be found.
+      def left_reasons(subjects)
+        sentences = subjects.uniq.filter_map { |subject| Rewrites.gap_for(subject) }
+        sentences.empty? ? "" : " — #{sentences.join("; ")}"
       end
 
       # **The files a rule's edit depends on, written after the edits and before the suite.** A model
