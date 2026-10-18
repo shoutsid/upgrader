@@ -1034,8 +1034,15 @@ module AgentsFyi
         # between the read and the write is refused rather than half-rewritten. A change a rule
         # applies stops being a decision, because it is no longer one.
         manual = scan["manual"] || []
-        rules = Rewrites.apply(manual, files: file_lines(files))
+        # Read once and given to both: a rule's context and a survey read the same lines, and the scan
+        # already bounded which files those are.
+        tree = file_lines(files)
+        rules = Rewrites.apply(manual, files: tree)
         inert = Rewrites.inert(step["changes"] || [])
+        # **What the surveys found, before the decisions are built** — the evidence travels *in* the
+        # decision rather than beside it, because a residue read one line at a time is what a person
+        # actually works from.
+        evidence = Rewrites.survey(step["changes"] || [], tree: tree, located: manual)
         # A rule that *knows* the change and would not touch this line is the most specific thing
         # anything downstream can be told, so it is kept rather than counted: the repair agent's
         # brief carries it (`Repair#prompt_for`).
@@ -1048,7 +1055,7 @@ module AgentsFyi
           Rewrites.bridges(manual, changes: step["changes"] || [], tree: bridge_evidence)
         )
         handled = rules.applied + bridged
-        decisions = decisions_for(step, scan).reject do |decision|
+        decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
           handled.include?(decision.subject.to_s)
         end
         stages << Record::Command.new(
@@ -1236,23 +1243,27 @@ module AgentsFyi
       # found here" while reading as "nothing was carried" is the empty-answer trap with the
       # count raised. A change this application does not use today is still a change this step
       # carried.
-      def decisions_for(step, scan)
+      def decisions_for(step, scan, evidence: {})
         found = (scan && scan["manual"] || []).group_by { |entry| entry["subject"].to_s }
         carried = (step["changes"] || []).reject { |change| change["automatic"] }
 
-        located = carried.map { |change| decision(change, found[change["subject"].to_s]&.first) }
+        located = carried.map do |change|
+          decision(change, found[change["subject"].to_s]&.first, evidence: evidence)
+        end
         # And a manual call site the plan does not name is a change nobody has written
         # into the ladder, which is the most useful thing a refusal can say. Dropping it
         # because the digest has no row for it would hide exactly that.
         unplanned = found.keys - carried.map { |change| change["subject"].to_s }
-        located + unplanned.flat_map { |subject| found[subject].map { |entry| decision(nil, entry) } }
+        located + unplanned.flat_map do |subject|
+          found[subject].map { |entry| decision(nil, entry, evidence: evidence) }
+        end
       end
 
       # One decision, from whichever side named the change — the plan when it did, the
       # scan's own entry otherwise. The reason joins both notes when they are two, in the
       # order a reader wants them: what the guide says the change is, then what this
       # application's line looks like.
-      def decision(change, entry)
+      def decision(change, entry, evidence: {})
         subject = ((change && change["subject"]) || entry["subject"]).to_s
         # **The gap travels with the change, and that is the point of it.** A change no rule covers
         # is not a verdict about the application: it is a queue entry, and `Rewrites.gap_for` says
@@ -1262,7 +1273,8 @@ module AgentsFyi
         gap = Rewrites.gap_for(subject)
         reason = [change && change["note"], entry && entry["note"]]
                  .compact.reject { |note| note.to_s.empty? }.uniq.join(" — ")
-        reason = [reason, gap && "not automated yet: #{gap}"].compact.reject(&:empty?).join(" — ")
+        reason = [reason, survey_note(evidence[subject]), gap && "not automated yet: #{gap}"]
+                 .compact.reject(&:empty?).join(" — ")
         Record::Decision.new(
           path: entry && entry["path"], line: entry && entry["line"],
           subject: subject, reason: reason,
@@ -1270,6 +1282,17 @@ module AgentsFyi
           replacement: (change && change["replacement"]) || (entry && entry["replacement"]),
           source: (change && change["source"]) || (entry && entry["source"])
         )
+      end
+
+      # **What a survey found, in the decision's own words.** "None found" and "no survey" are two
+      # different sentences on purpose: the first is an observation about *this* application, and the
+      # second is a change nobody has written a reader for. A residue that collapsed them would read as
+      # if the analysis had been done.
+      def survey_note(found)
+        return nil if found.nil?
+
+        detail = found.findings.empty? ? "none found" : Rewrites.findings_sentence(found.findings)
+        "this application: #{found.sentence} — #{detail}"
       end
 
       # Which files to send. Bounded, and the bound is stated rather than silently

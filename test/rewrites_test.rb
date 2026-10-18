@@ -186,8 +186,9 @@ class RewritesTest < Minitest::Test
 
     assert_includes inert, ":confirm option on link_to"
     refute_includes inert, "request.content_type"
-    named = (Rewrites::RULES.map(&:subject) + Rewrites::BRIDGES.map(&:subject)).map { |s| { "subject" => s } }
-    assert_empty Rewrites.inert(named), "a rule or bridge that names no change is reported"
+    named = (Rewrites::RULES.map(&:subject) + Rewrites::BRIDGES.map(&:subject) +
+             Rewrites::SURVEYS.map(&:subject)).map { |s| { "subject" => s } }
+    assert_empty Rewrites.inert(named), "a rule, bridge or survey that names no change is reported"
   end
 
   # **A dynamic finder's own name carries its arguments, and the family splits them out.** The note
@@ -648,6 +649,132 @@ class RewritesTest < Minitest::Test
       result.edits.map { |edit| edit["after"] }
     assert_equal ["Rails.logger"], result.left
     assert_includes Rewrites.gap_for("Rails.logger"), "nested deeper than one level"
+  end
+
+  # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
+  # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
+  # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
+  # pattern can know — but *which callers read differently* is a fact about the tree, and naming them is
+  # the difference between "needs a person" and "needs a person, and these are the lines".
+  def test_the_default_scope_survey_names_the_callers_that_read_differently
+    tree = {
+      "app/models/item.rb" => [
+        "class Item < ApplicationRecord\n",
+        "  default_scope { where(active: true) }\n",
+        "  scope :cheap, -> { where(price: 0..10) }\n",
+        "  scope :archived, -> { where(active: false) }\n"
+      ],
+      "app/controllers/items_controller.rb" => [
+        "class ItemsController\n",
+        "  def index\n",
+        "    @items = Item.where(active: false).order(:name)\n",
+        "    @other = Item.where(price: 0).count\n",
+        "  end\n"
+      ]
+    }
+    located = [entry(subject: "default_scope", path: "app/models/item.rb", line: 2,
+      text: "  default_scope { where(active: true) }")]
+
+    found = Rewrites.survey([{ "subject" => "default_scope" }], tree: tree, located: located)
+      .fetch("default_scope")
+
+    assert_equal ["app/models/item.rb:4", "app/controllers/items_controller.rb:3"],
+      found.findings.map { |path, line, _| "#{path}:#{line}" },
+      "the scope's own line is not a caller of itself, and a condition on another column is not this " \
+      "change's — the two halves have to meet"
+    assert_includes Rewrites.findings_sentence(found.findings), "Item.where(active: false)"
+  end
+
+  # A change the rung does not carry is asked nothing, and a subject no survey names has no entry at
+  # all — so the residue can tell "the analysis found nothing" from "nobody has written the analysis".
+  def test_a_survey_runs_only_for_the_changes_the_rung_carries
+    tree = { "app/models/item.rb" => ["class Item\n", "  default_scope { where(active: true) }\n"] }
+    located = [entry(subject: "default_scope", path: "app/models/item.rb", line: 2,
+      text: "  default_scope { where(active: true) }")]
+
+    assert_empty Rewrites.survey([{ "subject" => "a change with no reader" }], tree: tree, located: located),
+      "a subject no survey names has no entry — which is what tells \"no survey\" from \"none found\""
+
+    found = Rewrites.survey([{ "subject" => "default_scope" }], tree: tree, located: located)
+    assert_predicate found.fetch("default_scope").findings, :empty?,
+      "the declaration alone is not a caller that reads differently"
+  end
+
+  # The other two surveys, and each is one question about the tree: does anything *assign* to the
+  # collection, and does the file define the method the alias names?
+  def test_the_assignment_and_alias_surveys_read_the_tree_rather_than_a_line
+    tree = {
+      "app/models/post.rb" => [
+        "class Post < ApplicationRecord\n",
+        "  has_many_attached :photos\n",
+        "  alias_attribute :headline, :title\n",
+        "  def title\n",
+        "    super.upcase\n",
+        "  end\n"
+      ],
+      "app/controllers/posts_controller.rb" => [
+        "class PostsController\n",
+        "  def update\n",
+        "    @post.photos = params[:photos]\n",
+        "    @post.photos.attach(params[:one])\n",
+        "  end\n"
+      ]
+    }
+
+    assignments = Rewrites.survey([{ "subject" => "has_many_attached assignment" }], tree: tree,
+      located: [entry(subject: "has_many_attached assignment", path: "app/models/post.rb", line: 2,
+        text: "  has_many_attached :photos")]).fetch("has_many_attached assignment")
+    assert_equal ["app/controllers/posts_controller.rb:3"],
+      assignments.findings.map { |path, line, _| "#{path}:#{line}" },
+      "`attach` adds without replacing, so the call that already uses it is not a call site that " \
+      "changes behaviour"
+
+    aliases = Rewrites.survey([{ "subject" => "alias_attribute" }], tree: tree,
+      located: [entry(subject: "alias_attribute", path: "app/models/post.rb", line: 3,
+        text: "  alias_attribute :headline, :title")]).fetch("alias_attribute")
+    assert_equal ["app/models/post.rb:4"], aliases.findings.map { |path, line, _| "#{path}:#{line}" },
+      "the alias whose original the file defines itself is exactly the deprecation warning's list"
+  end
+
+  # The stored column's symbol access, which is what stops working: the accessors `store_accessor`
+  # defines are methods and are unaffected, so a survey that reported *those* would report every method
+  # call in the application instead of the one thing that changed.
+  def test_the_json_and_hstore_survey_reports_symbol_indexing_into_the_column
+    tree = {
+      "app/models/profile.rb" => [
+        "class Profile < ApplicationRecord\n",
+        "  store_accessor :settings, :theme\n",
+        "  def dark?\n",
+        "    theme == \"dark\"\n",
+        "  end\n"
+      ],
+      "app/controllers/profiles_controller.rb" => [
+        "class ProfilesController\n",
+        "  def show\n",
+        "    @theme = @profile.settings[:theme]\n",
+        "    @keys = @profile.settings.keys\n",
+        "  end\n"
+      ]
+    }
+    located = [entry(subject: "json and hstore columns", path: "app/models/profile.rb", line: 2,
+      text: "  store_accessor :settings, :theme")]
+
+    found = Rewrites.survey([{ "subject" => "json and hstore columns" }], tree: tree,
+      located: located).fetch("json and hstore columns")
+
+    assert_equal ["app/controllers/profiles_controller.rb:3"],
+      found.findings.map { |path, line, _| "#{path}:#{line}" },
+      "the accessor call is a method and keeps working; the symbol index into the column does not"
+  end
+
+  def test_a_finding_list_is_bounded_and_says_how_many_it_left_out
+    findings = (1..9).map { |n| ["app/models/item.rb", n, "  where(active: #{n})\n"] }
+    sentence = Rewrites.findings_sentence(findings)
+
+    assert_includes sentence, "app/models/item.rb:1"
+    assert_includes sentence, "app/models/item.rb:5"
+    assert_includes sentence, "and 4 more"
+    refute_includes sentence, "app/models/item.rb:6"
   end
 
   # End to end through the applier: the write is the applier's, so the line re-check, the sealed

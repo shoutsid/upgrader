@@ -137,6 +137,27 @@ module AgentsFyi
       # declared at the top level is installed in production, so `rails-controller-testing` belongs in
       # the block that declares `:test` — and a Gemfile with no such block is left as a decision
       # rather than guessed at.
+      # **A change whose edit is a judgement but whose *evidence* is a fact about the tree.** A rule makes
+      # the edit and a bridge declares a gem; a survey neither — it reads the application and says *where*
+      # the change lands, which is the difference between a residue that says "needs a person" and one
+      # that says "needs a person, and these three lines are why".
+      #
+      # `default_scope` is the case that made this: 4.1 merges a default scope with the conditions a
+      # caller chains rather than letting them override it, so a caller that chains a condition on the
+      # same column reads differently — and rewriting it would be guessing which of `unscope`, `rewhere`
+      # and `unscoped` the application meant. Naming the callers is not guessing, and a survey is where
+      # that difference lives. It makes no edit at all, which is also why a wrong finding here is noise
+      # rather than breakage.
+      #
+      # `read` receives the tree (path → lines, the same shape `apply` takes) and the entries the scan
+      # *located* for the subject, and returns `[path, line, text]` findings.
+      Survey = Struct.new(:subject, :read, :sentence, keyword_init: true)
+
+      # What a survey came back with: the sentence saying what it looked for, and the lines it found. An
+      # empty `findings` is an *observation* — this application has no such line — and the sentence is
+      # what keeps it from reading as a verdict about the change.
+      Found = Struct.new(:sentence, :findings, keyword_init: true)
+
       # **A file that says a bridge applies.** A bridge's usual evidence is a call site the scan located;
       # `sprockets-rails`'s is not, because no pattern in the ladder locates it — the application's own
       # `require "sprockets/railtie"` is the fact, and it is a fact about the tree.
@@ -205,6 +226,98 @@ module AgentsFyi
           evidence: Evidence.new(path: "config/application.rb", pattern: /sprockets\/railtie/,
             why: "config/application.rb requires sprockets/railtie, so this application is still " \
                  "using the asset pipeline"))
+      ].freeze
+
+      # **The surveys, by the subject the ladder and the scan both use.** Each is here because its
+      # change's *fix* is a decision and its *evidence* is a fact: which call sites read differently,
+      # which assignments the new behaviour changes, which alias the deprecation warned about.
+      SURVEYS = [
+        # "A default scope is now merged with the conditions a caller chains, rather than being
+        # overridden by them. A scope that relied on overriding it silently reads differently."
+        #
+        # The evidence is a caller that names the model *or* lives in the model's own file, and chains a
+        # condition on a column the scope constrains — the two halves have to meet, or every `where` in
+        # the application would be a finding. The class name comes from the located declaration's own
+        # file, because a scope is declared inside the class it scopes.
+        Survey.new(subject: "default_scope",
+          sentence: "the callers that chain a condition on the same column, and so read differently",
+          read: lambda do |tree, located|
+            columns = located.flat_map { |entry| Rewrites.scope_columns(entry["text"].to_s) }.uniq
+            file = located.first&.[]("path")
+            model = tree[file].to_a.filter_map { |line| line[/\Aclass\s+(\w+)/, 1] }.first
+            next [] if columns.empty? || model.nil?
+
+            declared = located.map { |entry| [entry["path"], entry["line"].to_i] }
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next if declared.include?([path, index + 1])
+                next unless path == file || line.match?(/\b#{Regexp.escape(model)}\b/)
+                next if Rewrites.scope_columns(line).none? { |column| columns.include?(column) }
+
+                [path, index + 1, line]
+              end
+            end
+          end),
+
+        # "Assigning to the collection replaces the attachments instead of appending to them, which
+        # matches how a has_many association behaves. `attach` is what adds without replacing."
+        Survey.new(subject: "has_many_attached assignment",
+          sentence: "the lines that assign to the collection, where `attach` is what adds without " \
+                    "replacing",
+          read: lambda do |tree, located|
+            names = located.flat_map { |entry| entry["text"].to_s.scan(/has_many_attached\s+:(\w+)/).flatten }.uniq
+            next [] if names.empty?
+
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next if names.none? { |name| line.match?(/\.#{Regexp.escape(name)}\s*=(?!=)/) }
+
+                [path, index + 1, line]
+              end
+            end
+          end),
+
+        # "These columns now map to a string-keyed Hash rather than a HashWithIndifferentAccess, so
+        # symbol access stops working — including store_accessors built on them."
+        #
+        # The accessors `store_accessor` defines are *methods* and are unaffected; what stops working is
+        # indexing into the column with a symbol, so the evidence is a line that does exactly that.
+        Survey.new(subject: "json and hstore columns",
+          sentence: "the lines that index into the column with a symbol, which is what stops working",
+          read: lambda do |tree, located|
+            columns = located.flat_map { |entry| entry["text"].to_s.scan(/store_accessor\s+:(\w+)/).flatten }.uniq
+            next [] if columns.empty?
+
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next if columns.none? { |column| line.match?(/\b#{Regexp.escape(column)}\s*\[\s*:\w+/) }
+
+                [path, index + 1, line]
+              end
+            end
+          end),
+
+        # "It bypasses a custom method defined on the original attribute and reads the column directly,
+        # where it used to call through. This was a deprecation warning in 7.1, so the warning is the
+        # list of places to check."
+        #
+        # The list *is* the evidence, and it is one question per alias: does the file define the method
+        # the alias names?
+        Survey.new(subject: "alias_attribute",
+          sentence: "the aliases whose original attribute this file defines itself — the list the " \
+                    "deprecation warning pointed at",
+          read: lambda do |tree, located|
+            located.filter_map do |entry|
+              original = entry["text"].to_s[/alias_attribute\s+:\w+\s*,\s*:(\w+)/, 1]
+              lines = tree[entry["path"]].to_a
+              next nil if original.nil?
+
+              index = lines.index { |line| line.match?(/\bdef\s+#{Regexp.escape(original)}\b/) }
+              next nil if index.nil?
+
+              [entry["path"], index + 1, lines[index]]
+            end
+          end)
       ].freeze
 
       Result = Struct.new(:edits, :applied, :left, :scaffolds, keyword_init: true) do
@@ -1017,14 +1130,46 @@ module AgentsFyi
         end
       end
 
+      # **What the surveys found**, by subject, for the changes this rung carries. A survey with nothing
+      # to read for a subject is asked nothing, and a subject no survey names has no entry — which is
+      # what makes "no survey" and "a survey that found nothing" different things in the residue.
+      def self.survey(changes, tree:, located: [], surveys: SURVEYS)
+        subjects = Array(changes).map { |change| change["subject"].to_s }
+        surveys.select { |survey| subjects.include?(survey.subject) }.to_h do |survey|
+          entries = Array(located).select { |entry| entry["subject"].to_s == survey.subject }
+          [survey.subject, Found.new(sentence: survey.sentence,
+            findings: survey.read.call(tree, entries).uniq)]
+        end
+      end
+
+      # What a survey's findings read as in a decision's reason: the paths and lines, with the first few
+      # lines of code beside them, because a reviewer should not have to open three files to see whether
+      # a finding is real. Bounded — a residue is read, not paged.
+      SURVEY_SHOWN = 5
+      def self.findings_sentence(findings)
+        shown = findings.first(SURVEY_SHOWN).map { |path, line, text| "#{path}:#{line} `#{text.strip}`" }
+        shown << "and #{findings.size - SURVEY_SHOWN} more" if findings.size > SURVEY_SHOWN
+        shown.join(", ")
+      end
+
+      # The columns a `where(...)`-shaped condition constrains. Both spellings the ladder's own detect
+      # pattern accepts are read — `where(active: true)` and `where(:active => true)` — because a survey
+      # that knew one would report half the call sites. A key *inside* a nested hash reads as a column
+      # here, and that is a false positive the survey can afford: it reports rather than edits, and the
+      # cost of one is a line a person looks at rather than a line a machine rewrites.
+      def self.scope_columns(text)
+        text.scan(/[({,]\s*:?(\w+)\s*(?::|=>)/).flatten.uniq
+      end
+
       # The rules that name no change in the rung's own plan: a rule that outlives its change is dead
       # weight, and a walker that kept applying it would be editing code for a change the ladder no
-      # longer documents. A bridge is the same claim about a gem, so it is reported the same way.
-      # Reported rather than removed, because removing one is a decision about this file rather than
-      # about a rung.
-      def self.inert(changes, rules: RULES, bridges: BRIDGES)
+      # longer documents. A bridge is the same claim about a gem and a survey the same claim about a
+      # reader, so all three are reported the same way. Reported rather than removed, because removing
+      # one is a decision about this file rather than about a rung.
+      def self.inert(changes, rules: RULES, bridges: BRIDGES, surveys: SURVEYS)
         subjects = Array(changes).map { |change| change["subject"].to_s }
-        (rules.map(&:subject) + bridges.map(&:subject)).uniq.reject { |subject| subjects.include?(subject) }
+        (rules.map(&:subject) + bridges.map(&:subject) + surveys.map(&:subject)).uniq
+          .reject { |subject| subjects.include?(subject) }
       end
 
       # **What would close this change's gap**, for the residue to carry. A change a rule covers needs

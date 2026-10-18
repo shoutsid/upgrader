@@ -155,12 +155,20 @@ The pipeline has three stages that make the rest mean anything:
    `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
    `option_renamed`, `call_unwrapped`), so the next lighthouse writes an instance of
    an existing family, and every change no rule covers carries a **gap** saying what
-   would close it — the residue is a queue with reasons, not a list. A rule may also need
+   would close it — the residue is a queue with reasons, not a list. A change whose fix
+   is a *judgement* rather than an edit gets a **survey** instead: it reads the
+   application and names the lines the decision is about (which callers of a
+   `default_scope` read differently, which lines assign to a `has_many_attached`
+   collection, which aliases shadow a method the file defines), and the evidence travels
+   in the decision, so "none found" is a sentence a reader gets rather than silence.
+   A rule may also need
    a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class
    does), and the step writes it before the suite runs. A change whose note's own replacement
    is a **gem** is handled by a declaration rather than by an edit — the call sites keep
    working — and the gem goes inside the block that names its group, because a test-only gem
-   declared at the top level is installed in production. `docs/upgrades.md` has the policy.
+   declared at the top level is installed in production; such a *bridge* is selected by what
+   the scan located, by the rung itself when `app:update` is what will write the evidence
+   (`bootsnap`), or by a file in the tree (`sprockets-rails`). `docs/upgrades.md` has the policy.
 7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer

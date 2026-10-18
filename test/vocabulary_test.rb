@@ -40,7 +40,8 @@ class VocabularyTest < Minitest::Test
 
     assert_operator subjects.size, :>=, 95, "the ladder stopped being read, so this proves nothing"
     rewrites = AgentsFyi::Upgrader::Rewrites
-    named = rewrites::RULES.map(&:subject) + rewrites::GAPS.keys + rewrites::PARTIAL.keys
+    named = rewrites::RULES.map(&:subject) + rewrites::GAPS.keys + rewrites::PARTIAL.keys +
+            rewrites::SURVEYS.map(&:subject)
     assert_empty named.uniq - subjects,
       "a rule or gap names a change the ladder does not carry, so it can never be reached"
     assert_empty rewrites.inert(changes), "a rule outlives the change it belongs to"

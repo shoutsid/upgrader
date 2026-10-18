@@ -1349,6 +1349,58 @@ class StepTest < Minitest::Test
     assert_equal ["sprockets-rails"], record.decisions.map(&:subject)
   end
 
+  # **The survey's evidence travels in the decision**, which is where a person reads it. `default_scope`
+  # is the case the survey mechanism was built for: the edit is a judgement — `unscope`, `rewhere` and
+  # `unscoped` are three different intentions — and the *evidence* is a fact about the tree. So the
+  # residue names the lines rather than saying "needs a person" and stopping.
+  def test_a_survey_puts_the_lines_that_read_differently_into_the_decision
+    dir = track(app)
+    with_source(dir, "app/models/item.rb",
+      "class Item < ApplicationRecord\n  default_scope { where(active: true) }\nend\n")
+    with_source(dir, "app/controllers/items_controller.rb",
+      "class ItemsController\n  def index\n    @items = Item.where(active: false)\n  end\nend\n")
+    located = { "path" => "app/models/item.rb", "line" => 2,
+                "text" => "  default_scope { where(active: true) }", "after" => nil,
+                "subject" => "default_scope", "kind" => "changed",
+                "replacement" => nil, "source" => "4.1", "note" => "merged rather than overridden",
+                "automatic" => false }
+    payload = plan(changes: [change(subject: "default_scope", kind: "changed", source: "4.1",
+      replacement: nil, note: "merged rather than overridden")])
+
+    record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    decision = record.decisions.find { |candidate| candidate.subject == "default_scope" }
+    refute_nil decision, "nothing edits a default scope, so it is still a decision"
+    assert_includes decision.reason, "this application: the callers that chain a condition on the same"
+    assert_includes decision.reason, "app/controllers/items_controller.rb:3"
+    assert_includes decision.reason, "Item.where(active: false)"
+    refute_includes decision.reason, "app/models/item.rb:2",
+      "the declaration is not a caller of itself"
+  end
+
+  # And an application with no such caller says so — the sentence a person needs in order to know the
+  # question was asked, which is the difference between "none found" and "nobody looked".
+  def test_a_survey_that_finds_nothing_says_the_question_was_asked
+    dir = track(app)
+    with_source(dir, "app/models/item.rb",
+      "class Item < ApplicationRecord\n  default_scope { where(active: true) }\nend\n")
+    located = { "path" => "app/models/item.rb", "line" => 2,
+                "text" => "  default_scope { where(active: true) }", "after" => nil,
+                "subject" => "default_scope", "kind" => "changed",
+                "replacement" => nil, "source" => "4.1", "note" => "merged rather than overridden",
+                "automatic" => false }
+    payload = plan(changes: [change(subject: "default_scope", kind: "changed", source: "4.1",
+      replacement: nil, note: "merged rather than overridden")])
+
+    record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    decision = record.decisions.find { |candidate| candidate.subject == "default_scope" }
+    assert_includes decision.reason, "this application: the callers that chain a condition"
+    assert_includes decision.reason, "none found"
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision
