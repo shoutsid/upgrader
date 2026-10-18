@@ -1023,6 +1023,65 @@ class RewritesTest < Minitest::Test
     assert_equal ["db/schema.rb:3"], found.findings.map { |path, line, _| "#{path}:#{line}" }
   end
 
+  # **Two surveys that join a declaration to the lines it affects.** `serialize`'s declarations name the
+  # attributes and the *assignment* is what changed, so the survey joins the two; `ActiveModel::Error`
+  # has no detect at all, so the survey reads the tree for the calls the note names — and `errors.add` is
+  # deliberately not one of them, because adding an error is the same call it always was.
+  def test_the_serialize_and_errors_surveys_join_a_declaration_to_the_lines_it_affects
+    tree = {
+      "app/models/report.rb" => [
+        "class Report < ApplicationRecord\n",
+        "  serialize :payload, JSON\n",
+        "  def clear!\n",
+        "    self.payload = nil\n",
+        "  end\n",
+        "end\n"
+      ],
+      "app/models/thing.rb" => [
+        "class Thing < ApplicationRecord\n",
+        "  validate :sane\n",
+        "  def sane\n",
+        "    errors.add(:name, :blank) if name.blank?\n",
+        "    errors[:name].any? && errors.each { |e| e.message }\n",
+        "  end\n",
+        "end\n"
+      ]
+    }
+    located = [entry(subject: "serialize", path: "app/models/report.rb", line: 2,
+      text: "  serialize :payload, JSON")]
+
+    serialized = Rewrites.survey([{ "subject" => "serialize" }], tree: tree, located: located)
+      .fetch("serialize")
+    assert_equal ["app/models/report.rb:4"],
+      serialized.findings.map { |path, line, _| "#{path}:#{line}" }
+
+    errors = Rewrites.survey([{ "subject" => "ActiveModel::Error" }], tree: tree, located: [])
+      .fetch("ActiveModel::Error")
+    assert_equal ["app/models/thing.rb:5"], errors.findings.map { |path, line, _| "#{path}:#{line}" },
+      "`errors.add` is the call it always was, and the collection reads are what changed"
+  end
+
+  # **A processor is a deployment's choice**, so the survey names the call sites whose options differ and
+  # says whether a processor has been chosen — the same shape as `force_ssl`, and the reason neither is a
+  # rule: rewriting the option names is only right once the processor is known.
+  def test_the_variant_survey_names_the_call_sites_and_the_processor_setting
+    tree = { "config/application.rb" => [
+      "module Myapp\n", "  class Application < Rails::Application\n",
+      "    config.active_storage.variant_processor = :mini_magick\n"
+    ] }
+    located = [entry(subject: "Active Storage variant processor", path: "app/views/posts/show.html.erb",
+      line: 3, text: "  <%= image_tag post.photo.variant(resize: \"300x300\") %>")]
+
+    found = Rewrites.survey([{ "subject" => "Active Storage variant processor" }], tree: tree,
+      located: located).fetch("Active Storage variant processor")
+    assert_includes Rewrites.findings_sentence(found.findings),
+      "variant_processor is set in config/application.rb"
+
+    without = Rewrites.survey([{ "subject" => "Active Storage variant processor" }], tree: {}, located: located)
+      .fetch("Active Storage variant processor")
+    assert_includes Rewrites.findings_sentence(without.findings), "takes the new default"
+  end
+
   def test_a_finding_list_is_bounded_and_says_how_many_it_left_out
     findings = (1..9).map { |n| ["app/models/item.rb", n, "  where(active: #{n})\n"] }
     sentence = Rewrites.findings_sentence(findings)

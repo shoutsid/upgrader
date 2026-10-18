@@ -547,6 +547,67 @@ module AgentsFyi
                 [path, index + 1, line]
               end
             end
+          end),
+
+        # "Assigning nil to a serialized attribute now stores NULL rather than passing nil through the
+        # coder — `\"null\"` under the JSON coder. A query that compared against the encoded form changes."
+        #
+        # The declarations name the attributes and the *assignment* is what changed, so the survey joins
+        # the two: the attribute names come from the located declaration, and the findings are the lines
+        # that assign nil to one of them. No such line is an answer too — it is the one a person wants.
+        Survey.new(subject: "serialize",
+          sentence: "the lines that assign nil to a serialized attribute, which is what now stores NULL",
+          read: lambda do |tree, located|
+            names = located.flat_map { |entry| entry["text"].to_s.scan(/serialize\s+:(\w+)/).flatten }.uniq
+            next [] if names.empty?
+
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next unless names.any? { |name| line.match?(/\b#{Regexp.escape(name)}\s*=\s*nil\b/) }
+
+                [path, index + 1, line]
+              end
+            end
+          end),
+
+        # "Errors are instances of ActiveModel::Error with a changed API, so code that manipulates the
+        # errors collection needs a read of its own."
+        #
+        # There is no detect for this change at all, so the survey reads the tree for the calls the note
+        # names — and `errors.add` is deliberately not one of them: adding an error is the same call it
+        # always was, while indexing and iterating the collection now yield different objects.
+        Survey.new(subject: "ActiveModel::Error",
+          sentence: "the lines that read the errors collection, which is what the new class changes",
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next unless line.match?(/\berrors\s*(?:\[|\.(?:each|to_hash|messages|details|map|select|first)\b)/)
+
+                [path, index + 1, line]
+              end
+            end
+          end),
+
+        # "New applications default to libvips, and the option names are vips' rather than ImageMagick's:
+        # resize becomes resize_to_limit, crop takes an array, monochrome becomes colourspace. Variant URLs
+        # encode the transformations, so a cached URL has to be invalidated when the options change."
+        #
+        # **Which processor the deployment runs is a decision**, so the survey does not rewrite the option
+        # names: it names the call sites whose options differ and says whether a processor has been chosen
+        # — the same shape as `force_ssl`.
+        Survey.new(subject: "Active Storage variant processor",
+          sentence: "the `variant` call sites, and whether config.active_storage.variant_processor is set",
+          read: lambda do |tree, located|
+            chosen = tree.select { |_path, lines| lines.any? { |line| line.match?(/\bvariant_processor\b/) } }
+            beside =
+              if chosen.empty?
+                "variant_processor is not set anywhere, so the deployment takes the new default"
+              else
+                "variant_processor is set in #{chosen.keys.sort.join(", ")}"
+              end
+            located.map do |entry|
+              [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
+            end
           end)
       ].freeze
 
