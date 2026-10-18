@@ -1193,7 +1193,8 @@ module AgentsFyi
         # means one thing everywhere.
         named = rule_sources
         tree = file_lines(files).merge(named)
-        rules = Rewrites.apply(manual, files: tree, sources: named, changes: step["changes"] || [])
+        rules = Rewrites.apply(manual, files: tree, sources: named, changes: step["changes"] || [],
+          rung: step["to_version"])
         inert = Rewrites.inert(step["changes"] || [])
         # **What the surveys found, before the decisions are built** — the evidence travels *in* the
         # decision rather than beside it, because a residue read one line at a time is what a person

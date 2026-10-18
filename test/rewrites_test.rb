@@ -383,6 +383,47 @@ class RewritesTest < Minitest::Test
       "the rule rewrote a fixture: #{result.edits.map { |edit| edit["after"] }.inspect}"
   end
 
+  # **A request helper's whole trailing list was the params hash, and 5.1 moves it under `params:`.**
+  # Shape and refusals both: measured on the lighthouse, 48 call sites in `spec/` and `test/` are of this
+  # shape, and 17 of its 201 examples fail on `ArgumentError: unknown keyword: category_id` without it.
+  def test_a_request_helpers_arguments_move_under_params
+    lines = [
+      "      get :index, category_id: @category",
+      "        post :create, item_id: @item, bid: { amount: 200 }, category_id: @category",
+      "      get :index",
+      "      get :index, params: { category_id: 1 }",
+      "      post :create, { item: 1 }, { user_id: 1 }"
+    ]
+    entries = lines.each_with_index.map do |text, index|
+      entry(subject: "test request helpers take `params:`", text: text,
+        path: "spec/controllers/x_spec.rb", line: index + 1)
+    end
+
+    result = Rewrites.apply(entries, rung: "5.1.0")
+
+    assert_equal [
+      "      get :index, params: { category_id: @category }",
+      "        post :create, params: { item_id: @item, bid: { amount: 200 }, category_id: @category }"
+    ], result.edits.map { |edit| edit["after"] }
+    assert_equal 3, result.left.size + result.satisfied.size,
+      "the no-argument call, the moved one and the positional pair are not this edit"
+  end
+
+  # **A rule the ladder does not document states its own rung, and the gate is the safety.** The ladder
+  # is the service's documented half and its recordings are frozen, so a change the guide's chapter omits
+  # has no rung for the plan to gate — and Rails 4 reads `get :index, params: { … }` as a parameter named
+  # `params`, so applying this below 5.1 would break the suite it exists to keep green.
+  def test_a_rule_with_a_rung_does_not_apply_below_it
+    entry = entry(subject: "test request helpers take `params:`",
+      text: "      get :index, category_id: @category", path: "spec/controllers/x_spec.rb")
+
+    below = Rewrites.apply([entry], rung: "5.0.0")
+    at = Rewrites.apply([entry], rung: "5.1.0")
+
+    assert_empty below.edits, "the rule applied at 5.0: #{below.edits.inspect}"
+    assert_equal 1, at.edits.size
+  end
+
   # The rule degrades to the unconditional one when it cannot read the file, because the edit it makes
   # is the behaviour-preserving one either way — and refusing everything it could not read would leave
   # an association to fail validation silently, which is the note's own warning.

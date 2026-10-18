@@ -34,17 +34,29 @@ class VocabularyTest < Minitest::Test
   # the same way and more quietly: it falls back to the generic sentence, so the specific reason
   # somebody wrote is never read. This is the same class of failure as the two vocabularies above, one
   # layer up: the ladder is the service's, and this tool has to agree with it.
+  #
+  # **A rule the ladder cannot carry has to say how it is reachable instead**, and that is exactly two
+  # fields. `file:` makes it reachable — the rule reads the application for its own call sites rather
+  # than waiting for the scan to locate them — and `rung:` keeps it off the rungs before its change,
+  # because no plan entry says when it belongs. A rule with one and not the other is unreachable
+  # (`file:` absent) or unsafe (`rung:` absent), which is what an exception granted wholesale would
+  # have hidden.
   def test_every_rule_and_gap_names_a_change_the_ladder_carries
     changes = JSON.parse(File.read(LADDER))["steps"].flat_map { |step| step["changes"] }
     subjects = changes.map { |change| change["subject"] }
 
     assert_operator subjects.size, :>=, 95, "the ladder stopped being read, so this proves nothing"
     rewrites = AgentsFyi::Upgrader::Rewrites
+    rewrites::RULES.reject { |rule| subjects.include?(rule.subject) }.each do |rule|
+      assert rule.file, "#{rule.subject.inspect} is not a ladder change and reads no file of its own"
+      assert rule.rung, "#{rule.subject.inspect} is not a ladder change and names no rung of its own"
+    end
+    self_sourced = rewrites::RULES.select { |rule| rule.file && rule.rung }.map(&:subject)
     named = rewrites::RULES.map(&:subject) + rewrites::GAPS.keys + rewrites::PARTIAL.keys +
             rewrites::SURVEYS.map(&:subject)
-    assert_empty named.uniq - subjects,
+    assert_empty (named.uniq - subjects) - self_sourced,
       "a rule or gap names a change the ladder does not carry, so it can never be reached"
-    assert_empty rewrites.inert(changes), "a rule outlives the change it belongs to"
+    assert_empty rewrites.inert(changes) - self_sourced, "a rule outlives the change it belongs to"
   end
 
   # **The other direction, and it is the one the residue is judged by: every carried change is

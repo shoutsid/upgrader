@@ -80,7 +80,7 @@ module AgentsFyi
       #   made", and it is a field rather than a trick inside each pattern because it is the same
       #   question every appending rule asks.
       Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already, :file,
-        :all, keyword_init: true) do
+        :all, :rung, keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
@@ -1111,6 +1111,33 @@ module AgentsFyi
           replace: "\\k<open>\\k<call>#{option}\\k<close>")
       end
 
+      # **A call's trailing argument list moves under one keyword.** Rails 5.1 removed the positional
+      # hash from the test request helpers: `ActionController::TestCase#process` and
+      # `ActionDispatch::IntegrationTest#process` now take `params:`, `session:`, `flash:`, `body:`,
+      # `xhr:`, `format:` and `as:` as keywords — actionpack-5.1.0's own CHANGELOG, "Remove deprecated
+      # support to non-keyword arguments in `ActionController::TestCase#process`" — so
+      # `get :index, category_id: @item.category` is `ArgumentError: unknown keyword: category_id` and
+      # 17 of the lighthouse's 201 examples fail on it. The whole trailing list *was* the params hash, so
+      # it moves under the key unchanged: the edit wraps text, which is why it needs no brace matching.
+      #
+      # Four refusals, each a line that does not say what the edit would claim:
+      #
+      # * the call already names the keyword — somebody has moved it, and this is the same predicate
+      #   `satisfied` reports, so the line is not left as a decision either;
+      # * nothing follows the action — there is no list to move;
+      # * the list does not begin with a keyword pair — `post :create, { item: … }` is the *positional*
+      #   form, whose first argument is the params hash and whose second may be the session;
+      # * a second positional hash follows a comma (`… , { user_id: 1 }`, the same form one argument
+      #   further in) — wrapping it would put a bare hash inside the params hash.
+      def self.arguments_keyed(subject:, calls:, keyword:, file: nil, rung: nil)
+        names = Array(calls).map { |call| Regexp.escape(call) }.join("|")
+        Rule.new(family: :arguments_keyed, subject: subject, file: file, rung: rung,
+          already: /\b#{Regexp.escape(keyword)}:/,
+          pattern: Regexp.new("\\A(?<lead>\\s*)(?<call>(?:#{names})\\s+:[a-z_]\\w*\\s*,\\s*)" \
+                              "(?!.*,\\s*\\{)(?<args>[a-z_]\\w*:.*?)(?<tail>\\s*)\\z"),
+          replace: "\\k<lead>\\k<call>#{keyword}: { \\k<args> }\\k<tail>")
+      end
+
       # **The two ends of an ERB tag.** A rule whose pattern is anchored at `\A` and `\z` is saying "the
       # whole line is this statement", and in a template the statement is wrapped — so a family that
       # anchors has to know the wrapper or it matches nothing in a `.erb` file at all. That is measured
@@ -1752,7 +1779,21 @@ module AgentsFyi
               path.end_with?("config/secrets.yml") &&
                 lines.any? { |line| line.match?(/secret_key_base:.*ENV\[\s*["']#{Regexp.escape(name)}["']/) }
             end
-          end)
+          end),
+
+        # **A change the guide does not name, which the rung's own suite finds.** Rails 5.1 removed the
+        # positional hash from the test request helpers, and the guide's 5.1 chapter does not mention it —
+        # so the ladder cannot carry it: measured, the lighthouse's 5.1 rung died on 17 of 201 examples
+        # with `ArgumentError: unknown keyword: category_id` while the residue named nothing about it.
+        # The application has 54 call sites, all of one shape, in `spec/` and `test/`.
+        #
+        # **`rung:` is the gate, and for this rule the gate is the whole safety.** A rule's rung normally
+        # comes from the plan — the ladder says when a change belongs — and a rule with no plan entry has
+        # nothing to gate it: `get :index, params: { … }` is a call Rails 4 passes as a *parameter* named
+        # `params`, so applying this at 4.1 would break the suite it exists to keep green.
+        arguments_keyed(subject: "test request helpers take `params:`",
+          calls: %w[get post patch put delete head], keyword: "params",
+          file: "{spec,test}/**/*.rb", rung: "5.1.0")
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
@@ -1761,7 +1802,24 @@ module AgentsFyi
       #
       # `files` is what a rule that reads more than its own line gets (`Rule#context`), by path, from
       # the same read the scan used — so a rule and the service are looking at the same bytes.
-      def self.apply(manual, rules: RULES, files: {}, sources: {}, changes: [])
+      # **A rule with a `rung` applies only at or above it.** `Gem::Version` does the comparing because
+      # these are Rails releases and `"5.10.0" < "5.2.0"` as strings; an unparseable version is a refusal
+      # rather than a default, since the rule is the thing that would be wrong.
+      def self.rung_reached?(required, target)
+        return true if required.to_s.empty?
+        return false if target.to_s.empty?
+
+        Gem::Version.new(target.to_s) >= Gem::Version.new(required.to_s)
+      rescue ArgumentError
+        false
+      end
+
+      def self.apply(manual, rules: RULES, files: {}, sources: {}, changes: [], rung: nil)
+        # **A rule with a rung applies only when the caller names a target at or above it.** The plan is
+        # what normally gates a rule (the ladder says when a change belongs); a rule the ladder does not
+        # document states its own rung, and without it the rule would rewrite lines at every earlier rung
+        # too — `get :index, params: { … }` is a call Rails 4 reads as a parameter named `params`.
+        rules = rules.select { |rule| rung_reached?(rule.rung, rung) }
         # **A subject may have more than one rule, and the first that matches wins.** `MultiJson` is
         # two edits (`dump` and `load`), and a lookup that kept only the last one silently dropped
         # half of it — measured by this file's own test, which is why the rules are grouped rather
