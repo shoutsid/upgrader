@@ -1210,7 +1210,7 @@ module AgentsFyi
         declared, bridged = declare_bridges(
           Rewrites.bridges(manual, changes: step["changes"] || [], tree: bridge_evidence)
         )
-        handled = rules.applied + bridged
+        handled = rules.applied + bridged + bridges_the_gemfile_answers
         decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
           handled.include?(decision.subject.to_s)
         end
@@ -1385,6 +1385,41 @@ module AgentsFyi
         end
         File.binwrite(path, lines.join("\n")) if repairs.any?
         [repairs, handled.uniq]
+      end
+
+      # **A bridge the working copy's Gemfile already carries answers its change, whatever rung the scan
+      # found the call site at.** `declare_bridges` runs only for the changes *this step* carries,
+      # because declaring a gem is an edit made for this rung's move; but the scan starts at the
+      # ladder's `earliest`, so an earlier rung's call sites arrive as decisions — and a change whose
+      # whole fix is a name the Gemfile holds has been answered. Nothing about the line can say so: the
+      # call site is *supposed* to still read `assigns`. Measured at the 5.1 rung, where the 5.0 rung's
+      # `rails-controller-testing` bridge was already in the test group and the scan's 19
+      # `assigns`/`assert_template` call sites came back as located decisions whose reason said they
+      # were "still in its old form" — 19 decisions that asked a person to do work already done.
+      #
+      # A floor is excluded, and that is `declare_bridges`' own rule read from the other side: a floor's
+      # work is the *version* on the line, so a declared `gem "spring"` is not answered by its name and
+      # stays a decision, which is exactly what that method does with it.
+      def bridges_the_gemfile_answers
+        declared = declared_gems
+        Rewrites::BRIDGES.select do |bridge|
+          bridge.floor.nil? && bridge.gems.all? { |gem| declared.include?(gem) }
+        end.map(&:subject)
+      end
+
+      # The gem names the working copy's Gemfile declares.
+      def declared_gems
+        path = working_copy_gemfile
+        return [] unless File.file?(path)
+
+        gem_names(File.binread(path))
+      end
+
+      # Every gem name a `gem` line declares. Read rather than parsed, for the same reason
+      # `declaration_requirement` is: the shape of a line is the application's, and the only question
+      # here is which names the file holds.
+      def gem_names(text)
+        text.to_s.scan(/^\s*gem\s+["']([^"']+)["']/).flatten
       end
 
       # The Gemfile this step declares into.
@@ -1728,7 +1763,7 @@ module AgentsFyi
       # `platforms:`, `group:`) and `capistrano` carries one. So the hold is only for the gems the
       # Gemfile does not mention.
       def undeclared(held, gemfile_text)
-        declared = gemfile_text.scan(/^\s*gem\s+["']([^"']+)["']/).flatten
+        declared = gem_names(gemfile_text)
         held.reject { |name, _| declared.include?(name) }
       end
 

@@ -157,6 +157,18 @@ class StepMachineTest < Minitest::Test
     def ladder = { "earliest" => "4.2.11", "top" => "8.1.0", "steps" => [] }
   end
 
+  # A plan that does not carry the change and a scan that locates its call site — the shape the 5.1
+  # rung had for `assigns`/`assert_template`, whose bridge the rung that arrived at 5.0 had already
+  # declared into the application's Gemfile.
+  class EarlierRungCorpus < FakeCorpus
+    def scan(from:, to:, files:)
+      { "edits" => [],
+        "manual" => [{ "subject" => "assigns / assert_template", "path" => "spec/x_spec.rb", "line" => 3,
+                       "note" => "`assigns` moved out of the framework", "kind" => "moved" }],
+        "counts" => { "automatic" => 0, "manual" => 1 }, "next_step" => "one call site" }
+    end
+  end
+
   class FakeTests
     attr_reader :machines
 
@@ -537,6 +549,41 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
       "the lock moved it and the residue still asks for it: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A bridge the Gemfile already carries answers its change, whatever rung the scan found the call
+  # site at.** Measured at the 5.1 rung: the plan no longer names `assigns`/`assert_template` — the
+  # rung that arrived at 5.0 declared `rails-controller-testing` for it — but the scan starts at the
+  # ladder's `earliest`, so its 19 call sites came back as located decisions whose reason said they
+  # were "still in its old form". Nothing about the line can say otherwise: the call site is
+  # *supposed* to still read `assigns`, which is what the declaration is for.
+  def test_a_bridge_the_gemfile_already_carries_answers_an_earlier_rungs_call_site
+    gemfile = <<~GEMFILE
+      source "https://rubygems.org"
+      gem "rails", "4.0.0.rc1"
+
+      group :test do
+        gem "rails-controller-testing"
+      end
+    GEMFILE
+    dir = app(gemfile: gemfile)
+
+    record = step(dir, machines: machines, corpus: EarlierRungCorpus.new).run
+
+    refute record.decisions.any? { |decision| decision.subject.to_s == "assigns / assert_template" },
+      "the Gemfile declares the gem and the residue still asks: " \
+      "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # The boundary, in the other direction: the same call site and the same plan, with a Gemfile that
+  # does not declare the gem, is work — and it stays a decision.
+  def test_a_bridge_the_gemfile_does_not_carry_is_still_a_decision
+    dir = app
+
+    record = step(dir, machines: machines, corpus: EarlierRungCorpus.new).run
+
+    assert(record.decisions.any? { |decision| decision.subject.to_s == "assigns / assert_template" },
+      "the gem is absent and the call site was dropped: #{record.decisions.map(&:subject).inspect}")
   end
 
   # **A gem's own upgrade is not finished when its Gemfile line is.** Measured at the 5.0 rung: the
