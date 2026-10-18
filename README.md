@@ -272,6 +272,16 @@ era is its own container, described by a matrix rather than by code:
   and a service on a Docker network is not localhost — so nothing about the application's
   configuration has to be edited to make its suite run), a compiler and the usual `-dev`
   headers for native gems, ImageMagick, Node for `execjs`, and a fresh CA bundle.
+* **Each image also replaces `install`.** Docker Desktop's bind mounts refuse the `chmod` that
+  `install -c -m` performs on a file of a few megabytes, and that is the shape of every native
+  extension a gem's build installs: measured on the lighthouse's 6.0 rung, `make install` building
+  `sassc` (which `sass-rails 6` brings in) died on `setting permissions for
+  '.gem.…/sassc/libsass.so': Operation not permitted`, while a three-byte file in the same directory
+  installed cleanly and `cp` plus `chmod` on the same 3.2 MB file succeeded. The command is mkmf's,
+  taken from `RbConfig`, so the walker cannot configure it away — and a rung whose bundle cannot be
+  installed is `unverified` rather than walked. `images/install.rb` is the real binary whenever the
+  real binary works and the same operation done with `cp` and `chmod` when it does not; nothing else
+  about the calling convention changes, and `test/install_test.rb` drives the file as a program.
 
 **Selection is probed, not declared.** `Interpreters.candidates` orders the eras that meet
 the step's floor — starting from the interpreter the application's own `ruby` line or

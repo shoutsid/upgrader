@@ -111,6 +111,18 @@ RUN gem install bundler -v "$BUNDLER" --no-document
 # and both carry the failure that found each of their paragraphs.
 COPY services.sh /usr/local/bin/agents-fyi-services
 COPY start.sh /usr/local/bin/agents-fyi-start
+# **`install` cannot chmod a large file on Docker Desktop's bind mounts, and a gem's build is where
+# that lands.** Measured on the lighthouse's 6.0 rung: `make install` building `sassc` (which
+# `sass-rails 6` brings in) died on `setting permissions for '.gem.…/sassc/libsass.so': Operation not
+# permitted` — for a file of about three megabytes, in a directory where a three-byte file installed
+# cleanly and `cp` plus `chmod` on the same large file succeeded. The command is mkmf's, taken from
+# `RbConfig`, so the walker cannot configure it away — and the whole rung is reported `unverified`
+# when a gem's build fails. `install.rb` is the real binary whenever the real binary works, and the
+# same operation done with `cp` and `chmod` when it does not.
+COPY install.rb /usr/local/bin/agents-fyi-install
+RUN mv /usr/bin/install /usr/bin/install.coreutils \
+    && cp /usr/local/bin/agents-fyi-install /usr/bin/install \
+    && chmod +x /usr/bin/install /usr/bin/install.coreutils
 # The `database.yml` reader is a file of its own rather than a heredoc inside `services.sh`,
 # and the reason is testability: which roles a database needs, and with what password, is a
 # rule — and a rule inside a shell heredoc is a rule no test can run. It is executed by the
