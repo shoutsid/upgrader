@@ -235,6 +235,22 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A routing that answers for a gem whose own upgrade needs edits to the application's code — the
+  # shape the 5.0 rung's rspec-rails move has.
+  class CompanionCorpus < FakeCorpus
+    def route(ruby:, rails:, lockfile:)
+      super.merge(
+        "gems" => [
+          { "name" => "rspec-rails", "version" => "2.14.2", "verdict" => "replace",
+            "replacement" => "rspec-rails", "requirement" => "~> 3.5.0", "mechanical" => false,
+            "note" => "the gem's own code calls what Rails 5 removed" }
+        ],
+        "counts" => { "keep" => 0, "move" => 0, "replace" => 1, "remove" => 0, "blocked" => 0,
+                      "unknown" => 0 }
+      )
+    end
+  end
+
   # A machine whose world is stated by the test: whether it starts, and what it services.
   class FakeMachine
     attr_reader :era, :started, :stopped
@@ -393,6 +409,26 @@ class StepMachineTest < Minitest::Test
   # target") and the walk after the digest grew routed the same components `move`, so they fell
   # through to the branch that asks whether a person has a line to edit — and five *located*
   # decisions appeared for gems whose lines the pin's own `bundle update` names.
+  # **A gem's own upgrade is not finished when its Gemfile line is.** Measured at the 5.0 rung: the
+  # rspec-rails 3 move alone took the lighthouse's suite from 47 failures to 133, because the gem
+  # stopped inferring an example group's type and rspec 3 refuses a negated change matcher with a
+  # delta. The move and the edits its own upgrade needs are one action, so the step makes both.
+  def test_a_gem_move_applies_the_edits_its_own_upgrade_requires
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\ngem "rspec-rails", "~> 2.14.0"\n)
+    dir = app(lockfile: LOCKFILE, gemfile: gemfile)
+    File.write(File.join(dir, "spec", "spec_helper.rb"), "RSpec.configure do |config|\nend\n")
+    File.write(File.join(dir, "spec", "items_spec.rb"),
+      "describe 'items' do\n  it 'adds' do\n    lambda { 1 }.should_not change(Item, :count).by(1)\n  end\nend\n")
+
+    step(dir, machines: machines, corpus: CompanionCorpus.new).run
+
+    assert_includes File.read(File.join(dir, "spec", "spec_helper.rb")),
+      "config.infer_spec_type_from_file_location!",
+      "the rung's failure is the gem's, and the move left the type inference unasked-for"
+    refute_includes File.read(File.join(dir, "spec", "items_spec.rb")), ".by(1)",
+      "rspec 3 refuses a negated change matcher with a delta"
+  end
+
   def test_a_framework_gem_the_pin_moves_is_not_a_decision_when_the_routing_calls_it_a_move
     dir = app(lockfile: FRAMEWORK_LOCK)
 

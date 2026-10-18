@@ -787,10 +787,13 @@ module AgentsFyi
           route.dig("counts", "unknown").to_i.positive?
 
         applied = []
+        companions = []
         route.fetch("gems", []).each do |gem|
           case gem["verdict"]
           when "move"
-            applied << apply_gem_change(gem, step)
+            edit = apply_gem_change(gem, step)
+            applied << edit
+            companions.concat(apply_companions(gem, edit))
           when "replace", "remove"
             # The preflight applies the digest's *mechanical* entries, and it must not apply
             # the others: an entry that can only move once Rails itself has moved is exactly
@@ -801,7 +804,9 @@ module AgentsFyi
             # the move is being made, so it is where that entry belongs.
             next withdraw_decision(gem) if already_applied?(gem)
 
-            applied << apply_gem_change(gem, step)
+            edit = apply_gem_change(gem, step)
+            applied << edit
+            companions.concat(apply_companions(gem, edit))
           when "blocked", "unknown"
             # **A framework gem the pin itself moves is not a decision.** The routing reads recorded
             # facts, and for the framework's own components it has none for the target release — so
@@ -827,10 +832,13 @@ module AgentsFyi
                           heading += " -> #{gem["to"]}" if gem["to"]
                           heading += " -> #{gem["replacement"]} #{gem["requirement"]}" if gem["replacement"]
                           "#{heading}: #{gem["reason"] || gem["note"]}"
-                        } + [route.fetch("next_step", "").to_s]).first(20).join("\n")
+                        } + companion_lines(companions) +
+                        [route.fetch("next_step", "").to_s]).first(20).join("\n")
         )
         @out.puts("  gems: #{route.dig("counts", "move")} move(s), " \
                   "#{route.dig("counts", "unknown")} unknown — #{applied.size} applied") if @out
+        @out.puts("  companions: #{companions.size} edit(s) — #{companions.map(&:subject).uniq.join(", ")}") if
+          @out && !companions.empty?
         applied
       rescue Corpus::Unreachable, Corpus::Refused => e
         stages << Record::Command.new(stage: Record::GEMS, command: "gems: not routed",
@@ -934,6 +942,36 @@ module AgentsFyi
         @applied << edit
         withdraw_decision(gem)
         edit
+      end
+
+      # **The edits a gem's own upgrade needs, once the move has been made.** The companion is keyed by
+      # the line the move declares, and it runs only when `apply_gem_change` actually rewrote the line:
+      # a second walk at the same rung finds the line already moved, so the trigger is the idempotence
+      # guard rather than each rule's own. The edits go through the same applier every other repair
+      # does — line-checked against what the file said when it was read, refused rather than
+      # half-written, and carried into the patch.
+      def apply_companions(gem, edit)
+        return [] if edit.nil?
+
+        requirement = gem["to"].to_s.empty? ? gem["requirement"].to_s : "~> #{gem["to"]}"
+        companion = Companions.for(gem["name"], requirement)
+        return [] if companion.nil?
+
+        edits = Companions.edits(companion, root: @worktree.root)
+        return [] if edits.empty?
+
+        result = @applier.new(@worktree.root).apply(edits.map(&:to_h))
+        @applied.concat(result.applied)
+        result.applied
+      end
+
+      # What the gems stage's tail says about a companion's edits, in the same one-line-per-edit shape
+      # the preflight's repairs use — a change no ladder documents has to be as readable as one that is.
+      def companion_lines(edits)
+        Array(edits).map do |edit|
+          "companion #{edit.path}:#{edit.line} `#{edit.text.to_s.strip}` -> `#{edit.after.to_s.strip}` " \
+            "(#{edit.subject})"
+        end
       end
 
       # The declaration line for a gem, or nil — the preflight's own rule, asked of the same

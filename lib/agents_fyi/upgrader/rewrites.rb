@@ -16,9 +16,12 @@ module AgentsFyi
     # an instance to the change it belongs to — the ladder's own vocabulary, so a rule whose change
     # has left is inert and said to be. The *family* is the shape of the edit (`name_moved`,
     # `option_wrapped`, `line_removed`, `call_replaced`, `finder_moved`, `option_added`,
-    # `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`, `query_materialised`,
-    # `superclass_moved`), and the next lighthouse — a gem's own upgrade, a framework nobody has
-    # walked yet — writes an instance of a family that already exists rather than a new mechanism.
+    # `argument_wrapped`, `argument_dropped`, `block_value`, `value_moved`, `line_replaced`,
+    # `query_materialised`, `superclass_moved`), and the next lighthouse — a gem's own upgrade, a
+    # framework nobody has walked yet — writes an instance of a family that already exists rather
+    # than a new mechanism. A gem-driven edit whose shape is none of those is a
+    # `Companions::Insert` (a line the file does not have yet), which is a question about the file
+    # rather than about the line.
     #
     # **Nothing here is "never".** A change with no rule today is a *gap*, and `gap_for` says what
     # would close it, which is what the record carries into the residue: a queue with reasons rather
@@ -698,8 +701,9 @@ module AgentsFyi
       # one below), because "nobody has looked at this shape yet" is itself information.
       GENERIC_GAP = "no rule yet: either this shape is not one of the families here (name_moved, " \
                     "option_wrapped, line_removed, call_replaced, finder_moved, option_added, " \
-                    "argument_wrapped, block_value, value_moved, line_replaced, query_materialised, " \
-                    "superclass_moved), or the change has no call site to match at all — a config " \
+                    "argument_wrapped, argument_dropped, block_value, value_moved, line_replaced, " \
+                    "query_materialised, superclass_moved), or the change has no call site to match " \
+                    "at all — a config " \
                     "default, a file a generated application has and this one does not. It is carried " \
                     "as a decision either way, and the change's own note is what says which"
 
