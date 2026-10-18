@@ -140,7 +140,7 @@ class StepTest < Minitest::Test
     attr_reader :routes
 
     def initialize(payload: nil, refuse: nil, edits: [], manual: [], migrations: [],
-                   route: nil, routes: nil, route_error: nil)
+                   route: nil, routes: nil, route_error: nil, earliest: nil, ladder_error: nil)
       @payload = payload
       @refuse = refuse
       @edits = edits
@@ -149,8 +149,11 @@ class StepTest < Minitest::Test
       @route = route
       @routes = routes
       @route_error = route_error
+      @earliest = earliest
+      @ladder_error = ladder_error
       @gem_requests = []
       @asked_routes = []
+      @asked_scans = []
     end
 
     # The routing answer, as the service writes it: no moves unless the test says otherwise,
@@ -183,10 +186,23 @@ class StepTest < Minitest::Test
     end
 
     def scan(from:, to:, files:)
+      @asked_scans << [from, to]
       { "edits" => @edits, "manual" => @manual,
         "counts" => { "files" => files.size, "automatic" => @edits.size, "manual" => @manual.size },
         "next_step" => "this window's documented changes are all defaults with no call site" }
     end
+
+    # **The ladder's own bottom, because the scan starts there.** A step asks for a wider window than the
+    # rung it is crossing so that a rule can fix a change the application never made, and the double has to
+    # answer the question the pipeline asks — a double that could not would let the widening be dropped
+    # without a red test.
+    def ladder
+      raise @ladder_error if @ladder_error
+
+      @ladder || { "earliest" => @earliest || "4.2.11", "top" => "8.1.0", "steps" => [] }
+    end
+
+    def asked_scans = @asked_scans
   end
 
   class FakeTests
@@ -1502,6 +1518,41 @@ class StepTest < Minitest::Test
     boot = runner.envs.find { |command, _env| command.include?("Rails.version") }
     refute_nil boot
     assert_equal "test", boot.last["RAILS_ENV"]
+  end
+
+  # **The scan looks below the rung, because an application can be behind the release it declares.** The
+  # lighthouse says 4.0.0.rc1 and still calls `find(:all, conditions: ...)` — a change the ladder documents
+  # for the rung that *arrives at* 4.0, which kept working until 4.1 because Rails 4.0 depended on
+  # `activerecord-deprecated_finders`. The step never asked about that rung, so the suite failed on a change
+  # the residue said nothing about. Three things have to hold, and each is driven here: the window starts at
+  # the ladder's bottom, an entry from an earlier rung says so, and a ladder this client cannot read falls
+  # back to the rung's own window rather than refusing the move.
+  def test_the_scan_looks_below_the_rung_and_says_which_rung_a_call_site_came_from
+    dir = track(app)
+    with_source(dir, "app/models/category.rb",
+      "class Category < ActiveRecord::Base\n  def tech\n    find(:all, conditions: [\"url LIKE ?\", \"tech%\"])\n  end\nend\n")
+    earlier = { "path" => "app/models/category.rb", "line" => 3,
+                "text" => "    find(:all, conditions: [\"url LIKE ?\", \"tech%\"])", "after" => nil,
+                "step" => "4.0.0", "subject" => "find(:all, ...)", "kind" => "removed",
+                "replacement" => "where(...)", "note" => "the old hash-based finder options are gone",
+                "automatic" => false }
+    corpus = FakeCorpus.new(payload: plan, manual: [earlier], earliest: "3.2.0")
+
+    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+
+    assert_equal [["3.2.0", "5.0.0"]], corpus.asked_scans,
+      "the window starts at the ladder's bottom rather than at the application's version"
+    decision = record.decisions.find { |candidate| candidate.subject == "find(:all, ...)" }
+    assert_includes decision.reason, "carried by an earlier rung"
+    assert_includes decision.reason, "the one that arrives at 4.0.0"
+
+    # And a ladder the client cannot read is the rung's window, not a refusal.
+    plain = track(app)
+    with_source(plain, "app/models/item.rb", "class Item < ActiveRecord::Base\nend\n")
+    unreadable = FakeCorpus.new(payload: plan, earliest: "3.2.0",
+      ladder_error: AgentsFyi::Upgrader::Corpus::Refused.new("no ladder"))
+    step(plain, corpus: unreadable, applier: AgentsFyi::Upgrader::Applier).run
+    assert_equal [["4.2.11", "5.0.0"]], unreadable.asked_scans
   end
 
   # A manual call site the plan does not name is the most useful thing a refusal can

@@ -105,6 +105,9 @@ class StepMachineTest < Minitest::Test
       { "edits" => [], "manual" => [], "counts" => { "automatic" => 0, "manual" => 0 },
         "next_step" => "nothing" }
     end
+
+    # The scan's own window starts at the ladder's bottom, so the double answers the ladder.
+    def ladder = { "earliest" => "4.2.11", "top" => "8.1.0", "steps" => [] }
   end
 
   class FakeTests

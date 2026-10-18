@@ -1020,7 +1020,7 @@ module AgentsFyi
         end
 
         corpus = @corpus || Corpus.new(base: @api)
-        scan = corpus.scan(from: step["from_version"], to: step["to_version"], files: files)
+        scan = corpus.scan(from: scan_from(step, corpus), to: step["to_version"], files: files)
         if @out
           @out.puts("  scan: #{scan["counts"].inspect} — #{files.size} file(s) sent")
           # The counts alone read as one thing and mean three: a window whose documented
@@ -1074,6 +1074,32 @@ module AgentsFyi
           output_tail: apply_summary(result, decisions, rules, inert, created, declared)
         )
         [result.applied + declared, result.refused, decisions]
+      end
+
+      # **The scan looks below this rung, and a real walk is why.** An application can declare a release
+      # and never have made the work that release's own rung asked for: the lighthouse says 4.0.0.rc1 and
+      # still calls `find(:all, conditions: ...)`, a change the ladder documents for the rung that *arrives
+      # at* 4.0. It kept working until 4.1 because Rails 4.0 depended on `activerecord-deprecated_finders`,
+      # and at 4.1 that gem is gone — so the suite failed on a change no step had been asked about, and the
+      # residue said nothing, because the change is not in this rung's plan.
+      #
+      # So the window starts at the ladder's own `earliest` rather than at the application's version. The
+      # rules are what make that safe: each one's pattern matches the *old* form, so a rule for a rung the
+      # application has already crossed finds nothing to rewrite, and one it missed finds exactly the line
+      # its note describes. What the wider window must not do is flood the residue, and it does not: an
+      # entry carries the rung that named it, so a decision for an earlier rung says so.
+      def scan_from(step, corpus)
+        ladder = (@ladder ||= corpus.ladder)
+        earliest = ladder["earliest"].to_s
+        return step["from_version"] if earliest.empty?
+
+        earliest
+      rescue Corpus::Refused => e
+        # A ladder this client cannot read is not a reason to refuse the move: the rung's own window is
+        # what the step was asked about, and it is what a service that answers the scan but not the ladder
+        # can still be asked.
+        @out.puts("  scan: the ladder could not be read (#{e.message}), so this rung's window was used") if @out
+        step["from_version"]
       end
 
       # What the apply stage's tail says: the counts, then what this tool's own rules did, then the
@@ -1311,14 +1337,20 @@ module AgentsFyi
         carried = (step["changes"] || []).reject { |change| change["automatic"] }
 
         located = carried.map do |change|
-          decision(change, found[change["subject"].to_s]&.first, evidence: evidence)
+          decision(change, found[change["subject"].to_s]&.first, evidence: evidence,
+            rung: step["to_version"])
         end
         # And a manual call site the plan does not name is a change nobody has written
         # into the ladder, which is the most useful thing a refusal can say. Dropping it
         # because the digest has no row for it would hide exactly that.
+        #
+        # **"The plan does not name it" and "nobody wrote it into the ladder" are two claims, and the wider
+        # scan separates them**: an entry carries the rung that named it, so an earlier rung's change is
+        # reported as exactly that rather than as a change the ladder is missing. The second claim is kept
+        # for an entry with no rung at all.
         unplanned = found.keys - carried.map { |change| change["subject"].to_s }
         located + unplanned.flat_map do |subject|
-          found[subject].map { |entry| decision(nil, entry, evidence: evidence) }
+          found[subject].map { |entry| decision(nil, entry, evidence: evidence, rung: step["to_version"]) }
         end
       end
 
@@ -1326,7 +1358,7 @@ module AgentsFyi
       # scan's own entry otherwise. The reason joins both notes when they are two, in the
       # order a reader wants them: what the guide says the change is, then what this
       # application's line looks like.
-      def decision(change, entry, evidence: {})
+      def decision(change, entry, evidence: {}, rung: nil)
         subject = ((change && change["subject"]) || entry["subject"]).to_s
         # **The gap travels with the change, and that is the point of it.** A change no rule covers
         # is not a verdict about the application: it is a queue entry, and `Rewrites.gap_for` says
@@ -1336,7 +1368,8 @@ module AgentsFyi
         gap = Rewrites.gap_for(subject)
         reason = [change && change["note"], entry && entry["note"]]
                  .compact.reject { |note| note.to_s.empty? }.uniq.join(" — ")
-        reason = [reason, survey_note(evidence[subject]), gap && "not automated yet: #{gap}"]
+        reason = [reason, earlier_rung(entry, rung), survey_note(evidence[subject]),
+                  gap && "not automated yet: #{gap}"]
                  .compact.reject(&:empty?).join(" — ")
         Record::Decision.new(
           path: entry && entry["path"], line: entry && entry["line"],
@@ -1345,6 +1378,18 @@ module AgentsFyi
           replacement: (change && change["replacement"]) || (entry && entry["replacement"]),
           source: (change && change["source"]) || (entry && entry["source"])
         )
+      end
+
+      # **A call site from a rung below this one is a different kind of work from this rung's**, and the
+      # scan's own answer says which: every entry carries the rung that named it. The walker scans from the
+      # ladder's `earliest` so that a rule can fix a change an application never made — and the residue has
+      # to say so, or an application that is behind reads as one that is merely unfinished.
+      def earlier_rung(entry, rung)
+        named = (entry && entry["step"]).to_s
+        return nil if named.empty? || rung.to_s.empty? || named == rung.to_s
+
+        "carried by an earlier rung — the one that arrives at #{named} — which this application has " \
+          "not crossed, so this call site is still in its old form"
       end
 
       # **What a survey found, in the decision's own words.** "None found" and "no survey" are two
