@@ -480,6 +480,61 @@ class StepTest < Minitest::Test
     assert_equal %w[responders], record.applied.map(&:subject).grep("responders")
   end
 
+  # **A rewrite scoped to the rung is made there too, for the same reason a declaration is — and the
+  # resolve has to be told about it.** Measured at the 6.0 rung: the application's own
+  # `loofah ~> 2.0.3` was moved *before* the baseline, the bundle stage's conservative update then
+  # took loofah 2.21.1 while nokogiri stayed at the 1.9.1 only the 5.2 stack needs, and the 5.2
+  # baseline — the run that has to be green before the move is judged — died on
+  # `uninitialized constant Nokogiri::HTML4`. Two things have to hold afterwards: the baseline was
+  # handed the line the application wrote, and the pin's first round names the gem, because
+  # `pin_named` reads the applied edits and a widening spends a round per conflict.
+  def test_a_rewrite_scoped_to_the_rung_is_made_between_the_pin_and_its_resolve
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          loofah (2.0.3)
+          nokogiri (1.9.1)
+          rails (4.2.11)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        loofah (~> 2.0.3)
+        rails (= 4.2.11)
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    dir = track(app(lockfile: lockfile, gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "loofah", "~> 2.0.3"
+    GEM
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11"), migrations: [
+      { "gem" => "loofah", "kind" => "replaced", "replacement" => "loofah",
+        "requirement" => "~> 2.22", "mechanical" => true,
+        "when" => { "rails_at_least" => "5.0" },
+        "note" => "the line the release being moved to asks for",
+        "source" => "the rung's own resolve output" }
+    ])
+    tests = CapturingTests.new
+
+    record = step(dir, corpus: corpus, tests: tests).run
+
+    stages = record.stages.map(&:stage)
+    assert_operator stages.index("declarations"), :<, stages.index("pin"),
+      "the rewrite was made after the resolve it exists to make possible"
+    refute_includes tests.seen.first, "2.22",
+      "the baseline installed a line only the release being moved to makes sense of"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "loofah", "~> 2.22")
+    assert_includes record.patch, %(gem "loofah", "~> 2.22")
+    pin = record.stages.find { |stage| stage.stage == "pin" }
+    assert_includes pin.command, "loofah",
+      "the resolve was not told about the line this step moved: #{pin.command}"
+  end
+
   # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is
   # the pin's own mechanism.** `bundle install` is right for everything a preflight move does
   # to a *source* — it adds what the Gemfile gained and leaves the rest where the move found it
