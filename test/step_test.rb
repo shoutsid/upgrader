@@ -1478,6 +1478,32 @@ class StepTest < Minitest::Test
     assert_includes tail, "by this tool's own rules (@rails npm packages)"
   end
 
+  # **A generator runs in the application's own default environment.** Everything else in the pipeline runs
+  # in `test` — the suite is a test suite and the database it prepares is the test one — and that was right
+  # for every stage until this one. A real walk showed why it is wrong there: `rails:update` loaded
+  # `shoulda-matchers 2.1.0` out of the application's *test* group, and that gem cannot load under the
+  # minitest 5 the release brought, so a task about config files failed on a test gem. Nothing about
+  # `app:update` is test-specific; a person runs it in development, which is what this does.
+  def test_the_update_task_runs_in_the_applications_own_environment_and_not_the_test_one
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item\nend\n")
+    runner = FakeRunner.new
+
+    step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner,
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    update = runner.envs.find { |command, _env| command.include?("rails:update") }
+    refute_nil update, "the update task ran, so this proves something"
+    assert_equal "development", update.last["RAILS_ENV"]
+    assert_equal "development", update.last["RACK_ENV"]
+
+    # **And the stage that must stay in `test` does**, which is the half a change like this can quietly
+    # take with it: the boot that runs before the suite boots the application the suite's way.
+    boot = runner.envs.find { |command, _env| command.include?("Rails.version") }
+    refute_nil boot
+    assert_equal "test", boot.last["RAILS_ENV"]
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

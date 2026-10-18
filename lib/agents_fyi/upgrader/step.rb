@@ -1499,8 +1499,15 @@ module AgentsFyi
         end
 
         before = self.class.dirty_paths(@worktree.root)
+        # **`app:update` is a generator, and a generator runs in the application's own default
+        # environment.** The walker runs everything else in `test` — the suite is a test suite and the
+        # database it prepares is the test one — and that was right for every stage until this one. It
+        # is wrong here in a way a real walk showed: the update task loaded `shoulda-matchers 2.1.0`
+        # from the application's test group, and that gem cannot load under the minitest 5 the release
+        # brought, so a task about config files failed on a test gem. Nothing about `app:update` is
+        # test-specific; a person runs it in development, which is what this does.
         stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
-          env: application_env)
+          env: application_env.merge("RAILS_ENV" => "development", "RACK_ENV" => "development"))
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
       end
 

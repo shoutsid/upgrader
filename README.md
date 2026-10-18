@@ -199,7 +199,11 @@ The pipeline has three stages that make the rest mean anything:
    already owns keeps the application's version and the conflict is recorded.
    `config.load_defaults` is therefore never flipped *by `app:update`*, and that falls out of
    the rule rather than being a special case — the pass below flips it deliberately, one
-   default at a time.
+   default at a time. **This one stage runs in the application's own environment rather than in
+   `test`**, which every other stage runs in: a generator is not a test, and a real walk showed
+   the cost of pretending otherwise — the update task loaded `shoulda-matchers 2.1.0` out of the
+   application's test group, and that gem cannot load under the minitest 5 the release brought,
+   so a task about config files failed on a test gem.
 10. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
     under `RAILS_ENV=test`, with `--step-timeout` as the ceiling. Then, *off unless
     `UPGRADER_DEFAULT_STEPS` says otherwise*, the **new defaults are stepped**: one toggle from
