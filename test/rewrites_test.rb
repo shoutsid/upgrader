@@ -847,6 +847,41 @@ class RewritesTest < Minitest::Test
       .edits.map { |edit| edit["after"] }
   end
 
+  # **A rule whose guard is the whole of it, because the failure it prevents is silent.** Deleting a
+  # `secret_key_base` the application has not carried anywhere else invalidates every session in flight, and a
+  # test suite does not notice — so the line goes only when `config/secrets.yml` names the *same* environment
+  # variable, compared on the raw lines because a variable's name is inside the string the mask blanks. And
+  # only that line goes: a Rails 3 initializer's `secret_token` stays, which is the rollback the 3.2 rung's
+  # note asks for.
+  def test_the_secrets_rule_removes_the_line_only_when_the_same_variable_is_carried_elsewhere
+    initializer = { "config/initializers/secret_token.rb" => [
+      "# Be sure to restart your server when you modify this file.",
+      %(Myapp::Application.config.secret_token = ENV["SECRET_TOKEN"]),
+      %(Myapp::Application.config.secret_key_base = ENV["SECRET_KEY_BASE"])
+    ] }
+    changes = [{ "subject" => "config.secrets.yml", "kind" => "moved", "note" => "secrets.yml arrives" }]
+
+    carried = initializer.merge("config/secrets.yml" => [
+      "production:", %(  secret_key_base: <%= ENV["SECRET_KEY_BASE"] %>)
+    ])
+    result = Rewrites.apply([], sources: initializer, changes: changes, files: carried)
+    assert_equal [["config/initializers/secret_token.rb", 3, ""]],
+      result.edits.map { |edit| [edit["path"], edit["line"], edit["after"]] },
+      "the key base line goes and the secret_token line above it stays"
+    assert_empty result.left
+
+    # A different variable, or no `secrets.yml` at all, is a refusal — and it is the same refusal.
+    [
+      ["a different variable", initializer.merge("config/secrets.yml" =>
+        ["production:", %(  secret_key_base: <%= ENV["OTHER"] %>)])],
+      ["no secrets.yml", initializer]
+    ].each do |label, tree|
+      refused = Rewrites.apply([], sources: initializer, changes: changes, files: tree)
+      assert_empty refused.edits, label
+      assert_equal ["config.secrets.yml"], refused.left, label
+    end
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a

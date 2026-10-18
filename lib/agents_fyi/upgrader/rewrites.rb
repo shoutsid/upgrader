@@ -703,10 +703,6 @@ module AgentsFyi
                                         "matters because a missing one is *generated* rather than " \
                                         "reported, which silently invalidates the sessions and the " \
                                         "signed URLs of every developer",
-        "config.secrets.yml" => "`app:update` writes the file; the initializer's secret has to move " \
-                                "*before* `config/initializers/secret_token.rb` goes, or every session " \
-                                "in flight is invalidated. The ordering is the decision, which is why " \
-                                "this is a gap and not a scaffold",
         "schema.rb column order" => "informational: the dump's order changes and a `schema.rb` diff " \
                                     "is large and meaningless for one rung. `structure.sql` preserves " \
                                     "the exact order if the file has to stay quiet",
@@ -782,6 +778,12 @@ module AgentsFyi
                                                    "the line *after* `set_callback` is not matched, so " \
                                                    "that call site stays a decision rather than becoming " \
                                                    "a guess",
+        "config.secrets.yml" => "the rule empties the initializer's `secret_key_base` line when " \
+                                 "`config/secrets.yml` names the *same* environment variable — the " \
+                                 "guard is the whole rule, because deleting a key the application has " \
+                                 "not carried anywhere else invalidates every session in flight and a " \
+                                 "suite does not notice. An initializer holding a literal, or one whose " \
+                                 "variable `secrets.yml` does not name, stays a decision",
         "the protected_attributes gem" => "the rule removes the Gemfile line once no model calls " \
                                           "`attr_accessible`/`attr_protected` — the ladder's own " \
                                           "caveat is the condition, and the tree is what answers it. A " \
@@ -1614,6 +1616,32 @@ module AgentsFyi
           context: lambda do |_lines, _found, _raw, tree|
             tree.none? do |_path, lines|
               lines.any? { |line| line.match?(/\battr_(accessible|protected)\b/) }
+            end
+          end),
+
+        # "secrets.yml arrives and config/initializers/secret_token.rb is removed. Move the existing
+        # secret_key_base into secrets.yml (or an environment variable) before deleting the initializer, or
+        # every session in flight is invalidated."
+        #
+        # **The guard is the whole rule**, because the failure it prevents is silent: deleting a
+        # `secret_key_base` the application has not carried anywhere else invalidates every session in flight,
+        # and a test suite does not notice. So the line goes only when `config/secrets.yml` names the *same*
+        # environment variable — compared on the raw lines, because an environment variable's name is inside
+        # the string the mask blanks, which is why this rule needs `context`'s raw line at all.
+        #
+        # Only that one line goes. A Rails 3 initializer also sets `secret_token`, and the 3.2 rung's note is
+        # explicit that it stays: the two together are what makes a rollback possible.
+        Rule.new(family: :line_removed, subject: "config.secrets.yml",
+          file: "config/initializers/secret_token.rb",
+          pattern: /\A\s*\S*\.?config\.secret_key_base\s*=\s*ENV\[\s*["'][^"']*["']\s*\]\s*\z/,
+          replace: "",
+          context: lambda do |_lines, _found, raw, tree|
+            name = raw[/ENV\[\s*["']([^"']+)["']/, 1].to_s
+            next false if name.empty?
+
+            tree.any? do |path, lines|
+              path.end_with?("config/secrets.yml") &&
+                lines.any? { |line| line.match?(/secret_key_base:.*ENV\[\s*["']#{Regexp.escape(name)}["']/) }
             end
           end)
       ].freeze
