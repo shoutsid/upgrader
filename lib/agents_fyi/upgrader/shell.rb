@@ -74,12 +74,24 @@ module AgentsFyi
       # `in:` rather than appending `< /dev/null` to argv: that is shell syntax, and
       # there is no shell here. A command that reads stdin and is given a terminal's
       # would wait for an operator who is not there.
-      def self.run(argv, stage:, chdir:, env: {}, stdin: File::NULL)
+      #
+      # **`timeout` is the half that is easy to leave out, and leaving it out cost a walk.** A pipeline
+      # command whose container could not reach rubygems sat in `bundle update` for nine minutes and would
+      # have sat there for the hour a hand-run step allows, because nothing bounded it: `--step-timeout`
+      # bounds a *suite* and the corpus client bounds an HTTP call, and this is neither. A command killed at
+      # its bound established nothing about the application, which is the same third answer a missing
+      # program is — so it is reported the way `Tests` reports a killed suite rather than as a failure.
+      def self.run(argv, stage:, chdir:, env: {}, stdin: File::NULL, timeout: nil,
+                   excerpt_bytes: TAIL_BYTES)
         started = clock
-        output, status = Open3.capture2e(env, *argv, chdir: chdir, in: stdin)
+        status, text, timed_out = spawn_with_deadline(
+          argv, chdir: chdir, env: env, stdin: stdin, timeout: timeout,
+          excerpt: Excerpt.new(bytes: excerpt_bytes)
+        )
         Record::Command.new(
-          stage: stage, command: argv.join(" "), ran: !status.exitstatus.nil?,
-          exit_code: status.exitstatus, seconds: elapsed(started), output_tail: excerpt(output)
+          stage: stage, command: argv.join(" "), ran: !timed_out,
+          exit_code: status && status.exitstatus, seconds: elapsed(started),
+          output_tail: timed_out ? killed_at_the_bound(argv, timeout, text) : text
         )
       rescue Errno::ENOENT => e
         # The program itself is missing — no `bundle`, no `bin/rails`. Nothing was
@@ -88,6 +100,98 @@ module AgentsFyi
           stage: stage, command: argv.join(" "), ran: false, exit_code: nil,
           seconds: elapsed(started), output_tail: "#{e.class}: #{e.message}"
         )
+      end
+
+      # How long a killed child's process group gets to shut down before the group is killed outright.
+      KILL_GRACE_SECONDS = 3
+
+      # **How long a pipeline command may run, and it exists to stop the *unbounded* case rather than a slow
+      # one.** A `bundle install` on a cold cache is minutes and a resolve that reaches rubygems is slower, so
+      # the number is generous; what it catches is a container that cannot reach the network at all, which held
+      # one walk in `bundle update` until somebody noticed. `UPGRADER_COMMAND_TIMEOUT` is the knob.
+      DEFAULT_COMMAND_TIMEOUT = 900
+      ENV_TIMEOUT = "UPGRADER_COMMAND_TIMEOUT"
+
+      # **The one place a child is spawned.** `Tests` grew this first — a suite needs a deadline, a kill that
+      # reaches the workers it forks, and both ends of its output — and `Shell.run` had none of it, which is
+      # the drift this module exists to prevent. Both callers get the same answer now: `[status, text,
+      # timed_out]`, with `status` nil when the deadline passed.
+      #
+      # Its own process group is load-bearing: a Rails suite forks workers and a `docker exec` may leave
+      # children, and a kill aimed at the process alone leaves them holding the pipe.
+      def self.spawn_with_deadline(argv, chdir:, env: {}, stdin: File::NULL, timeout: nil, excerpt: nil)
+        excerpt ||= Excerpt.new
+        reader, writer = IO.pipe
+        pid = Process.spawn(env, *argv, chdir: chdir, pgroup: true, in: stdin, out: writer, err: writer)
+        writer.close
+
+        reading = Thread.new { drain(reader, excerpt) }
+        waiting = Thread.new { Process.waitpid2(pid) }
+        if waiting.join(timeout)
+          reading.join(2)
+          close(reader)
+          [waiting.value.last, excerpt.to_s, false]
+        else
+          kill_group(pid)
+          waiting.join(KILL_GRACE_SECONDS + 2)
+          reading.join(1)
+          close(reader)
+          [nil, excerpt.to_s, true]
+        end
+      end
+
+      # Reads the child's output on a thread of its own and keeps only the two ends of it. Both halves are
+      # load-bearing: a pipe holds 64 KB, so a command that prints more than that blocks for ever waiting for
+      # a reader that only arrives after it exits; and the excerpt is bounded because this text is recorded.
+      def self.drain(reader, excerpt)
+        while (chunk = reader.read(65_536))
+          excerpt << chunk
+        end
+      rescue IOError, Errno::EBADF
+        # The pipe was closed under this thread, which is what happens when a run is killed and nothing is
+        # left holding the write end.
+      end
+
+      # Termination first, so a child that can shut down cleanly does; the whole group after a grace, because
+      # one that traps the signal would otherwise hold the cycle for ever. `Errno::ESRCH` means it was already
+      # gone, which is the answer this wants.
+      def self.kill_group(pid)
+        signal_group(pid, "TERM")
+        deadline = clock + KILL_GRACE_SECONDS
+        while clock < deadline
+          return if group_gone?(pid)
+
+          sleep 0.05
+        end
+        signal_group(pid, "KILL")
+      end
+
+      def self.signal_group(pid, signal)
+        Process.kill(signal, -pid)
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+
+      def self.group_gone?(pid)
+        Process.kill(0, -pid)
+        false
+      rescue Errno::ESRCH
+        true
+      end
+
+      def self.close(io)
+        io.close unless io.closed?
+      rescue IOError
+        nil
+      end
+
+      # What a killed command's excerpt becomes: the bound is named, and so is the difference between this
+      # and a failure. `Tests` says the same thing for a suite in one sentence, and a reader of either should
+      # not have to work out which of the two they are looking at.
+      def self.killed_at_the_bound(argv, timeout, text)
+        note = "#{argv.join(" ")} was killed at its #{timeout}-second bound, so this step is unverified " \
+               "rather than failed"
+        text.to_s.empty? ? note : "#{text}\n#{note}"
       end
 
       def self.clock

@@ -43,8 +43,6 @@ module AgentsFyi
       # whole group is killed outright. Long enough for a test process to flush what it
       # was writing, short enough that a suite which traps TERM cannot hold a cycle:
       # the alternative is a step that never returns.
-      KILL_GRACE_SECONDS = 3
-
       # Read top to bottom, and **the order is the decision**:
       #
       # 1. `bin/rails test` — a Rails 5+ application has a Rakefile as well, and
@@ -165,35 +163,21 @@ module AgentsFyi
         environment = (rails_suite?(suite) ? machine_test_env : {}).merge(env)
         argv, process_env = spawn_argv(command, root: root, env: environment, machine: machine)
 
-        reader, writer = IO.pipe
-        pid = Process.spawn(
-          process_env, *argv,
-          chdir: root, pgroup: true, in: File::NULL, out: writer, err: writer
+        # **The child is `Shell`'s**, the same one a pipeline command goes through: one place decides how a
+        # process group is killed and how much of an output is kept, and `Shell`'s docstring says why — two
+        # places building a recorded command is the drift that module exists to prevent. What stays here is
+        # what is *suite*-specific: the command string, what the exit code means, and the excerpt's size.
+        status, text, timed_out = Shell.spawn_with_deadline(
+          argv, chdir: root, env: process_env, timeout: timeout,
+          excerpt: Shell::Excerpt.new(bytes: tail_bytes)
         )
-        writer.close
-
-        # Its own process group, so the kill below reaches the workers a Rails suite
-        # forks and not only the shell that started it.
-        excerpt = Shell::Excerpt.new(bytes: tail_bytes)
-        reader_thread = Thread.new { drain(reader, excerpt) }
-        waiter = Thread.new { Process.waitpid2(pid) }
-
-        if waiter.join(timeout)
-          status = waiter.value.last
-          reader_thread.join(2)
-          close(reader)
-          finished(command: command, status: status, excerpt: excerpt, tail_bytes: tail_bytes,
-            seconds: elapsed(started), timed_out: false)
-        else
-          kill_group(pid)
-          waiter.join(KILL_GRACE_SECONDS + 2)
-          reader_thread.join(1)
-          close(reader)
+        if timed_out
           Result.new(
             command: command, ran: false, passed: false, exit_code: nil,
-            seconds: elapsed(started), output_tail: bounded(excerpt, tail_bytes),
-            timed_out: true
+            seconds: elapsed(started), output_tail: text, timed_out: true
           )
+        else
+          finished(command: command, status: status, text: text, seconds: elapsed(started))
         end
       rescue Errno::ENOENT => e
         # The command does not exist on this machine at all — no `bundle`, no
@@ -256,44 +240,13 @@ module AgentsFyi
       # `tail_bytes` of it. Both halves are load-bearing: a pipe holds 64 KB, so a
       # suite that prints more than that blocks for ever waiting for a reader that only
       # arrives after it exits; and the tail is bounded because this text is recorded.
-      def self.drain(reader, excerpt)
-        while (chunk = reader.read(65_536))
-          excerpt << chunk
-        end
-      rescue IOError, Errno::EBADF
-        # The pipe was closed under this thread, which is what happens when a run is
-        # killed and nothing is left holding the write end.
-      end
-
       # Termination first, so a suite that can shut down cleanly does; the whole group
       # after a grace, because a suite that traps the signal would otherwise hold the
       # cycle for ever. `Errno::ESRCH` means it was already gone, which is the answer
       # this wants.
-      def self.kill_group(pid)
-        signal_group(pid, "TERM")
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + KILL_GRACE_SECONDS
-        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-          return if group_gone?(pid)
-
-          sleep 0.05
-        end
-        signal_group(pid, "KILL")
-      end
-
-      def self.signal_group(pid, signal)
-        Process.kill(signal, -pid)
-      rescue Errno::ESRCH, Errno::EPERM
-        nil
-      end
-
-      def self.group_gone?(pid)
-        Process.kill(0, -pid)
-        false
-      rescue Errno::ESRCH
-        true
-      end
-
-      def self.finished(command:, status:, excerpt:, tail_bytes:, seconds:, timed_out:)
+      # The text arrives already bounded — the excerpt's own `to_s` is the bound, and its two ends were kept
+      # while the output streamed — so this only decides what the exit code *means*.
+      def self.finished(command:, status:, text:, seconds:)
         code = status.exitstatus
         # A signalled process has no exit status, and a suite that was killed
         # established nothing about the application — the same third answer a timeout
@@ -301,7 +254,7 @@ module AgentsFyi
         ran = !code.nil? && code != NOT_FOUND
         Result.new(
           command: command, ran: ran, passed: ran && code.zero?, exit_code: code,
-          seconds: seconds, output_tail: bounded(excerpt, tail_bytes), timed_out: timed_out
+          seconds: seconds, output_tail: text, timed_out: false
         )
       end
 
@@ -310,16 +263,6 @@ module AgentsFyi
       # test's output from being the reason a step cannot be recorded.
       # The excerpt's own `to_s` is the bound: the two ends were kept while the output
       # streamed and the middle was counted as it went.
-      def self.bounded(excerpt, _tail_bytes)
-        excerpt.to_s
-      end
-
-      def self.close(io)
-        io.close unless io.closed?
-      rescue IOError
-        nil
-      end
-
       def self.elapsed(started)
         (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2)
       end

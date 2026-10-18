@@ -24,7 +24,7 @@ class HostMachineTest < Minitest::Test
       @calls = []
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
       line = argv.join(" ")
       @calls << { argv: argv, stage: stage, chdir: chdir, env: env, stdin: stdin }
       exit_code, output = @answers.find { |needle, _| line.include?(needle) }&.last || [0, ""]

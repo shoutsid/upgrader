@@ -363,18 +363,23 @@ class StepTest < Minitest::Test
   # can assert what ran, in what order, and under which bundle — which is the whole of what
   # the install stage promises the stages after it.
   class FakeRunner
-    attr_reader :calls, :envs
+    attr_reader :calls, :envs, :timeouts
 
     def initialize(fail_on: nil, ran: true)
       @fail_on = fail_on
       @ran = ran
       @calls = []
       @envs = []
+      @timeouts = []
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil)
+    # **The timeout is recorded rather than ignored**, for the same reason the env is: a double that dropped
+    # it would let the pipeline stop bounding its commands without a red test, which is exactly the state a
+    # real walk was found in.
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil)
       @calls << argv.join(" ")
       @envs << [argv.join(" "), env]
+      @timeouts << [argv.join(" "), timeout]
       failing = @fail_on && argv.join(" ").include?(@fail_on)
       Command.new(stage: stage, command: argv.join(" "), ran: failing ? @ran : true,
         exit_code: failing ? (@ran ? 1 : nil) : 0, seconds: 0.1,
@@ -1518,6 +1523,17 @@ class StepTest < Minitest::Test
     boot = runner.envs.find { |command, _env| command.include?("Rails.version") }
     refute_nil boot
     assert_equal "test", boot.last["RAILS_ENV"]
+
+    # **Every command is bounded**, and the knob moves the bound. Nothing bounded them before: the suite had
+    # its own, the corpus client had one for HTTP, and a `bundle update` whose container could not reach
+    # rubygems hung until somebody noticed.
+    assert_equal [AgentsFyi::Upgrader::Shell::DEFAULT_COMMAND_TIMEOUT] * runner.timeouts.size,
+      runner.timeouts.map(&:last), "each command carries the default bound"
+
+    bound = FakeRunner.new
+    step(dir, corpus: FakeCorpus.new(payload: plan), runner: bound,
+      applier: AgentsFyi::Upgrader::Applier, env: { "UPGRADER_COMMAND_TIMEOUT" => "42" }).run
+    assert_equal [42] * bound.timeouts.size, bound.timeouts.map(&:last)
   end
 
   # **The scan looks below the rung, because an application can be behind the release it declares.** The

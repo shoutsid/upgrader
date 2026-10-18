@@ -1673,10 +1673,19 @@ module AgentsFyi
         )
       end
 
+      # Every command a step runs is bounded (`Shell::DEFAULT_COMMAND_TIMEOUT`, or the operator's
+      # `UPGRADER_COMMAND_TIMEOUT`): the *suite* has its own bound through `Tests`, and nothing else had one —
+      # so a container that could not reach rubygems held a step in `bundle update` until somebody noticed.
       def command(stage, argv, chdir:, env: {}, machine: nil)
         runner_machine = machine || @machine
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
-        @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: File::NULL)
+        @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: File::NULL,
+          timeout: command_timeout)
+      end
+
+      def command_timeout
+        raw = @env[Shell::ENV_TIMEOUT].to_s
+        raw.empty? ? Shell::DEFAULT_COMMAND_TIMEOUT : raw.to_i
       end
 
       # The ledger learns one line per move, and the record goes where an operator
