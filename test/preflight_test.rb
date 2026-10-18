@@ -227,6 +227,34 @@ class PreflightTest < Minitest::Test
     assert_includes later.details, %(Gemfile: `gem "responders", "~> 2.0"` declared (responders))
   end
 
+  # **A gem can be too *old* for the interpreter as well as too new for it.** `ruby_below` catches
+  # the case where the newest installable release is wrong; `ruby_at_least` catches the other one —
+  # a release whose own source will not compile on the interpreter the rung requires. Measured on
+  # the 5.0 rung: json 1.7.7's `rb_str_new` call meets Ruby 2.2's variadic macro, `bundle install`
+  # dies in `fbuffer.h`, and no era installs the bundle. The move is made *here* rather than at the
+  # pin because the machine probe is itself a `bundle install` of the Gemfile as it stands.
+  def test_a_move_scoped_to_a_newer_interpreter_is_made_here_and_not_at_the_pin
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.1.0"\ngem "json", "~> 1.7.7"\n)
+    corpus = lambda do
+      FakeCorpus.new(entries: [entry(gem: "json", replacement: "json", requirement: "~> 1.8",
+        condition: { "ruby_at_least" => "2.2" })])
+    end
+
+    newer = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    applied = preflight(newer, corpus: corpus.call, ruby: "2.2.2")
+
+    assert_includes read(newer, "Gemfile"), %(gem "json", "~> 1.8")
+    refute_includes read(newer, "Gemfile"), "1.7.7"
+    assert_equal 1, applied.repairs.size
+
+    older = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    skipped = preflight(older, corpus: corpus.call, ruby: "2.1.10")
+
+    refute_includes read(older, "Gemfile"), "1.8"
+    assert_includes skipped.notes.first, "was not applied"
+    assert_includes skipped.notes.first, "ruby_at_least 2.2"
+  end
+
   # A gem the application already declares is the application's line: the digest is not asked about
   # a line it did not write, and adding a second one would be the duplicate bundler refuses outright.
   def test_a_gem_the_application_already_declares_is_left_alone

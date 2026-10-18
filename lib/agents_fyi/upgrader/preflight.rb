@@ -389,9 +389,9 @@ module AgentsFyi
       # The vocabulary is small on purpose — a digest entry is a fact about an era, and an era is named
       # by the two things a move knows about itself:
       #
-      # * `ruby_below` — the interpreter the move will run on, which this stage knows as the rung's
-      #   floor (see `initialize`: the machine is chosen after this, and the choice is a
-      #   `bundle install`);
+      # * `ruby_below` / `ruby_at_least` — the interpreter the move will run on, which this stage
+      #   knows as the rung's floor (see `initialize`: the machine is chosen after this, and the
+      #   choice is a `bundle install`);
       # * `rails_below` / `rails_at_least` — the release the move ends at, which is what lets a gem
       #   have to move twice in one walk.
       #
@@ -407,8 +407,11 @@ module AgentsFyi
 
       # The clauses this build knows. Named once, because the evaluator and the sentence that says
       # *why* an entry did not apply have to agree about the vocabulary — an unknown clause is a note,
-      # not a silent skip.
-      KNOWN_CLAUSES = %w[ruby_below rails_below rails_at_least].freeze
+      # not a silent skip. Each fact has both a floor and a ceiling: a gem can be too new for an old
+      # interpreter (`ruby_below`, where the *newest* installable release is the problem) or too old
+      # for a new one (`ruby_at_least`, where the release's own C source does not compile — measured
+      # on the 5.0 rung, json 1.7.7's `rb_str_new` call against Ruby 2.2's variadic macro).
+      KNOWN_CLAUSES = %w[ruby_below ruby_at_least rails_below rails_at_least].freeze
 
       # The two clauses that name the *rung* rather than the machine. A `declared` entry scoped
       # by one of them is about the framework the gem arrives with, so it is deferred until the
@@ -427,8 +430,11 @@ module AgentsFyi
         named = clause.start_with?("ruby") ? @ruby : @rails
         return false if named.empty?
 
-        clause == "rails_at_least" ? Gem::Version.new(named) >= Gem::Version.new(value) :
+        if clause.end_with?("_at_least")
+          Gem::Version.new(named) >= Gem::Version.new(value)
+        else
           Gem::Version.new(named) < Gem::Version.new(value)
+        end
       end
 
       # **Why an entry did not apply, in the cases that differ.** A condition this move does not meet,

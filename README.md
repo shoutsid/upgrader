@@ -128,7 +128,9 @@ The pipeline has three stages that make the rest mean anything:
    which says the framework is about to bring the gem in and the newest release of it cannot
    run here. That one is an addition: there is no line of the application's to rewrite, so the
    line is added, and the entry's condition is evaluated against the move: the Ruby it is right
-   below (the rung's floor) and the release it is right for (`rails_below`/`rails_at_least`, read
+   below or above (the rung's floor — `ruby_below`, where the newest installable release is wrong,
+   or `ruby_at_least`, where the release's own source will not compile, as `json ~> 1.7.7` does not
+   on Ruby 2.2) and the release it is right for (`rails_below`/`rails_at_least`, read
    against the rung's own `to_version`), so one gem can be documented as having to move twice in
    a walk. **A declaration scoped to the rung waits for the pin**: this stage runs before the
    Gemfile names that release, and measured at the 4.2 rung, declaring `responders ~> 2.0` beside
