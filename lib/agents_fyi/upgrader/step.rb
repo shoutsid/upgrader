@@ -1067,6 +1067,14 @@ module AgentsFyi
         decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
           handled.include?(decision.subject.to_s)
         end
+        # **A change the application has already made is not a decision.** A rule whose own idempotence guard
+        # matches a line has *read* it and found nothing to do — an answer about the application rather than a
+        # refusal — and leaving the decision in place asks a person to look at a line that already reads the
+        # new way. The first real walk is what made this worth separating: its three located entries were
+        # `:confirm option on link_to` lines that already carry `data: { confirm: … }`, and the residue said
+        # three decisions were owed. They are named in the tail rather than dropped, because a change that
+        # disappears without a sentence is the empty answer this pipeline keeps paying for.
+        decisions.reject! { |decision| rules.satisfied.include?(decision.subject.to_s) }
         stages << Record::Command.new(
           stage: Record::APPLY,
           command: "apply #{scan["edits"].to_a.size} edit(s) to #{files.size} scanned file(s)",
@@ -1111,6 +1119,10 @@ module AgentsFyi
                  "#{decisions.size} change(s) need a decision"]
         parts << "#{rules.edits.size} by this tool's own rules (#{rules.applied.uniq.join(", ")})" if
           rules.edits.any?
+        # **A line a rule's own guard recognised is named, not counted.** It is the difference between "this
+        # application already reads the new way" and "nobody can read this line", and only the second is work.
+        parts << "#{rules.satisfied.size} change(s) this application already has " \
+                 "(#{rules.satisfied.uniq.join(", ")})" if rules.satisfied.any?
         # **A gem declared for a change whose fix is one**, named by the gem rather than the subject:
         # what a reviewer has to check is the Gemfile line, and whether it landed in the right group.
         parts << "#{declared.size} gem(s) declared for a change (#{declared.map { |edit| edit.subject }.uniq.join(", ")})" if

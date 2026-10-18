@@ -84,6 +84,13 @@ module AgentsFyi
         # against the raw one, at the same offsets — the shape the service's own scanner uses, and
         # the reason the mask preserves every byte's position: a pattern that matched inside a string
         # would rewrite a log message.
+        # **A rule whose own idempotence guard matches has nothing to do, and that is an answer about the
+        # application rather than a refusal.** The guard exists so a second walk does not add an option
+        # twice; the same question — is the new form already here — is what a residue wants to know, and the
+        # two are the same pattern. `after` uses it to stop the edit; the caller uses it to stop the
+        # *decision*.
+        def satisfied?(line) = !already.nil? && already.match?(line)
+
         def after(line, masked, lines: nil, tree: {})
           return nil if already && already.match?(line)
 
@@ -637,7 +644,7 @@ module AgentsFyi
           end)
       ].freeze
 
-      Result = Struct.new(:edits, :applied, :left, :scaffolds, keyword_init: true) do
+      Result = Struct.new(:edits, :applied, :left, :scaffolds, :satisfied, keyword_init: true) do
         def to_s
           return "no rule applies" if edits.empty?
 
@@ -940,15 +947,20 @@ module AgentsFyi
       # what an option's value is. A call with arguments is deliberately not here: the end of
       # `t(:x, count: 1)` is inside a parenthesis the pattern cannot see, and a rule that guessed it
       # would cut the line in half.
-      OPTION_VALUE = /(?<value>"[^"]*"|'[^']*'|:[A-Za-z_]\w*|@@?[a-z_]\w*|\$[a-z_]\w*|[A-Za-z_]\w*(?:\.\w+)*)(?=\s*[,)]|\s*\z)/
+      OPTION_VALUE = /(?<value>"[^"]*"|'[^']*'|:[A-Za-z_]\w*|@@?[a-z_]\w*|\$[a-z_]\w*|[A-Za-z_]\w*(?:\.\w+)*)(?=\s*[,)]|\s*%>|\s*\z)/
 
       # An option that became a nested one: the value is captured, never guessed, and the lookahead
       # requires it to end where an argument ends — a comma, the call's closing parenthesis, or the
       # line. A first version of this pattern matched the `t` of `confirm: t(:x, count: 1)` and
       # produced `data: { confirm: t }(:x, count: 1)`, which is why the lookahead is here.
-      def self.option_wrapped(subject:, option:, wrapper:)
+      # `already` is the wrapper's own head — what the line looks like *after* this rule has run — and it is
+      # passed rather than derived: the wrapper is a replacement string with a backreference in it, and a
+      # pattern carved out of one would be a guess about where the value goes. It is asked twice (stop the
+      # edit, stop the decision), which is what makes an already-migrated call site an *answer* rather than a
+      # refusal.
+      def self.option_wrapped(subject:, option:, wrapper:, already: nil)
         head = /(?::\s*#{Regexp.escape(option)}\s*=>|\b#{Regexp.escape(option)}:)\s*/
-        Rule.new(family: :option_wrapped, subject: subject,
+        Rule.new(family: :option_wrapped, subject: subject, already: already,
           pattern: Regexp.new("#{head.source}#{OPTION_VALUE.source}"), replace: wrapper)
       end
 
@@ -1346,7 +1358,7 @@ module AgentsFyi
         # `link_to 'Delete', path, confirm: 'Sure?'` becomes `data: {confirm: 'Sure?'}`, and the
         # helpers built on link_to go the same way.
         option_wrapped(subject: ":confirm option on link_to", option: "confirm",
-          wrapper: 'data: { confirm: \k<value> }'),
+          wrapper: 'data: { confirm: \k<value> }', already: /data:\s*\{\s*confirm:/),
         # The top-level constant is soft-deprecated — no warning, and it still works — so this is the
         # step to move the references rather than the step that breaks them.
         name_moved(subject: "HashWithIndifferentAccess", from: "HashWithIndifferentAccess",
@@ -1662,6 +1674,7 @@ module AgentsFyi
         applied = []
         left = []
         scaffolds = []
+        satisfied = []
         (Array(manual) + sourced(rules, sources, changes)).each do |entry|
           subject = entry["subject"].to_s
           candidates = by_subject[subject].to_a
@@ -1675,7 +1688,14 @@ module AgentsFyi
           lines = files[entry["path"].to_s]
           chosen = nil
           written = nil
+          # A line a rule's own guard recognises as already-migrated is not a line the rule *refused*.
+          done_here = false
           candidates.each do |candidate|
+            if candidate.satisfied?(text)
+              done_here = true
+              next
+            end
+
             # **A rule with a `file` matches the raw line**, because the file it names is not Ruby: in
             # `package.json` the quoted text *is* the data, and the mask exists to stop a pattern
             # matching inside a Ruby string.
@@ -1686,7 +1706,7 @@ module AgentsFyi
             break
           end
           if written.nil?
-            left << subject
+            done_here ? satisfied << subject : left << subject
             next
           end
 
@@ -1694,7 +1714,8 @@ module AgentsFyi
           applied << subject
           scaffolds << chosen.scaffold if chosen.scaffold
         end
-        Result.new(edits: edits, applied: applied, left: left, scaffolds: scaffolds.uniq)
+        Result.new(edits: edits, applied: applied, left: left, scaffolds: scaffolds.uniq,
+          satisfied: satisfied.uniq)
       end
 
       # **The bridges this step should declare**, and the two selectors are the two kinds of evidence.

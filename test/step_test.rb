@@ -1584,6 +1584,44 @@ class StepTest < Minitest::Test
     assert_equal [["4.2.11", "5.0.0"]], unreadable.asked_scans
   end
 
+  # **A change the application has already made is not a decision, and a line the rule cannot read still is.**
+  # The first real walk's three located entries were `:confirm option on link_to` lines that already carry
+  # `data: { confirm: … }` — the ladder's detect is `confirm:`, which matches the new form too — and the
+  # residue said three decisions were owed. A rule's own idempotence guard is the reader that can tell the
+  # difference, so it is asked twice: once to stop the edit, once to stop the decision. The other direction
+  # matters as much: a line whose value the rule cannot see the end of is still a person's to read.
+  def test_a_line_the_application_already_migrated_is_not_a_decision
+    migrated = "<%= link_to 'Delete', post, method: :delete, data: { confirm: 'Are you sure?' } %>"
+    unreadable = "<%= link_to 'Delete', post, confirm: t(:x, count: 1) %>"
+    payload = plan(changes: [change(subject: ":confirm option on link_to", kind: "renamed", source: "4.0",
+      replacement: "data: { confirm: … }", note: "the confirm option becomes a data attribute")])
+
+    already = track(app)
+    with_source(already, "app/views/posts/index.html.erb", "#{migrated}\n")
+    record = step(already, corpus: FakeCorpus.new(payload: payload,
+      manual: [entry_for("app/views/posts/index.html.erb", 1, migrated)]),
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    assert_empty record.decisions, "the line already reads the new way, so nothing is owed"
+    tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
+    assert_includes tail, "1 change(s) this application already has (:confirm option on link_to)"
+
+    owed = track(app)
+    with_source(owed, "app/views/posts/index.html.erb", "#{unreadable}\n")
+    record = step(owed, corpus: FakeCorpus.new(payload: payload,
+      manual: [entry_for("app/views/posts/index.html.erb", 1, unreadable)]),
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    assert_equal [":confirm option on link_to"], record.decisions.map(&:subject),
+      "a value the rule cannot see the end of is still a person's to read"
+  end
+
+  def entry_for(path, line, text)
+    { "path" => path, "line" => line, "text" => text, "after" => nil,
+      "subject" => ":confirm option on link_to", "kind" => "renamed",
+      "replacement" => "data: { confirm: … }", "source" => "4.0", "automatic" => false }
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

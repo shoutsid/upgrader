@@ -35,6 +35,31 @@ class RewritesTest < Minitest::Test
       %(link_to 'Delete', path, data: { confirm: "Sure?" })
     ], result.edits.map { |edit| edit["after"] }
     assert_equal 2, result.applied.size
+
+    # **And the ERB spelling, which is the one the call sites actually have.** The value's lookahead accepted
+    # `,`, `)` or the end of the line — so a view's `<%= link_to … confirm: 'x' %>` was refused, and every
+    # `:confirm` call site in the first real application is in a view. The rule applied nothing there for a
+    # whole session of walks, and the residue said the change was refused rather than unreadable.
+    view = Rewrites.apply([
+      entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
+        text: %(<%= link_to 'Delete', post, confirm: 'Sure?' %>)),
+      entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
+        text: %(<%= link_to 'Delete', post, :confirm => "Sure?" %>))
+    ])
+
+    assert_equal [
+      %(<%= link_to 'Delete', post, data: { confirm: 'Sure?' } %>),
+      %(<%= link_to 'Delete', post, data: { confirm: "Sure?" } %>)
+    ], view.edits.map { |edit| edit["after"] }
+    assert_equal 2, view.applied.size
+
+    # And a line that already carries the wrapper is *satisfied* rather than refused: the rule's own guard is
+    # the reader that can tell "this application already reads the new way" from "nobody can read this line".
+    already = Rewrites.apply([entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
+      text: %(<%= link_to 'Delete', post, data: { confirm: 'Sure?' } %>))])
+    assert_empty already.edits
+    assert_empty already.left
+    assert_equal [":confirm option on link_to"], already.satisfied
   end
 
   # **A value whose end the rule cannot see is not touched.** `confirm: t(:x, count: 1)` has an
@@ -533,7 +558,13 @@ class RewritesTest < Minitest::Test
 
     assert_equal ["  smtp = Rails.application.config_for(:smtp).with_indifferent_access"],
       result.edits.map { |edit| edit["after"] }
-    assert_equal ["config_for"] * 2, result.left
+    # **And the three outcomes are three, which is the point of the guard having a second reader.** The line
+    # that already carries the appendage is *satisfied* — the rule read it and there is nothing to do, which
+    # is an answer about the application — while the two-argument call is *left*, because the note's
+    # replacement names the one-argument form and the arguments are part of what the call means. Only the
+    # second should leave a decision behind.
+    assert_equal ["config_for"], result.left
+    assert_equal ["config_for"], result.satisfied
   end
 
   # **The 5.1 rung of the `render :text` story, where the choice has to be made.** 4.1 deprecates
