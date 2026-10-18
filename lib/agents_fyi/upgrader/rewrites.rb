@@ -89,10 +89,16 @@ module AgentsFyi
         # twice; the same question — is the new form already here — is what a residue wants to know, and the
         # two are the same pattern. `after` uses it to stop the edit; the caller uses it to stop the
         # *decision*.
-        def satisfied?(line) = !already.nil? && already.match?(line)
+        # **The guard reads what the pattern reads.** `already` is matched against the same text the pattern is —
+        # masked, unless the rule named a file whose contents are not Ruby — and a guard that read the *raw*
+        # line instead was measured dropping a change silently: `<%= link_to …, confirm: "Sure?" # data: {
+        # confirm: x } %>` needs the edit, and the comment mentioning the wrapper made it "satisfied", so the
+        # residue said nothing and the line stayed unmigrated. A comment is not evidence of anything; that is
+        # the whole reason the mask exists.
+        def satisfied?(line, masked) = !already.nil? && already.match?(file ? line : masked)
 
         def after(line, masked, lines: nil, tree: {})
-          return nil if already && already.match?(line)
+          return nil if already && already.match?(file ? line : masked)
 
           found = pattern.match(masked)
           return nil if found.nil?
@@ -1742,7 +1748,7 @@ module AgentsFyi
           # A line a rule's own guard recognises as already-migrated is not a line the rule *refused*.
           done_here = false
           candidates.each do |candidate|
-            if candidate.satisfied?(text)
+            if candidate.satisfied?(text, masked)
               done_here = true
               next
             end

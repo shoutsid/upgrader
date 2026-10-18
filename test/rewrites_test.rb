@@ -70,6 +70,17 @@ class RewritesTest < Minitest::Test
       assert_empty done.left, "and not a refusal either: #{text}"
       assert_equal [":confirm option on link_to"], done.satisfied
     end
+
+    # **And the guard reads what the pattern reads.** A guard matched against the *raw* line was measured
+    # dropping a change silently: a comment mentioning the wrapper made a line that needs the edit report as
+    # `satisfied`, so the residue said nothing and the line stayed unmigrated. A comment is not evidence of
+    # anything — that is the whole reason the mask exists.
+    commented = Rewrites.apply([entry(subject: ":confirm option on link_to", path: "app/views/x.html.erb",
+      text: %(<%= link_to 'Delete', post, confirm: 'Sure?' # data: { confirm: x } %>))])
+    assert_equal [%(<%= link_to 'Delete', post, data: { confirm: 'Sure?' } # data: { confirm: x } %>)],
+      commented.edits.map { |edit| edit["after"] },
+      "a mention of the wrapper in a comment is not the wrapper"
+    assert_empty commented.satisfied
   end
 
   # **A value whose end the rule cannot see is not touched.** `confirm: t(:x, count: 1)` has an
