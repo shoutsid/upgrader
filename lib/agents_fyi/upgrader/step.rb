@@ -609,9 +609,35 @@ module AgentsFyi
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
           env: @worktree.bundle_env, machine: machine)
         stages << stage
+        if (version = missing_bundler(stage))
+          stages << command(Record::BUNDLE,
+            ["gem", "install", "--user-install", "bundler", "-v", version, "--no-document"],
+            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine)
+          stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
+            env: @worktree.bundle_env, machine: machine)
+          stages << stage
+        end
         return stage if stage.ok? || moved_gems.empty?
 
         conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
+      end
+
+      # **The bundler the lock names, which an era may not ship.** RubyGems activates the version in
+      # `Gemfile.lock`'s `BUNDLED WITH`, so an era whose image pins a newer bundler cannot install the
+      # application *at all* — and the message says so in the imperative: measured at the 6.0 rung on the
+      # 2.7 era, `bundle install` answered `Could not find 'bundler' (1.17.3) required by your
+      # Gemfile.lock. … To install the missing version, run gem install bundler:1.17.3`, while the same
+      # tree installs on 2.5 whose image's *default* bundler is 1.17.3. **The lock is the application's
+      # own statement about its toolchain**, so this installs the version it names rather than rewriting
+      # the lock — into the walker's own home (`--user-install`), because the container runs as the
+      # walker's uid and not as root: measured, that install makes the same `bundle install` succeed and
+      # resolve the Gemfile's own line. A version that cannot *run* on the era is a different fact and a
+      # different rung's problem (bundler 1.17.3 calls `Pathname#untaint`, which Ruby 3.2 removed), and
+      # the retry it produces fails loudly rather than silently.
+      def missing_bundler(stage)
+        return nil if stage.ok?
+
+        stage.output_tail.to_s[/Could not find 'bundler' \(([0-9][^)]*)\)/, 1]
       end
 
       # **A digest move that changes a *requirement* has to re-resolve the lock, and the

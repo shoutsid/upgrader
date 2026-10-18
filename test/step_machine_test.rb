@@ -268,6 +268,31 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A runner whose first `bundle install` cannot find the bundler the lock names, and whose second
+  # succeeds — the only difference between the two calls is that a bundler was installed in between. The
+  # answers cannot express that, because they match by substring, so the count is the state.
+  class BundlerNamingRunner < FakeRunner
+    def initialize
+      super(answers: {})
+      @installs = 0
+    end
+
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil)
+      line = argv.join(" ")
+      @calls << line
+      if line.include?("bundle install")
+        @installs += 1
+        if @installs == 1
+          return Command.new(stage: stage, command: line, ran: true, exit_code: 1, seconds: 0.0,
+            output_tail: "Could not find 'bundler' (1.17.3) required by your Gemfile.lock. " \
+                         "To install the missing version, run `gem install bundler:1.17.3`")
+        end
+      end
+      Command.new(stage: stage, command: line, ran: true, exit_code: 0, seconds: 0.0,
+        output_tail: "Bundle complete!")
+    end
+  end
+
   # A runner that resolves the way bundler does: the lock it is asked to update comes back changed, and
   # the Gemfile it was handed at that moment is remembered. Nothing else in the suite needs a resolver;
   # this is the one property about what the *second* resolve sees.
@@ -617,6 +642,27 @@ class StepMachineTest < Minitest::Test
 
     assert_empty record.decisions.select { |decision| decision.path.to_s.include?("application_record") },
       "the scaffold line came back as work: #{record.decisions.map(&:path).inspect}"
+  end
+
+  # **A lock names the bundler that wrote it, and an era may not ship it.** RubyGems activates the version
+  # in `BUNDLED WITH`, so an era whose image pins a newer bundler cannot install the application at all —
+  # measured on the 2.7 era at the 6.0 rung: `Could not find 'bundler' (1.17.3) required by your
+  # Gemfile.lock. … To install the missing version, run gem install bundler:1.17.3`, while the same tree
+  # installs on 2.5, whose image's *default* bundler is 1.17.3. The lock is the application's statement
+  # about its toolchain, so the mechanism installs what it names — into the walker's home
+  # (`--user-install`), because the container runs as the walker's uid — and retries once.
+  def test_a_lock_naming_a_bundler_the_era_lacks_installs_it_and_retries
+    runner = BundlerNamingRunner.new
+    record = step(app, machines: machines, runner: runner).run
+
+    installed = record.stages.find { |stage| stage.command.include?("gem install") }
+    refute_nil installed, "the lock's bundler was not installed: #{record.stages.map(&:command).inspect}"
+    assert_includes installed.command, "--user-install"
+    assert_includes installed.command, "1.17.3"
+    assert_equal 2, runner.calls.count { |call| call.include?("bundle install") },
+      "the install is retried once, and only after the bundler was installed"
+    assert_empty record.stages.select { |stage| stage.command.include?("gem install") && stage.exit_code != 0 },
+      "the bundler arrives before the second attempt"
   end
 
   # **A bridge that inserts a line writes the requirement it declares with onto it.** Measured at the 5.2

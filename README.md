@@ -290,6 +290,18 @@ runs `bundle install` in them in that order. The first one that can install the 
 the machine; every attempt, with its reason, travels in the record. No candidate at all is
 `unverified` with the floor named, never a silent fallback.
 
+**And a lock names the bundler that wrote it, which an era may not ship.** RubyGems activates
+`Gemfile.lock`'s `BUNDLED WITH`, so an era whose image pins a newer bundler cannot install the
+application *at all*: measured on the 2.7 era, `bundle install` answered `Could not find 'bundler'
+(1.17.3) required by your Gemfile.lock. … To install the missing version, run gem install
+bundler:1.17.3` — while the same tree installs on 2.5, whose image's *default* bundler is 1.17.3.
+The mechanism installs the version the lock names (`--user-install`, because the container runs as
+the walker's uid and not as root) and retries once, rather than rewriting the lock: the lock is the
+application's own statement about its toolchain, and measured, that install makes the same
+`bundle install` succeed. A locked bundler that cannot *run* on the era is a different fact —
+1.17.3 calls `Pathname#untaint`, which Ruby 3.2 removed — and its retry fails loudly rather than
+silently.
+
 **What the container is.** One `docker run -d … sleep infinity` per step, with commands
 sent in by `docker exec` — one container per *step* and not one per command, because the
 services the suite needs live inside it and would die with a per-command container. The
