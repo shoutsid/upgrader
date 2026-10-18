@@ -938,6 +938,91 @@ class RewritesTest < Minitest::Test
       "the symbol key is the shape the release wants, so it is not a finding"
   end
 
+  # **A concern the release stopped including**, where the note's own condition ("a controller that
+  # streams") is a fact about the *file* rather than about the class line — so the rule asks the file.
+  # The write is two lines, because the applier replaces a line and this edit is the line plus the one
+  # under it.
+  def test_a_concern_the_release_stopped_including_goes_under_the_class_that_needs_it
+    tree = {
+      "app/controllers/blobs_controller.rb" => [
+        "class BlobsController < ActiveStorage::BaseController\n",
+        "  def show\n",
+        "    send_blob_stream(blob)\n",
+        "  end\n",
+        "end\n"
+      ]
+    }
+    located = [entry(subject: "ActiveStorage::BaseController",
+      path: "app/controllers/blobs_controller.rb", line: 1,
+      text: "class BlobsController < ActiveStorage::BaseController")]
+    result = Rewrites.apply(located, files: tree)
+
+    assert_equal ["class BlobsController < ActiveStorage::BaseController\n  include ActiveStorage::Streaming"],
+      result.edits.map { |edit| edit["after"] }
+
+    # A subclass whose own file does not stream is not one the note is about, and it stays a decision.
+    plain = tree.merge("app/controllers/blobs_controller.rb" => [
+      "class BlobsController < ActiveStorage::BaseController\n", "end\n"
+    ])
+    assert_empty Rewrites.apply(located, files: plain).edits
+
+    # And one that already includes it is left, which is the `already` guard.
+    included = tree.merge("app/controllers/blobs_controller.rb" => [
+      "class BlobsController < ActiveStorage::BaseController\n",
+      "  include ActiveStorage::Streaming\n",
+      "  def show\n",
+      "    send_blob_stream(blob)\n",
+      "  end\n",
+      "end\n"
+    ])
+    assert_empty Rewrites.apply(located, files: included).edits
+    assert_includes Rewrites.gap_for("ActiveStorage::BaseController"), "stays a decision"
+  end
+
+  # **A setting is the evidence for a change that has no call site.** The same setting is spelled
+  # differently in each place it can live, so the match is on its last segment as a whole word — and the
+  # question is only whether the application mentions it.
+  def test_a_setting_survey_reads_the_application_for_the_setting_it_names
+    tree = {
+      "config/environments/test.rb" => [
+        "Rails.application.configure do\n",
+        "  config.active_support.test_order = :sorted\n"
+      ],
+      "config/application.rb" => [
+        "module Myapp\n",
+        "  class Application < Rails::Application\n"
+      ]
+    }
+
+    found = Rewrites.survey([{ "subject" => "config.active_support.test_order" }], tree: tree,
+      located: []).fetch("config.active_support.test_order")
+    assert_equal ["config/environments/test.rb:2"],
+      found.findings.map { |path, line, _| "#{path}:#{line}" }
+
+    # A change the rung carries whose setting the application never mentions says so, which is the
+    # difference between "already chosen" and "left at the new default".
+    assert_predicate Rewrites.survey([{ "subject" => "cookies_serializer" }], tree: tree, located: [])
+      .fetch("cookies_serializer").findings, :empty?
+  end
+
+  # `db/schema.rb` is a `.rb` file the scan reads and no detect pattern looks at, which is exactly why
+  # the columns a JSON change is about are a survey's job rather than a rule's.
+  def test_the_json_column_survey_reads_the_schema_and_not_the_application
+    tree = {
+      "db/schema.rb" => [
+        "ActiveRecord::Schema.define(version: 2020_01_01) do\n",
+        "  create_table \"events\" do |t|\n",
+        "    t.jsonb \"payload\", default: {}\n",
+        "    t.string \"name\"\n"
+      ],
+      "app/models/event.rb" => ["class Event < ApplicationRecord\n", "  # a jsonb payload\n"]
+    }
+
+    found = Rewrites.survey([{ "subject" => "JSON and JSONB columns" }], tree: tree, located: [])
+      .fetch("JSON and JSONB columns")
+    assert_equal ["db/schema.rb:3"], found.findings.map { |path, line, _| "#{path}:#{line}" }
+  end
+
   def test_a_finding_list_is_bounded_and_says_how_many_it_left_out
     findings = (1..9).map { |n| ["app/models/item.rb", n, "  where(active: #{n})\n"] }
     sentence = Rewrites.findings_sentence(findings)

@@ -153,15 +153,16 @@ The pipeline has three stages that make the rest mean anything:
    `line_removed`, `call_replaced`, `finder_moved`, `find_conditions`, `option_added`,
    `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`,
    `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
-   `option_renamed`, `call_unwrapped`, `parameter_added`, `block_captured`), so the next lighthouse
-   writes an instance of
+   `option_renamed`, `call_unwrapped`, `parameter_added`, `block_captured`,
+   `concern_included`), so the next lighthouse writes an instance of
    an existing family, and every change no rule covers carries a **gap** saying what
    would close it — the residue is a queue with reasons, not a list. A change whose fix
    is a *judgement* rather than an edit gets a **survey** instead: it reads the
    application and names the lines the decision is about (which callers of a
    `default_scope` read differently, which lines assign to a `has_many_attached`
    collection, which aliases shadow a method the file defines, and — through
-   `survey_calls` — the call sites a decision can only show one of), and the evidence travels
+   `survey_calls` and `survey_setting` — the call sites a decision can only show one
+   of, and the config lines a change with no call site turns on), and the evidence travels
    in the decision, so "none found" is a sentence a reader gets rather than silence.
    A rule may also need
    a **file** to exist (a model cannot inherit from `ApplicationRecord` before that class

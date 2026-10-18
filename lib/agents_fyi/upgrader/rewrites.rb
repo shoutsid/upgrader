@@ -238,6 +238,29 @@ module AgentsFyi
                "which reads as an application error; the change's own answer is Spring 3.0.0 or newer")
       ].freeze
 
+      # **A concern the release stopped including, and the file it has to be included in.** The class
+      # line is the located line, so the edit is that line and the one under it — which is why the write
+      # is a two-line string: the applier replaces a line, and a line that gains a line under it is the
+      # whole edit.
+      #
+      # **The rule is narrow on purpose.** 7.1's note conditions the include on a controller "that
+      # streams", and whether a controller streams is not a fact about its class line — so the rule asks
+      # the *file* instead, through `context`: a subclass whose own file calls the method the concern
+      # provides is one that streams. A controller that streams through a helper defined elsewhere is not
+      # matched and stays a decision, which is the refusal this family's PARTIAL states.
+      #
+      # **The idempotence check is the context's, not `already`'s**, and that is worth saying: `already`
+      # is a guard on the *line*, and what says this file is done is on the line *under* the class.
+      def self.concern_included(subject:, superclass:, concern:, marker:)
+        Rule.new(family: :concern_included, subject: subject,
+          pattern: /\A(?<indent>\s*)class\s+(?<name>[A-Z]\w*(?:::\w+)*)\s*<\s*#{Regexp.escape(superclass)}\b(?<rest>[^\n]*)\z/,
+          replace: "\\k<indent>class \\k<name> < #{superclass}\\k<rest>\n\\k<indent>  include #{concern}",
+          context: lambda do |lines, _found, _raw|
+            lines.any? { |line| line.match?(/#{marker}/) } &&
+              lines.none? { |line| line.match?(/\binclude\s+#{Regexp.escape(concern)}\b/) }
+          end)
+      end
+
       # **A survey whose whole evidence is the call sites.** A decision names *one* line, so a change with
       # five call sites has four the residue never shows — and for these changes the list *is* the work:
       # the sanitizer calls to review, the tests to rewrite, the models whose lists have to become strong
@@ -247,6 +270,30 @@ module AgentsFyi
         Survey.new(subject: subject, sentence: sentence,
           read: lambda do |_tree, located|
             located.map { |entry| [entry["path"], entry["line"].to_i, entry["text"].to_s] }
+          end)
+      end
+
+      # **A survey whose evidence is a setting's own lines.** A change with no call site and no detect — a
+      # default that flipped, a cookie serialiser, a cache format — has nothing for the scan to locate, so
+      # the residue would be the note alone. What a person needs is whether *this* application touches the
+      # setting at all, and that is a line in a config file.
+      #
+      # The match is on the setting's **last segment** as a whole word, because the same setting is
+      # spelled differently everywhere it can live (`config.i18n.enforce_available_locales`,
+      # `Rails.application.config.i18n.enforce_available_locales`) and the question is only whether the
+      # application mentions it. A mention in a comment is therefore a finding too, which is the same
+      # false positive `Evidence` accepts and for the same reason: a survey costs a reader a glance.
+      def self.survey_setting(subject:, setting:, sentence:)
+        name = setting.split(".").last
+        Survey.new(subject: subject, sentence: sentence,
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              lines.each_with_index.filter_map do |line, index|
+                next unless line.match?(/\b#{Regexp.escape(name)}\b/)
+
+                [path, index + 1, line]
+              end
+            end
           end)
       end
 
@@ -433,6 +480,73 @@ module AgentsFyi
                 [path, index + 1, line]
               end
             end
+          end),
+
+        # **The settings this application touches, for the changes that have no call site at all.** Each
+        # note turns on a fact about the deployment rather than about a line of code — whether the
+        # application has already chosen a test order, a cookie serialiser, a cache format — and the
+        # residue would otherwise be the note alone.
+        survey_calls(subject: "render :text",
+          sentence: "the call sites — the 4.1 rung only deprecates `:text`, and the rule that rewrites " \
+                    "them is the 5.1 rung's"),
+        survey_setting(subject: "config.i18n.enforce_available_locales",
+          setting: "config.i18n.enforce_available_locales",
+          sentence: "the lines that set it, if the application has opted out of the new default"),
+        survey_setting(subject: "cookies_serializer",
+          setting: "cookies_serializer",
+          sentence: "the lines that set it — `:hybrid` is the note's migration path, and it is a choice"),
+        survey_setting(subject: "config.active_support.test_order",
+          setting: "test_order",
+          sentence: "the lines that choose an order — `:sorted` keeps today's, `:random` finds the " \
+                    "tests that depend on each other now"),
+        survey_setting(subject: "test order",
+          setting: "test_order",
+          sentence: "the lines that choose an order, which 5.0 makes random by default"),
+        survey_setting(subject: "signed and encrypted cookies",
+          setting: "use_authenticated_cookie_encryption",
+          sentence: "the lines that set the rollback flag, which exists for the first deploy of a " \
+                    "rolling upgrade"),
+        survey_setting(subject: "cookies and their purpose",
+          setting: "use_cookies_with_metadata",
+          sentence: "the lines that set the rollback flag, which exists for the first deploy of a " \
+                    "rolling upgrade"),
+        survey_setting(subject: "the key generator's digest class",
+          setting: "key_generator_hash_digest_class",
+          sentence: "the lines that set it, and the rotator an encrypted-cookie deployment needs " \
+                    "beside it"),
+        survey_setting(subject: "ActiveSupport::Cache format",
+          setting: "cache_format_version",
+          sentence: "the lines that set it — a rolling deploy has to leave the format alone for the " \
+                    "first pass and switch it after"),
+        survey_setting(subject: "ActionDispatch::SSL",
+          setting: "ssl_options",
+          sentence: "the lines that set the options, which is what an endpoint that has to be exempt " \
+                    "from the redirect uses"),
+        survey_setting(subject: "autoloading during initialization",
+          setting: "to_prepare",
+          sentence: "the `to_prepare` blocks already in the application, which is where a reference " \
+                    "made during boot belongs"),
+        survey_setting(subject: "config.i18n.raise_on_missing_translations",
+          setting: "raise_on_missing_translations",
+          sentence: "the lines that set it, if the application raises rather than falling back"),
+
+        # "A string assigned to a JSON/JSONB column is now returned as that string rather than parsed
+        # into a Hash, and the same applies to :default in schema.rb. Pass a Hash."
+        #
+        # The columns *are* the evidence, and they are in `db/schema.rb` — a `.rb` file the scan reads,
+        # but one no detect pattern looks at, because the change has none.
+        Survey.new(subject: "JSON and JSONB columns",
+          sentence: "the JSON and JSONB columns, which are what has to be assigned a Hash",
+          read: lambda do |tree, _located|
+            tree.flat_map do |path, lines|
+              next [] unless path.end_with?("schema.rb")
+
+              lines.each_with_index.filter_map do |line, index|
+                next unless line.match?(/\bt\.(json|jsonb)\b/)
+
+                [path, index + 1, line]
+              end
+            end
           end)
       ].freeze
 
@@ -581,6 +695,11 @@ module AgentsFyi
                                                    "the line *after* `set_callback` is not matched, so " \
                                                    "that call site stays a decision rather than becoming " \
                                                    "a guess",
+        "ActiveStorage::BaseController" => "the rule adds the include to a subclass whose own file " \
+                                           "calls `send_blob_stream` — the note's own condition is a " \
+                                           "controller *that streams*, and that is a fact about the " \
+                                           "file. A controller that streams through a helper defined " \
+                                           "elsewhere stays a decision",
         "Rails.application.secrets" => "the fix is to read a nested *string* key as a symbol " \
                                         "(`secrets[:smtp][\"address\"]` is `secrets[:smtp][:address]`), " \
                                         "and a rule cannot see a string's contents: the mask blanks " \
@@ -1216,7 +1335,14 @@ module AgentsFyi
         # "The around callback now receives the block as an argument: `->(r, &block) {...}` becomes
         # `->(r, block) {...}`." Both spellings the note's own sentence covers — a lambda and a `do`
         # block — are the same edit, because both are `&block` at the end of a parameter list.
-        block_captured(subject: "ActiveSupport::Callbacks.set_callback")
+        block_captured(subject: "ActiveSupport::Callbacks.set_callback"),
+
+        # "The streaming concern is no longer included, so a controller inheriting from it that streams
+        # has to include it." The subclass's own file is what says whether it streams — the note's own
+        # condition — and the concern's method is the marker.
+        concern_included(subject: "ActiveStorage::BaseController",
+          superclass: "ActiveStorage::BaseController", concern: "ActiveStorage::Streaming",
+          marker: /send_blob_stream/)
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
