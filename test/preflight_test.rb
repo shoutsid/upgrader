@@ -197,6 +197,36 @@ class PreflightTest < Minitest::Test
     assert_includes before_result.notes.first, "rails_at_least 4.2"
   end
 
+  # **A declaration scoped to the rung cannot be made before the pin names that rung.** Measured at
+  # the 4.2 rung: the preflight runs before the machine is chosen — the choice *is* a `bundle
+  # install` — so the Gemfile it edits still says `rails 4.1.0`, and declaring `responders ~> 2.0`
+  # there answers `railties (< 5, >= 4.2.0.alpha)` against `railties (= 4.1.0)` for every era. The
+  # preflight therefore defers it, says so, and the step applies it after the pin is rewritten.
+  def test_a_declaration_scoped_to_the_rung_waits_for_the_pin
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "responders", kind: "declared",
+      requirement: "~> 2.0", condition: { "rails_at_least" => "4.2" })])
+
+    result = preflight(dir, corpus: corpus, rails: "4.2.0")
+
+    assert_empty result.repairs,
+      "the preflight declared a gem the Gemfile's own framework cannot carry: #{result.details.inspect}"
+    refute_includes read(dir, "Gemfile"), "responders"
+    assert_equal %w[responders], result.deferred.map { |deferred| deferred["gem"] }
+    assert_includes result.summary, "1 declaration(s) for the rung"
+    assert_equal %w[responders], result.to_h["deferred"]
+    assert(result.notes.any? { |note| note.include?("waits for the pin") },
+      "a deferred declaration that says nothing reads as one the digest did not have: " \
+      "#{result.notes.inspect}")
+
+    # And where the Gemfile and the pin agree, the same entry is applied.
+    later = Preflight.new(root: dir, corpus: corpus, rails: "4.2.0").declare_deferred(result.deferred)
+
+    assert_equal %w[responders], later.repairs.map(&:subject)
+    assert_includes read(dir, "Gemfile"), %(gem "responders", "~> 2.0")
+    assert_includes later.details, %(Gemfile: `gem "responders", "~> 2.0"` declared (responders))
+  end
+
   # A gem the application already declares is the application's line: the digest is not asked about
   # a line it did not write, and adding a second one would be the duplicate bundler refuses outright.
   def test_a_gem_the_application_already_declares_is_left_alone

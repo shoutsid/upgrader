@@ -180,7 +180,11 @@ class StepTest < Minitest::Test
 
     def gem_migrations(gems:)
       @gem_requests << gems
-      { "migrations" => @migrations.select { |migration| gems.include?(migration["gem"]) },
+      # The service's own rule, mirrored so the double cannot lie: a `declared` entry is for a gem
+      # the caller does not hold — the framework brings it in — so it travels with every answer.
+      { "migrations" => @migrations.select { |migration|
+        gems.include?(migration["gem"]) || migration["kind"] == "declared"
+      },
         "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,
         "next_step" => "the digest's own sentence" }
     end
@@ -436,6 +440,44 @@ class StepTest < Minitest::Test
     # the record is a change nobody reading the record can account for.
     assert_includes record.to_h["applied"].find { |edit| edit["subject"] == "git://" }["note"],
       "2022"
+  end
+
+  # **A declaration scoped to the rung is made between the pin and its resolve, and nowhere
+  # earlier.** Measured at the 4.2 rung: the preflight runs before the machine is chosen (the
+  # choice is a `bundle install`), so the Gemfile it edits still names `rails 4.1.0`, and
+  # declaring `responders ~> 2.0` there answers `railties (< 5, >= 4.2.0.alpha)` against
+  # `railties (= 4.1.0)` for every era — the step then reports "no interpreter installed the
+  # application's bundle". The declaration belongs where the Gemfile and the pin agree, which is
+  # `rewrite`: after the line is rewritten and before the resolve. The condition is also read
+  # against the *rung*, not the requested target — a walk to 6.0.0 executes the 5.0 rung here,
+  # and `rails_below 6.0` is true of the rung and false of the target, which is what tells the
+  # two apart.
+  def test_a_declaration_scoped_to_the_rung_is_made_between_the_pin_and_its_resolve
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+    GEM
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11"), migrations: [
+      { "gem" => "responders", "kind" => "declared", "requirement" => "~> 2.0",
+        "mechanical" => true, "when" => { "rails_below" => "6.0" },
+        "note" => "the resolver picks a release that cannot sit beside the move",
+        "source" => "the 4.2 rung's own resolve output" }
+    ])
+    tests = CapturingTests.new
+
+    record = step(dir, corpus: corpus, tests: tests).run
+
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "declarations", "the declaration is not in the record"
+    assert_operator stages.index("declarations"), :<, stages.index("pin"),
+      "the declaration was made after the resolve it exists to make possible"
+    refute_includes tests.seen.first, "responders",
+      "the baseline installed a declaration the release it starts from cannot carry"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "responders", "~> 2.0")
+    assert_includes record.patch, %(gem "responders", "~> 2.0")
+    declaration = record.stages.find { |stage| stage.stage == "declarations" }
+    assert_includes declaration.output_tail, "declared (responders)"
+    assert_equal %w[responders], record.applied.map(&:subject).grep("responders")
   end
 
   # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is

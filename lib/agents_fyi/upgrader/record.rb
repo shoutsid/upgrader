@@ -75,6 +75,12 @@ module AgentsFyi
       # rather than being one itself (`verdict`).
       DATABASE = "database"
       APPLY = "apply"
+      # **The digest's declarations for the rung, made between the pin rewrite and its
+      # resolve.** A `declared` entry is about a gem the target framework brings in, so a
+      # rung-scoped one cannot be applied while the Gemfile still names the release the move
+      # starts from (`Preflight` defers it); this is where it lands. Its own stage because a
+      # reader has to see what the digest added beside the pin it made possible.
+      DECLARATIONS = "declarations"
       PIN = "pin"
       RAILS_UPDATE = "rails:update"
       BOOT = "boot"

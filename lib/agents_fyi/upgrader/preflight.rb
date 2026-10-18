@@ -72,13 +72,17 @@ module AgentsFyi
       class NotAnApplication < StandardError; end
 
       # Everything the preflight did, in the two lists a record already has places for
-      # and the sentences that say what it could not do.
-      Result = Struct.new(:repairs, :decisions, :notes, keyword_init: true) do
+      # and the sentences that say what it could not do. `deferred` is the third list and
+      # deliberately not an outcome: a `declared` entry scoped to the rung cannot be applied
+      # while the Gemfile still names the release the move starts from, so it travels to the
+      # caller that rewrites the pin (`Step#declare_for_the_rung`).
+      Result = Struct.new(:repairs, :decisions, :notes, :deferred, keyword_init: true) do
         def empty? = repairs.empty? && decisions.empty?
 
         # The one-line summary the `preflight:` stage carries, and the mode prints.
         def summary
-          "#{repairs.size} repair(s), #{decisions.size} decision(s)" \
+          later = deferred.to_a.empty? ? "" : ", #{deferred.size} declaration(s) for the rung"
+          "#{repairs.size} repair(s), #{decisions.size} decision(s)#{later}" \
             "#{notes.empty? ? "" : ", #{notes.size} note(s)"}"
         end
 
@@ -113,7 +117,11 @@ module AgentsFyi
                 "reason" => decision.reason, "kind" => decision.kind,
                 "replacement" => decision.replacement, "source" => decision.source }
             },
-            "notes" => notes
+            "notes" => notes,
+            # **What was *not* done here, and who will do it.** A rung-scoped declaration is
+            # applied by the step after the pin is rewritten, so a record of this stage that
+            # did not name it would read as "the digest had nothing for this application".
+            "deferred" => deferred.to_a.map { |entry| entry["gem"] }
           }
         end
 
@@ -149,10 +157,26 @@ module AgentsFyi
         repairs = protocol_repairs
         decisions = []
         notes = []
+        deferred = []
         digest(notes).each do |entry|
-          digest_repair(entry, repairs, decisions, notes)
+          digest_repair(entry, repairs, decisions, notes, deferred)
         end
-        Result.new(repairs: repairs, decisions: decisions, notes: notes)
+        Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: deferred)
+      end
+
+      # **The declarations this stage could not make, because the Gemfile and the pin did not
+      # agree yet.** Each entry already passed `holds?` when it was deferred, so it is applied
+      # here rather than re-evaluated: `Step#rewrite` calls this after the Rails pin is rewritten
+      # and before the pin's resolve, which is the one place a rung-scoped declaration is both
+      # true of the Gemfile and not yet contradicted by it.
+      def declare_deferred(entries)
+        repairs = []
+        decisions = []
+        notes = []
+        Array(entries).each do |entry|
+          declare(entry, declaration(entry["gem"].to_s), repairs, decisions, notes)
+        end
+        Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: [])
       end
 
       private
@@ -249,7 +273,7 @@ module AgentsFyi
       # the move is mechanical, then whether the declaration is one this class can
       # rewrite. `declaration_index` finds the line once, so the skip reasons and the
       # rewrite name the same line.
-      def digest_repair(entry, repairs, decisions, notes)
+      def digest_repair(entry, repairs, decisions, notes, deferred = [])
         name = entry["gem"].to_s
         # **A condition guards every kind, not only a declaration.** A digest entry is a fact about an
         # era, and the era is not always the one being walked: measured at the 4.2 rung, the digest's
@@ -261,9 +285,29 @@ module AgentsFyi
           return
         end
 
-        found = declaration(name)
-        return declare(entry, found, repairs, decisions, notes) if entry["kind"].to_s == "declared"
+        if entry["kind"].to_s == "declared"
+          # **A declaration waits until the Gemfile and the pin agree.** A `declared` entry is
+          # about a gem the *framework being moved to* brings in, and its requirement is a fact
+          # about that framework: measured at the 4.2 rung, declaring `responders ~> 2.0` beside
+          # `rails 4.1.0` makes every era's `bundle install` fail on `railties (< 5, >=
+          # 4.2.0.alpha)` against `railties (= 4.1.0)`, so no interpreter is chosen and the step
+          # is unverified. This stage runs *before* the pin is rewritten — it has to, because the
+          # machine choice is itself a `bundle install` — so a declaration scoped to the rung is
+          # deferred to `Step#declare_for_the_rung`, which runs after the pin and before its
+          # resolve. A declaration scoped only by the interpreter is applied here: it is about
+          # the machine rather than about the release the Gemfile names.
+          if rung_scoped?(entry)
+            deferred << entry
+            notes << "the digest's declaration for #{name} waits for the pin: it is scoped by " \
+                     "#{condition_sentence(entry)}, and the Gemfile still names the release this " \
+                     "step starts from — the declaration is applied once the pin is rewritten"
+            return
+          end
 
+          return declare(entry, declaration(name), repairs, decisions, notes)
+        end
+
+        found = declaration(name)
         if found.nil?
           return unless locked_gems.include?(name)
 
@@ -365,6 +409,16 @@ module AgentsFyi
       # *why* an entry did not apply have to agree about the vocabulary — an unknown clause is a note,
       # not a silent skip.
       KNOWN_CLAUSES = %w[ruby_below rails_below rails_at_least].freeze
+
+      # The two clauses that name the *rung* rather than the machine. A `declared` entry scoped
+      # by one of them is about the framework the gem arrives with, so it is deferred until the
+      # Gemfile names that framework (`digest_repair`).
+      RUNG_CLAUSES = %w[rails_below rails_at_least].freeze
+
+      def rung_scoped?(entry)
+        condition = entry["when"]
+        condition.is_a?(Hash) && condition.keys.any? { |clause| RUNG_CLAUSES.include?(clause.to_s) }
+      end
 
       def clause_holds?(clause, value)
         return true if value.empty?

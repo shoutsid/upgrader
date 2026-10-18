@@ -447,8 +447,13 @@ module AgentsFyi
       # than a silent pass.
       def preflight_stage(stages, step)
         corpus = @corpus || Corpus.new(base: @api)
-        result = Preflight.new(root: @worktree.root, corpus: corpus,
-          ruby: step["requires_ruby"] || @lockfile.locked_ruby, rails: @to).run
+        @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
+          ruby: step["requires_ruby"] || @lockfile.locked_ruby, rails: rung_of(step))
+        result = @preflight.run
+        # **What the preflight could not do because the Gemfile and the pin did not agree yet.**
+        # A `declared` entry scoped to the rung is applied by `declare_for_the_rung`, after the
+        # pin is rewritten and before its resolve (`rewrite`).
+        @deferred = result.deferred
         stages << Record::Command.new(
           stage: Record::PREFLIGHT, command: "preflight: #{result.summary}",
           ran: true, exit_code: 0, seconds: 0.0,
@@ -459,7 +464,17 @@ module AgentsFyi
       rescue Preflight::NotAnApplication => e
         stages << Record::Command.new(stage: Record::PREFLIGHT, command: e.message,
           ran: false, exit_code: nil, seconds: 0.0, output_tail: e.message)
-        Preflight::Result.new(repairs: [], decisions: [], notes: [e.message])
+        @deferred = []
+        Preflight::Result.new(repairs: [], decisions: [], notes: [e.message], deferred: [])
+      end
+
+      # **The rung this step executes, which is what a digest entry's condition names.** The
+      # constructor's `@to` is where the *caller* wants to end up — a walk to the top of the
+      # ladder asks for 8.1.0 at every rung — so evaluating `rails_at_least` against it would
+      # apply an entry for the last release to the first rung. Only the rung knows its own
+      # release, and that is the fact the digest states.
+      def rung_of(step)
+        step["to_version"] || @to
       end
 
       # The machine this step will run on, and the install it performed while deciding.
@@ -1532,8 +1547,43 @@ module AgentsFyi
         end
 
         File.write(path, updated)
+        # **The digests' declarations wait for this line, and this is the line.** A
+        # `declared` entry is about a gem the *target* framework brings in; rung-scoped ones
+        # are deferred by the preflight (which runs before this rewrite, because the machine
+        # choice is a `bundle install` of the Gemfile as it stands) and are applied here,
+        # between the pin and the resolve. Measured at the 4.2 rung: `responders ~> 2.0`
+        # beside `rails 4.1.0` makes the resolver answer `railties (< 5, >= 4.2.0.alpha)`
+        # against `railties (= 4.1.0)` for every era, so no interpreter installs the bundle;
+        # declared here it resolves to 2.4.1 and the pin succeeds.
+        declare_for_the_rung(stages)
         pin(stages)
         nil
+      end
+
+      # The declarations the preflight deferred because the Gemfile still named the release
+      # the move starts from, applied now that the pin agrees with the rung. Its own stage,
+      # because "the digest declared a gem this application never had" is a fact a reader of
+      # the record has to see beside the pin it made possible — and because a declaration
+      # that silently did not happen is the empty answer this pipeline keeps paying for.
+      def declare_for_the_rung(stages)
+        entries = @deferred.to_a
+        result =
+          if entries.empty?
+            Preflight::Result.new(repairs: [], decisions: [], notes: [], deferred: [])
+          else
+            @preflight.declare_deferred(entries)
+          end
+        @applied.concat(result.repairs)
+        @decisions.concat(result.decisions)
+        stages << Record::Command.new(
+          stage: Record::DECLARATIONS,
+          command: entries.empty? ? "declarations: none held for this rung" :
+            "declarations: #{result.repairs.size} declared for this rung",
+          ran: true, exit_code: 0, seconds: 0.0,
+          output_tail: result.details.first(20).join("\n")
+        )
+        @out.puts("  declarations: #{result.summary}") if @out && entries.any?
+        result
       end
 
       # **The pin is a conversation with the resolver, and the resolve moves what it must and puts

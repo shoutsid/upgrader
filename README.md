@@ -128,8 +128,13 @@ The pipeline has three stages that make the rest mean anything:
    which says the framework is about to bring the gem in and the newest release of it cannot
    run here. That one is an addition: there is no line of the application's to rewrite, so the
    line is added, and the entry's condition is evaluated against the move: the Ruby it is right
-   below (the rung's floor) and the release it is right for (`rails_below`/`rails_at_least`), so
-   one gem can be documented as having to move twice in a walk. An entry that does not apply says
+   below (the rung's floor) and the release it is right for (`rails_below`/`rails_at_least`, read
+   against the rung's own `to_version`), so one gem can be documented as having to move twice in
+   a walk. **A declaration scoped to the rung waits for the pin**: this stage runs before the
+   Gemfile names that release, and measured at the 4.2 rung, declaring `responders ~> 2.0` beside
+   `rails 4.1.0` makes every era's `bundle install` fail on `railties (< 5, >= 4.2.0.alpha)`, so no
+   interpreter is chosen. The preflight defers it to the **declarations** stage, which runs after
+   the pin line is rewritten and before its resolve. An entry that does not apply says
    so, and so does one whose clause this build does not know.
    The install itself is where a native gem meets the environment: nokogiri vendors its own
    libxml2 and builds it with libtool, whose install `chmod`s the static library — refused on
