@@ -1772,8 +1772,8 @@ module AgentsFyi
         # the rung fails on a gem the digest had already declared and the resolve never runs.
         requested = text.to_s.scan(/The bundle currently has ([\w.-]+) locked at/).flatten +
                     text.to_s.scan(/Try running `bundle update ([^`]+)`/).flatten
-        # **And a requirer whose own requirement is on the gem bundler could not place — directly, and
-        # no further.** The gem bundler cannot place is often not the gem holding it back: measured on
+        # **And the requirer whose own requirement is on the gem bundler could not place — directly,
+        # and no further.** The gem bundler cannot place is often not the gem holding it back: measured on
         # the lighthouse's rspec-rails move, bundler named `rspec-mocks`, `rspec-expectations` and
         # `rspec-core` in three rounds while the pin that made all three impossible was the `rspec`
         # *meta*-gem's own `~> 2.13.0` — which the message names only as the requirer, with the
@@ -1795,7 +1795,14 @@ module AgentsFyi
 
           requirer
         end
-        ((named + requested + requirers).uniq & @lockfile.specs.keys)
+        # **A conflict name is filtered by the lock; a name the resolver says the *bundle* holds is
+        # not, and that difference is measured.** For a version conflict the gem is in the snapshot
+        # (that is why it conflicts), and a name outside it cannot be unlocked. But "The bundle
+        # currently has responders locked at 1.1.2" names a gem the *new* resolution brought in and
+        # the old lock never held — measured at the 4.2 rung, where responders is not in the 4.1
+        # lockfile at all and filtering it out left the pin asked once, failing on the gem the digest
+        # had just declared.
+        ((named + requirers).uniq & @lockfile.specs.keys) + requested
       end
 
       # **The gems that move with the meta-gem, and the measurement that says they must be

@@ -589,12 +589,13 @@ class StepMachineTest < Minitest::Test
 
   # **A declaration's requirement is a line the *lock* does not satisfy, and bundler names the gem
   # to unlock rather than answering with a version conflict.** Measured at the 4.2 rung: the
-  # declarations stage adds `responders ~> 2.0` beside a lock holding 1.1.2, and the pin's first
-  # round — which names only the framework — exits 7 with "You have requested: responders ~> 2.0 /
-  # The bundle currently has responders locked at 1.1.2. / Try running `bundle update responders`".
-  # Reading that sentence is the same mechanism the conflict message uses, and without it the rung
-  # fails on a gem the digest had already declared: the resolve that takes responders 2.4.1 never
-  # runs.
+  # declarations stage adds `responders ~> 2.0` beside a 4.1 lock that does not hold responders at
+  # all — devise 3.0.4 does not depend on it, and the resolve that arrives with 4.2 brings it in —
+  # and the pin's first round, which names only the framework, exits 7 with "You have requested:
+  # responders ~> 2.0 / The bundle currently has responders locked at 1.1.2. / Try running `bundle
+  # update responders`". That name is *not* in the snapshot the step read, so the lockfile filter the
+  # conflict names go through drops it; it is filtered out here only if it is missing from the
+  # fixture, which is why this lockfile has no responders.
   def test_a_pin_unlocks_the_gem_a_declaration_adds_that_the_lock_does_not_satisfy
     lockfile = <<~LOCK
       GEM
@@ -607,7 +608,6 @@ class StepMachineTest < Minitest::Test
             actionpack (= 4.1.0)
             railties (= 4.1.0)
           railties (4.1.0)
-          responders (1.1.2)
 
       PLATFORMS
         ruby
