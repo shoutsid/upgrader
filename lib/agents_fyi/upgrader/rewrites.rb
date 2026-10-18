@@ -361,6 +361,32 @@ module AgentsFyi
           end)
       end
 
+      # **A survey's fact still belongs in the residue when the change has no call site here.** A survey
+      # whose sentence promises two things — the call sites, and an application-wide fact — reported only
+      # the first when the application had none: measured at the 6.0 rung, `force_ssl in a controller`
+      # read "none found" while its own sentence asked whether `config.force_ssl` is set anywhere, and the
+      # setting *is* mentioned in `config/environments/production.rb` (commented). The mention stands in
+      # for the call site, with the fact as its text; when the application mentions the setting nowhere
+      # either, "none found" is the whole truth and this returns nothing.
+      def self.survey_beside(located, mentions, beside)
+        unless located.empty?
+          return located.map do |entry|
+            [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
+          end
+        end
+
+        mentions.map { |path, line, _text| [path, line, beside] }
+      end
+
+      # The lines that mention a setting, in the order a file has them.
+      def self.setting_mentions(tree, pattern)
+        tree.flat_map do |path, lines|
+          lines.each_with_index.filter_map do |line, index|
+            [path, index + 1, line.strip] if line.match?(pattern)
+          end
+        end
+      end
+
       # **A survey whose evidence is a setting's own lines.** A change with no call site and no detect — a
       # default that flipped, a cookie serialiser, a cache format — has nothing for the scan to locate, so
       # the residue would be the note alone. What a person needs is whether *this* application touches the
@@ -521,16 +547,15 @@ module AgentsFyi
         Survey.new(subject: "force_ssl in a controller",
           sentence: "the controllers that ask for it, and whether config.force_ssl is set anywhere",
           read: lambda do |tree, located|
-            app_wide = tree.select { |_path, lines| lines.any? { |line| line.match?(/config\.force_ssl\b/) } }
+            mentions = Rewrites.setting_mentions(tree, /config\.force_ssl\b/)
+            set = mentions.reject { |_path, _line, text| text.start_with?("#") }
             beside =
-              if app_wide.empty?
+              if set.empty?
                 "config.force_ssl is not set anywhere"
               else
-                "config.force_ssl is set in #{app_wide.keys.sort.join(", ")}"
+                "config.force_ssl is set in #{set.map(&:first).uniq.sort.join(", ")}"
               end
-            located.map do |entry|
-              [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
-            end
+            Rewrites.survey_beside(located, mentions, beside)
           end),
 
         # "All tests respect the configured adapter now. A test environment that sets something other
@@ -687,16 +712,15 @@ module AgentsFyi
         Survey.new(subject: "Active Storage variant processor",
           sentence: "the `variant` call sites, and whether config.active_storage.variant_processor is set",
           read: lambda do |tree, located|
-            chosen = tree.select { |_path, lines| lines.any? { |line| line.match?(/\bvariant_processor\b/) } }
+            mentions = Rewrites.setting_mentions(tree, /\bvariant_processor\b/)
+            chosen = mentions.reject { |_path, _line, text| text.start_with?("#") }
             beside =
               if chosen.empty?
                 "variant_processor is not set anywhere, so the deployment takes the new default"
               else
-                "variant_processor is set in #{chosen.keys.sort.join(", ")}"
+                "variant_processor is set in #{chosen.map(&:first).uniq.sort.join(", ")}"
               end
-            located.map do |entry|
-              [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
-            end
+            Rewrites.survey_beside(located, mentions, beside)
           end),
 
         # **A change whose rule has no call site here is not the same sentence as a change nobody has

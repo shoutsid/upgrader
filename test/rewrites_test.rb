@@ -406,6 +406,34 @@ class RewritesTest < Minitest::Test
       found["require_dependency"].findings
   end
 
+  # **A survey's fact still travels when the change has no call site here.** `force_ssl in a controller`
+  # promised two things — the controllers that ask for it, and whether `config.force_ssl` is set — and
+  # reported only the first: measured at the 6.0 rung, its residue read "none found" while the setting is
+  # mentioned in `config/environments/production.rb` (commented out), and a commented default is not a
+  # setting. The mention is the finding when there is no call site, and nothing mentioned plus nothing
+  # located is what "none found" is for.
+  def test_a_survey_reports_its_application_wide_fact_when_there_is_no_call_site
+    changes = [{ "subject" => "force_ssl in a controller" }]
+    commented = { "config/environments/production.rb" => ["  # config.force_ssl = true\n"] }
+
+    found = Rewrites.survey(changes, tree: commented)["force_ssl in a controller"]
+
+    assert_equal 1, found.findings.size, "the mention is the finding when there is no call site"
+    assert_equal ["config/environments/production.rb", 1], found.findings.first[0, 2]
+    assert_includes found.findings.first[2], "config.force_ssl is not set anywhere",
+      "a commented default is not a setting"
+
+    set = Rewrites.survey(changes,
+      tree: { "config/environments/production.rb" => ["  config.force_ssl = true\n"] })
+
+    assert_includes set["force_ssl in a controller"].findings.first[2], "is set in config/environments/production.rb"
+
+    empty = Rewrites.survey(changes, tree: { "app/controllers/items_controller.rb" => ["    Item.find(1)\n"] })
+
+    assert_empty empty["force_ssl in a controller"].findings,
+      "nothing located and nothing mentioned is what `none found` is for"
+  end
+
   # **A setting the rung removed, deleted from the file Rails' generator wrote it into.** Rails 5.0's
   # `new_framework_defaults.rb` holds an application's old defaults one at a time; 5.2 removed
   # `halt_callback_chains_on_return_false` (the 5.0 rung's own boot said "deprecated and will be removed in
