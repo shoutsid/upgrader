@@ -608,42 +608,24 @@ module AgentsFyi
         @applied.map { |edit| edit.subject.to_s }.uniq & @lockfile.specs.keys
       end
 
-      # **A conservative resolve is `bundle lock --update`, not `bundle update --conservative`, and the
-      # difference is a whole blocker.** The two are not the same thing: measured on the lighthouse,
-      # `bundle update rails … --conservative` moved **rake** 10.0.4 → 12.3.3 although nothing required it
-      # (railties 4.1 asks only `rake >= 0.8.7`), and the rung that then ran a rake task died on
-      # `NoMethodError: undefined method 'last_comment' for Rake::Application` — an API rake 11 removed, on a
-      # gem the move had no reason to touch. `bundle lock --update <the same gems>`, on the same tree, leaves
-      # rake exactly where it was and moves rails to 4.2.0. So the lock is resolved and then installed, and
-      # the retry widens by the names bundler itself reports as stuck, because the resolver knows this
-      # application's requirement graph and the next round is read out of its message rather than guessed.
+      # A conservative update of `gems`, widened by what bundler names as stuck, and bounded.
+      # The resolver knows this application's requirement graph, so the next round is read out
+      # of its message rather than guessed — which is why the pin and the bundle's fallback
+      # share it rather than each keeping their own idea of what usually moves together.
       def conservative_update(stages, gems, stage:, machine: nil)
         gems = gems.dup
-        locked = nil
         PIN_ROUNDS.times do
-          locked = command(stage, ["bundle", "lock", "--update", *gems],
+          attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
             chdir: @worktree.root, env: @worktree.bundle_env, machine: machine)
-          stages << locked
-          break if locked.ok?
+          stages << attempt
+          return attempt if attempt.ok?
 
-          named = stuck_gems(locked.output_tail) - gems
-          return locked if named.empty?
+          named = stuck_gems(attempt.output_tail) - gems
+          return attempt if named.empty?
 
           gems += named
         end
-        return locked unless locked&.ok?
-
-        install_resolved(stages, machine)
-      end
-
-      # The resolve writes the lock; the gems still have to be installed, and this is a plain
-      # `bundle install` because the lock already matches the Gemfile — a second resolve here would be
-      # the thing this method exists to avoid.
-      def install_resolved(stages, machine)
-        stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-          env: @worktree.bundle_env, machine: machine)
-        stages << stage
-        stage
+        stages.last
       end
 
       # Nothing ran, and the sentence is why: the answer to "why is the baseline red" a
@@ -1535,7 +1517,7 @@ module AgentsFyi
         nil
       end
 
-      # **The pin is a conversation with the resolver, and a conservative resolve is why.** A rung
+      # **The pin is a conversation with the resolver, and `--conservative` is why.** A rung
       # moves Rails and not the world: the lighthouse proved what the alternative costs — the
       # application pinned rake 10.0.4, the unconstrained `bundle update rails` resolved 12.3.3
       # (railties 4.1 only asks `rake >= 0.8.7`), and Rails 4.1's own `rails:update` then died
