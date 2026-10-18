@@ -1213,7 +1213,9 @@ module AgentsFyi
         )
         handled = rules.applied + bridged + bridges_the_gemfile_answers
         decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
-          handled.include?(decision.subject.to_s) || already_reads_the_new_way?(decision, tree)
+          handled.include?(decision.subject.to_s) ||
+            already_reads_the_new_way?(decision, tree) ||
+            the_changes_own_scaffold?(decision)
         end
         # **A change the application has already made is not a decision.** A rule whose own idempotence guard
         # matches a line has *read* it and found nothing to do — an answer about the application rather than a
@@ -1822,6 +1824,21 @@ module AgentsFyi
 
         Rewrites::RULES.select { |rule| rule.subject == decision.subject.to_s }
           .any? { |rule| rule.satisfied?(line, Rewrites.mask(line)) }
+      end
+
+      # **A located line inside a rule's own scaffold is the change's own artifact, not work.** The
+      # `ActiveRecord::Base` change writes `app/models/application_record.rb` and moves every model onto
+      # it; the definition itself has to keep naming `ActiveRecord::Base`, so the rule excludes it *by
+      # name* — and the scan locates it on every rung, which is why both the 5.1 and the 5.2 residues
+      # carried that one line as a decision. The ladder's own note says to expect the file in the list;
+      # the rule's scaffold is what says the line is not a person's work.
+      def the_changes_own_scaffold?(decision)
+        path = decision.path.to_s
+        return false if path.empty?
+
+        Rewrites::RULES.any? do |rule|
+          rule.subject == decision.subject.to_s && rule.scaffold && rule.scaffold.path == path
+        end
       end
 
       # The gems to put back right now: what the resolve has moved without being asked to, minus the

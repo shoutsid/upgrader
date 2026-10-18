@@ -211,6 +211,20 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A scan that locates the change's own scaffold — the file its rule writes and deliberately does not
+  # rewrite — beside a model line the same change is about.
+  class ScaffoldCorpus < FakeCorpus
+    def scan(from:, to:, files:)
+      { "edits" => [],
+        "manual" => [
+          { "subject" => "ActiveRecord::Base as a model's superclass",
+            "path" => "app/models/application_record.rb", "line" => 1,
+            "note" => "the definition itself is the one `ActiveRecord::Base` that stays", "kind" => "moved" }
+        ],
+        "counts" => { "automatic" => 0, "manual" => 1 }, "next_step" => "one call site" }
+    end
+  end
+
   class FakeTests
     attr_reader :machines
 
@@ -591,6 +605,18 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
       "the lock moved it and the residue still asks for it: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A located line inside a rule's own scaffold is the change's own artifact, not work.** The
+  # `ActiveRecord::Base` change writes `app/models/application_record.rb`, the definition has to keep
+  # naming the base class, and the rule excludes that line by name — so the scan locates it on every rung
+  # and both the 5.1 and the 5.2 residues carried it as a decision. The scaffold is what says the line is
+  # not a person's work.
+  def test_the_changes_own_scaffold_is_not_a_decision
+    record = step(app, machines: machines, corpus: ScaffoldCorpus.new).run
+
+    assert_empty record.decisions.select { |decision| decision.path.to_s.include?("application_record") },
+      "the scaffold line came back as work: #{record.decisions.map(&:path).inspect}"
   end
 
   # **A bridge that inserts a line writes the requirement it declares with onto it.** Measured at the 5.2
