@@ -1513,16 +1513,24 @@ module AgentsFyi
       # reviewer needs lives — the same reason the service's edits carry them.
       def self.sourced(rules, sources, changes)
         by_subject = Array(changes).to_h { |change| [change["subject"].to_s, change] }
-        rules.select(&:file).flat_map do |rule|
-          change = by_subject[rule.subject].to_h
-          sources.flat_map do |path, lines|
-            Array(lines).each_with_index.filter_map do |line, index|
-              next unless rule.pattern.match?(line)
+        # **One entry per line per change, not per rule.** A change may have several rules that read the
+        # same files — `arguments_keyed` has three, one per shape, and they share a glob — and the first
+        # that *matches* the line is the entry. Emitting one per matching rule asked the applier to write
+        # the same line twice, so the second was refused as "not the line the scan read" and the record
+        # reported refusals that were really one edit: measured at the 5.1 rung, 15 of them, 14 for the
+        # seven wrapped call sites whose two sibling rules both matched.
+        rules.select(&:file).group_by(&:file).flat_map do |_glob, candidates|
+          candidates.group_by(&:subject).flat_map do |subject, group|
+            change = by_subject[subject].to_h
+            sources.flat_map do |path, lines|
+              Array(lines).each_with_index.filter_map do |line, index|
+                next unless group.any? { |rule| rule.pattern.match?(line) }
 
-              { "path" => path, "line" => index + 1, "text" => line.chomp, "after" => nil,
-                "subject" => rule.subject, "kind" => change["kind"],
-                "replacement" => change["replacement"], "note" => change["note"],
-                "source" => change["source"], "automatic" => true, "origin" => "rule" }
+                { "path" => path, "line" => index + 1, "text" => line.chomp, "after" => nil,
+                  "subject" => subject, "kind" => change["kind"],
+                  "replacement" => change["replacement"], "note" => change["note"],
+                  "source" => change["source"], "automatic" => true, "origin" => "rule" }
+              end
             end
           end
         end

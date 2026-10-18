@@ -936,6 +936,22 @@ class RewritesTest < Minitest::Test
     assert_empty Rewrites.sourced(Rewrites::RULES.reject(&:file), sources, changes)
   end
 
+  # **One entry per line per change, not per rule.** `arguments_keyed` has three rules for one subject and
+  # one glob, and a wrapped call matches two of them — so `sourced` emitted two entries for one line, the
+  # applier wrote the first and refused the second ("not the line the scan read"), and the record reported
+  # a refusal that was really one edit: measured at the 5.1 rung, 14 of its 15 refusals were the seven
+  # wrapped call sites whose second sibling rule had matched.
+  def test_sourced_emits_one_entry_for_a_line_several_rules_of_one_change_match
+    rules = Rewrites::RULES.select { |rule| rule.rung == "5.1.0" && rule.file == "{spec,test}/**/*.rb" }
+    line = "      lambda { delete :destroy, id: @bid, category_id: @category }.should change(Bid, :count).by(-1)"
+    sources = { "spec/controllers/bids_controller_spec.rb" => [line] }
+    changes = [{ "subject" => "test request helpers take `params:`", "kind" => "moved", "note" => "n" }]
+
+    assert_operator rules.count { |rule| rule.pattern.match?(line) }, :>=, 2,
+      "the fixture stopped matching more than one rule, so this proves nothing"
+    assert_equal 1, Rewrites.sourced(rules, sources, changes).size
+  end
+
   # **A rule can read a string's contents, and that is what a callable `replace` is for.** The *pattern*
   # matches the quotes — which the mask keeps, and which decide the extent of the match — and the *write*
   # is handed the raw region, so what was between them is readable. This is the rule that proved it: the
