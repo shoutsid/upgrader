@@ -274,10 +274,15 @@ module AgentsFyi
       # 0 ran, 2 refused, 1 the pipeline could not go on or the suite failed after a
       # green baseline. `nil` is a move the ledger had already settled — nothing ran and
       # nothing was wrong.
+      # **An unverified step is not a plan.** Nothing was established — no interpreter installed the bundle,
+      # the suite could not be run — and a caller that reads that as success has been told the wrong thing.
+      # The three values are the contract (0 a plan, 2 a refusal, 1 a failure) and unverified belongs with the
+      # failures, because it is about the machine rather than about the move. A real walk found this: an
+      # interpreter that could not reach github failed for every era, and the step exited 0.
       def step_status(record)
         return EXIT_OK if record.nil?
         return EXIT_REFUSED if record.refused?
-        return EXIT_FAILED if record.failed?
+        return EXIT_FAILED if record.failed? || record.unverified?
 
         EXIT_OK
       end

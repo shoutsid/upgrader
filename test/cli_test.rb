@@ -11,6 +11,13 @@ require "agents_fyi/upgrader"
 # three exit codes are a contract a caller reads, so they are asserted rather than
 # assumed.
 class CliTest < Minitest::Test
+  # A record that says one thing: nothing was established.
+  class UnverifiedRecord
+    def refused? = false
+    def failed? = false
+    def unverified? = true
+  end
+
   LOCK = <<~LOCK
     GEM
       remote: https://rubygems.org/
@@ -373,24 +380,39 @@ class CliTest < Minitest::Test
     assert_includes err, "unknown command `upgrade`"
     assert_includes err, "`step`"
   end
-end
 
-# **The process environment reaches the step**, and this is a fix rather than a detail. A `step` built
-# without it read every knob the step owns as *absent* — so `UPGRADER_COMMAND_TIMEOUT=120` gave the
-# fifteen-minute default, which is how it was found: a walk asked for two minutes and sat in
-# `bundle update` for ten. The seam is a class rather than the real one, so the suite asserts what
-# *would* be built rather than walking anything.
-def test_the_cli_gives_the_step_the_environment_it_was_started_with
-  built = nil
-  fake = Class.new do
-    define_method(:initialize) { |**kwargs| built = kwargs }
-    def run = nil
+  # **The process environment reaches the step**, and this is a fix rather than a detail. A `step` built
+  # without it read every knob the step owns as *absent* — so `UPGRADER_COMMAND_TIMEOUT=120` gave the
+  # fifteen-minute default, which is how it was found: a walk asked for two minutes and sat in
+  # `bundle update` for ten. The seam is a class rather than the real one, so the suite asserts what
+  # *would* be built rather than walking anything.
+  def test_the_cli_gives_the_step_the_environment_it_was_started_with
+    built = nil
+    fake = Class.new do
+      define_method(:initialize) { |**kwargs| built = kwargs }
+      define_method(:run) { nil }
+    end
+
+    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
+      out: StringIO.new, env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
+
+    assert_equal 0, status
+    refute_nil built, "the step was built"
+    assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
   end
 
-  status = Cli.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
-    out: StringIO.new, env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
+  # **An unverified step is not a plan.** Nothing was established — no interpreter installed the bundle, say —
+  # and a caller that reads that as success has been told the wrong thing. A real walk found it: an
+  # interpreter that could not reach github failed for every era and the step exited 0.
+  def test_an_unverified_step_exits_as_a_failure_rather_than_as_a_plan
+    fake = Class.new do
+      define_method(:initialize) { |**| }
+      define_method(:run) { UnverifiedRecord.new }
+    end
 
-  assert_equal 0, status
-  refute_nil built, "the step was built"
-  assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
+    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
+      out: StringIO.new, env: {}, step_class: fake).run
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, status
+  end
 end
