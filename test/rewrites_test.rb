@@ -211,6 +211,9 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.gap_for("assigns / assert_template"),
       "installed in production"
     assert_includes Rewrites.gap_for("config.secret_token"), "leave it in place and add"
+    assert_includes Rewrites.gap_for("config.active_support.test_order"),
+      "`:sorted` and `:random` are the application's to choose"
+    assert_includes Rewrites.gap_for("test order"), "5.0's default is `:random`"
     assert_equal Rewrites::GENERIC_GAP, Rewrites.gap_for("a change nobody has looked at yet")
     assert_includes Rewrites::GENERIC_GAP, "no call site to match at all",
       "the generic sentence has to be honest for a change no pattern can find"

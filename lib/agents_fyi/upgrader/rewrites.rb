@@ -757,6 +757,18 @@ module AgentsFyi
         "config.i18n.raise_on_missing_translations" => "the default flips, and a line that sets it " \
                                                        "explicitly is unaffected — while a line that " \
                                                        "does not has nothing for a pattern to point at",
+        # **The order is the application's to choose, and the survey is what says where the choice
+        # would go.** 4.2 warns until one is picked and 5.0 makes `:random` the default, and the two
+        # subjects are the ladder's own spelling at each rung. `:sorted` keeps today's order and
+        # `:random` finds the tests that depend on each other — a fact about the suite rather than
+        # about the line, which is exactly what a rule cannot read.
+        "config.active_support.test_order" => "the survey names the lines that choose an order; " \
+                                              "which order the suite wants is a fact about the " \
+                                              "tests rather than about the line, so `:sorted` and " \
+                                              "`:random` are the application's to choose",
+        "test order" => "the survey names the lines that pin the order; 5.0's default is `:random`, " \
+                        "and a suite that depends on `:sorted` has to say so — which is a fact about " \
+                        "the tests rather than about the line",
         "attr_accessible" => "the list belongs in a controller, and the note's own bridge " \
                              "(`protected_attributes`) keeps it working until 5.0 — which is why this " \
                              "is a gap with the gem named rather than a declaration: a bridge would " \
