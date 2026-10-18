@@ -438,6 +438,54 @@ class StepTest < Minitest::Test
       "2022"
   end
 
+  # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is
+  # the pin's own mechanism.** `bundle install` is right for everything a preflight move does
+  # to a *source* — it adds what the Gemfile gained and leaves the rest where the move found it
+  # — but a move into a different line of the same gem's own releases leaves the snapshot's
+  # pins as the thing bundler refuses. Measured on the lighthouse, `rspec-rails ~> 2.14.0`
+  # against a snapshot holding `rspec-core (= 2.13.1)`: `bundle install` *and*
+  # `bundle update rspec-rails --conservative` both answer "could not find compatible versions
+  # for gem rspec-mocks", because `--conservative` keeps the *meta*-gem where the lock has it
+  # and the meta-gem drags its siblings back. Naming the whole line resolves it, which is what
+  # the widened retry is for.
+  def test_a_move_that_changes_a_requirement_retries_the_bundle_conservatively
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          rails (4.2.11)
+          rspec-core (2.13.1)
+          rspec-rails (2.13.2)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.2.11)
+        rspec-rails (~> 2.0)
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    dir = track(app(lockfile: lockfile, gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "rspec-rails", "~> 2.0"
+    GEM
+    corpus = FakeCorpus.new(payload: plan, migrations: [
+      { "gem" => "rspec-rails", "kind" => "updated", "replacement" => "rspec-rails",
+        "requirement" => "~> 2.14.0", "mechanical" => true,
+        "note" => "the adapter gained a minitest branch", "source" => "the gem" }
+    ])
+    runner = FakeRunner.new(fail_on: "bundle install")
+
+    record = step(dir, corpus: corpus, runner: runner).run
+
+    assert_includes runner.calls, "bundle update rspec-rails --conservative",
+      "the install failed and nothing re-resolved the lock: #{runner.calls.inspect}"
+    assert_includes record.patch, %(gem "rspec-rails", "~> 2.14.0")
+  end
+
   # A research pass, as a test double: it records the pins it was handed and answers with a
   # result the step's stage can render. The fetching itself is `research_test.rb`'s subject.
   class FakeResearch

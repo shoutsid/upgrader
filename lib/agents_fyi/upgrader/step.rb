@@ -585,7 +585,47 @@ module AgentsFyi
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
           env: @worktree.bundle_env, machine: machine)
         stages << stage
-        stage
+        return stage if stage.ok? || moved_gems.empty?
+
+        conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
+      end
+
+      # **A digest move that changes a *requirement* has to re-resolve the lock, and the
+      # snapshot is what says so.** `bundle install` is right for the environment the baseline
+      # needs — it adds what the Gemfile gained and leaves the rest where the move found it —
+      # but a preflight move can rewrite a line into a *different line of that gem's own
+      # releases*, and then the lock's pins are what bundler refuses. Measured on the
+      # lighthouse's `rspec-rails ~> 2.14.0` against a snapshot holding `rspec-core (= 2.13.1)`:
+      # `bundle install` and `bundle update rspec-rails --conservative` both answer "could not
+      # find compatible versions for gem rspec-mocks … `rspec (~> 2.13)` was resolved to
+      # 2.13.0 … `rspec-rails (~> 2.14.0)` was resolved to 2.14.2", because `--conservative`
+      # keeps the *meta*-gem where the lock has it and the meta-gem drags its siblings back.
+      # Naming the whole line resolves it, and the retry is the pin's own mechanism — a
+      # conservative update widened by the gems bundler itself names — because that is the one
+      # that does not rebuild the snapshot from scratch (the unconstrained resolve that moved
+      # rake).
+      def moved_gems
+        @applied.map { |edit| edit.subject.to_s }.uniq & @lockfile.specs.keys
+      end
+
+      # A conservative update of `gems`, widened by what bundler names as stuck, and bounded.
+      # The resolver knows this application's requirement graph, so the next round is read out
+      # of its message rather than guessed — which is why the pin and the bundle's fallback
+      # share it rather than each keeping their own idea of what usually moves together.
+      def conservative_update(stages, gems, stage:, machine: nil)
+        gems = gems.dup
+        PIN_ROUNDS.times do
+          attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
+            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine)
+          stages << attempt
+          return attempt if attempt.ok?
+
+          named = stuck_gems(attempt.output_tail) - gems
+          return attempt if named.empty?
+
+          gems += named
+        end
+        stages.last
       end
 
       # Nothing ran, and the sentence is why: the answer to "why is the baseline red" a
@@ -1493,19 +1533,7 @@ module AgentsFyi
       # because a cascade is finite but a walk is not: every round adds at least one gem, and
       # the cap is what stops a pathological one from spending the step.
       def pin(stages)
-        gems = pin_gems
-        PIN_ROUNDS.times do
-          stage = command(Record::PIN, ["bundle", "update", *gems, "--conservative"],
-            chdir: @worktree.root, env: @worktree.bundle_env)
-          stages << stage
-          return stage if stage.ok?
-
-          named = stuck_gems(stage.output_tail) - gems
-          return stage if named.empty?
-
-          gems += named
-        end
-        stages.last
+        conservative_update(stages, pin_gems, stage: Record::PIN)
       end
 
       # The gems bundler said it could not leave alone, as its own message names them. Read
@@ -1515,7 +1543,17 @@ module AgentsFyi
       def stuck_gems(text)
         quoted = text.to_s.scan(/could not find compatible versions for gem "([^"]+)"/).flatten
         bare = text.to_s.scan(/could not find compatible versions for gem ([\w.-]+)/).flatten
-        ((quoted + bare).uniq & @lockfile.specs.keys)
+        # **And the gems the message says *resolved* against it.** The gem bundler cannot place is
+        # often not the gem holding it back: measured on the lighthouse's rspec-rails move, bundler
+        # named `rspec-mocks`, `rspec-expectations` and `rspec-core` in three rounds while the pin
+        # that made all three impossible was the `rspec` *meta*-gem's own `~> 2.13.0` — which the
+        # message names only as the requirer ("`guard-rspec` was resolved to 3.0.0, which depends on
+        # `rspec (~> 2.13)` was resolved to 2.13.0, which depends on `rspec-mocks`"). Adding what it
+        # names as the conflict alone never converges; adding the requirer unlocks the line and does,
+        # and both names are read out of the resolver's own sentence rather than guessed from a list
+        # of gems that usually move together.
+        requirers = text.to_s.scan(/(\S+) was resolved to/).flatten
+        ((quoted + bare + requirers).uniq & @lockfile.specs.keys)
       end
 
       # **The gems that move with the meta-gem, and the measurement that says they must be

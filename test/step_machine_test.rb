@@ -318,6 +318,66 @@ class StepMachineTest < Minitest::Test
     assert record.passed?, record.why
   end
 
+  # **And the gem the message says *resolved* against the conflict.** Adding only what bundler names
+  # as the conflict does not converge when the gem holding it back is a *different* gem: on the
+  # lighthouse's rspec-rails move bundler named `rspec-mocks`, then `rspec-expectations`, then
+  # `rspec-core` in three rounds, while the pin that made all three impossible was the `rspec`
+  # *meta*-gem's own `~> 2.13.0` — which its sentence names only as the requirer ("`rspec` was
+  # resolved to 2.13.0, which depends on `rspec-mocks (~> 2.13.0)`"). Read rather than guessed, the
+  # same way the conflicting name is, and the line unlocks because `--conservative` leaves every gem
+  # the move does not need where it was.
+  def test_a_pin_also_unlocks_the_gem_bundler_says_resolved_against_the_conflict
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          actionpack (4.0.0.rc1)
+            activesupport (= 4.0.0.rc1)
+          activesupport (4.0.0.rc1)
+          i18n (0.6.4)
+          rails (4.0.0.rc1)
+            actionpack (= 4.0.0.rc1)
+            railties (= 4.0.0.rc1)
+            sprockets-rails (~> 2.0.0)
+          railties (4.0.0.rc1)
+            actionpack (= 4.0.0.rc1)
+            activesupport (= 4.0.0.rc1)
+          rspec (2.13.0)
+            rspec-core (~> 2.13.0)
+            rspec-mocks (~> 2.13.0)
+          rspec-core (2.13.1)
+          rspec-mocks (2.13.1)
+          sprockets-rails (2.0.1)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.0.0.rc1)
+        rspec (~> 2.13)
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    runner = FakeRunner.new(answers: {
+      "rspec-mocks" => [0, ""],
+      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+                             "versions for gem \"rspec-mocks\":\n  In Gemfile:\n    rspec " \
+                             "was resolved to 2.13.0, which depends on\n      " \
+                             "rspec-mocks (~> 2.13.0)\n"]
+    })
+
+    record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
+
+    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+
+    assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
+    refute_includes pins.first.command, "rspec", pins.first.command
+    assert_includes pins.last.command, "rspec ", "#{pins.last.command} (the requirer, not the conflict)"
+    assert_includes pins.last.command, "rspec-mocks", pins.last.command
+    assert pins.last.ok?, pins.last.output_tail
+  end
+
   # **A step prunes before it installs, not only when an operator asks.** The home it mounts
   # into its own container is the bind mount Docker sets up at `docker run`, and what a finished
   # run left there is paid by the *next* step's container start — measured, twenty seconds to
