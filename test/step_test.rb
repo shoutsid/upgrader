@@ -1401,6 +1401,37 @@ class StepTest < Minitest::Test
     assert_includes decision.reason, "none found"
   end
 
+  # **A floor is a bridge whose work is a version rather than a presence.** "Spring 3.0.0 or newer" is
+  # the change's own words, and an older Spring raises `undefined method 'mechanism='` before the
+  # application boots — which reads as an application error rather than as a stale development
+  # dependency. Three cases, because the interesting one is the third: a Gemfile that already names a
+  # version is a person's call, and calling it handled would be the settled-work trap with the sign
+  # flipped.
+  def test_a_floor_bridge_rewrites_a_declaration_that_asks_for_no_version
+    payload = plan(changes: [change(subject: "Spring", kind: "moved", source: "7.0",
+      replacement: "Spring 3.0.0 or newer", note: "an older Spring raises before the app boots")])
+
+    plain = track(app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\ngem "spring"\n)))
+    with_source(plain, "app/models/item.rb", "class Item\nend\n")
+    record = step(plain, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    assert_includes File.read(File.join(plain, "Gemfile")), %(gem "spring", ">= 3.0.0")
+    assert_empty record.decisions, "the declaration is the change's whole fix"
+
+    # A declaration that already asks for a version is left, and the change stays a decision.
+    pinned = track(app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\ngem "spring", "~> 2.0"\n)))
+    with_source(pinned, "app/models/item.rb", "class Item\nend\n")
+    record = step(pinned, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    assert_includes File.read(File.join(pinned, "Gemfile")), %(gem "spring", "~> 2.0")
+    assert_equal ["Spring"], record.decisions.map(&:subject)
+
+    # And an application that does not use Spring is not asked to install it.
+    absent = track(app)
+    with_source(absent, "app/models/item.rb", "class Item\nend\n")
+    record = step(absent, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    refute_includes File.read(File.join(absent, "Gemfile")), "spring"
+    assert_empty record.decisions, "a change about a gem the application does not have is not its work"
+  end
+
   # A manual call site the plan does not name is the most useful thing a refusal can
   # say — a change nobody has written into the ladder — so it is a decision too.
   def test_a_manual_call_site_the_ladder_does_not_name_is_still_a_decision

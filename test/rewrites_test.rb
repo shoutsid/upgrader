@@ -651,6 +651,53 @@ class RewritesTest < Minitest::Test
     assert_includes Rewrites.gap_for("Rails.logger"), "nested deeper than one level"
   end
 
+  # **The definition is the edit.** 6.1 passes the callback's name to `halted_callback_hook` as a second
+  # argument with no deprecation cycle, so a one-argument override raises `ArgumentError` the moment a
+  # callback halts — and the arity is on the line the scan located, which the gap beside this rule had
+  # assumed was not true.
+  def test_a_definition_that_gained_a_parameter_gets_one_named_for_being_unused
+    result = Rewrites.apply([
+      entry(subject: "halted_callback_hook", text: "      def halted_callback_hook(message)"),
+      entry(subject: "halted_callback_hook", text: "      def self.halted_callback_hook(message)")
+    ])
+
+    assert_equal ["      def halted_callback_hook(message, _name)",
+      "      def self.halted_callback_hook(message, _name)"], result.edits.map { |edit| edit["after"] }
+
+    # A definition that already takes the second parameter does not match, which is what makes the rule
+    # idempotent without an `already` pattern: the argument run excludes commas.
+    already = Rewrites.apply([entry(subject: "halted_callback_hook",
+      text: "      def halted_callback_hook(message, name)")])
+    assert_empty already.edits
+    assert_includes Rewrites.gap_for("halted_callback_hook"), "without parentheses"
+  end
+
+  # "The around callback now receives the block as an argument" — both spellings the note's sentence
+  # covers, and the ampersand is the whole edit.
+  def test_the_block_a_callback_receives_becomes_a_parameter
+    result = Rewrites.apply([
+      entry(subject: "ActiveSupport::Callbacks.set_callback",
+        text: "    set_callback :save, :around, ->(record, &block) { block.call(record) }"),
+      entry(subject: "ActiveSupport::Callbacks.set_callback",
+        text: "    set_callback :save, :around do |record, &block|")
+    ])
+
+    assert_equal [
+      "    set_callback :save, :around, ->(record, block) { block.call(record) }",
+      "    set_callback :save, :around do |record, block|"
+    ], result.edits.map { |edit| edit["after"] }
+
+    # A line with no captured block is not a line this rule can help, and it stays a decision.
+    assert_empty Rewrites.apply([entry(subject: "ActiveSupport::Callbacks.set_callback",
+      text: "    set_callback :save, :before, :check")]).edits
+
+    # **A block-pass is not a parameter list**, and this is the difference the pattern is built on:
+    # `&block` as an argument passes the proc as the callback's body, so removing the ampersand would
+    # pass the proc as an argument instead — a different call, silently.
+    assert_empty Rewrites.apply([entry(subject: "ActiveSupport::Callbacks.set_callback",
+      text: "    set_callback :save, :around, &handler")]).edits
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
@@ -765,6 +812,31 @@ class RewritesTest < Minitest::Test
     assert_equal ["app/controllers/profiles_controller.rb:3"],
       found.findings.map { |path, line, _| "#{path}:#{line}" },
       "the accessor call is a method and keeps working; the symbol index into the column does not"
+  end
+
+  # **A survey for a change whose answer is the opposite of a rename.** The note says to *leave*
+  # `secret_token` in place and add `secret_key_base` beside it — a Rails 3 cookie is upgraded on the way
+  # in, and a Rails 4 cookie cannot be read by Rails 3, so the two together are what makes a rollback
+  # possible. The value is one only the application has, so the edit is not this tool's; what it can add
+  # is the fact the note turns on, which is whether the key base is set yet.
+  def test_the_secret_token_survey_says_whether_the_key_base_is_set_beside_it
+    tree = {
+      "config/initializers/secret_token.rb" => [
+        "# Be sure to restart your server when you modify this file.\n",
+        "Myapp::Application.config.secret_token = ENV[\"SECRET_TOKEN\"]\n"
+      ]
+    }
+    located = [entry(subject: "config.secret_token", path: "config/initializers/secret_token.rb",
+      line: 2, text: "Myapp::Application.config.secret_token = ENV[\"SECRET_TOKEN\"]")]
+
+    found = Rewrites.survey([{ "subject" => "config.secret_token" }], tree: tree,
+      located: located).fetch("config.secret_token")
+    assert_includes Rewrites.findings_sentence(found.findings), "secret_key_base is not set anywhere"
+
+    with_key = tree.merge("config/secrets.yml" => ["production:\n", "  secret_key_base: <%= ENV[\"X\"] %>\n"])
+    found = Rewrites.survey([{ "subject" => "config.secret_token" }], tree: with_key,
+      located: located).fetch("config.secret_token")
+    assert_includes Rewrites.findings_sentence(found.findings), "secret_key_base is set elsewhere"
   end
 
   def test_a_finding_list_is_bounded_and_says_how_many_it_left_out

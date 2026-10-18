@@ -169,7 +169,7 @@ module AgentsFyi
       # positive is a gem declared for an application that does not load it.
       Evidence = Struct.new(:path, :pattern, :why, keyword_init: true)
 
-      Bridge = Struct.new(:subject, :gems, :group, :why, :evidence, keyword_init: true)
+      Bridge = Struct.new(:subject, :gems, :group, :why, :evidence, :floor, keyword_init: true)
 
       # The changes whose note's own replacement is a gem, and where the gem is the **whole** of the
       # fix: the call sites keep working and nothing else is owed. That distinction is what keeps
@@ -225,7 +225,17 @@ module AgentsFyi
                "depends on the gem",
           evidence: Evidence.new(path: "config/application.rb", pattern: /sprockets\/railtie/,
             why: "config/application.rb requires sprockets/railtie, so this application is still " \
-                 "using the asset pipeline"))
+                 "using the asset pipeline")),
+
+        # **A floor is a bridge whose work is a version rather than a presence.** The change's own words
+        # are "Spring 3.0.0 or newer", and an older Spring raises `undefined method 'mechanism=' for
+        # ActiveSupport::Dependencies` before the application boots — which reads as an application
+        # error rather than as a stale development dependency. It is selected by the rung, because what
+        # the change says is a fact about the release rather than about a line of the application's, and
+        # a Gemfile that already asks for a version is left as a decision.
+        Bridge.new(subject: "Spring", gems: %w[spring], evidence: :rung, floor: ">= 3.0.0",
+          why: "an older Spring raises `undefined method 'mechanism='` before the application boots, " \
+               "which reads as an application error; the change's own answer is Spring 3.0.0 or newer")
       ].freeze
 
       # **The surveys, by the subject the ladder and the scan both use.** Each is here because its
@@ -317,6 +327,26 @@ module AgentsFyi
 
               [entry["path"], index + 1, lines[index]]
             end
+          end),
+
+        # "Leave secret_token in place *and* add secret_key_base: a Rails 3 cookie is upgraded
+        # transparently on the way in, and a cookie written by Rails 4 cannot be read by Rails 3 — so the
+        # two together are what makes a rollback possible."
+        #
+        # **The note's answer is the opposite of a rename**, which is exactly why a rule here would be
+        # wrong: the *value* is one only the application has, and rewriting the line would break the
+        # rollback the note is about. What a survey can add is the fact the note turns on — whether
+        # secret_key_base is set *beside* it yet — and that is a sentence a person can act on.
+        Survey.new(subject: "config.secret_token",
+          sentence: "the lines that set secret_token, and whether secret_key_base is set beside them",
+          read: lambda do |tree, located|
+            key_base = tree.any? do |_path, lines|
+              lines.any? { |line| line.match?(/\bsecret_key_base\b/) }
+            end
+            beside = key_base ? "secret_key_base is set elsewhere" : "secret_key_base is not set anywhere"
+            located.map do |entry|
+              [entry["path"], entry["line"].to_i, "#{entry["text"].to_s.strip} (#{beside})"]
+            end
           end)
       ].freeze
 
@@ -367,14 +397,10 @@ module AgentsFyi
                                                               "alternative, which is a decision about " \
                                                               "how the application reports a missing " \
                                                               "translation",
-        # **The gaps that name a mechanism rather than an edit.** Four of the twenty changes with no
-        # call site are not "no rule yet": they need something this tool does not have, and saying which
-        # is the point of a gap.
-        "Spring" => "the gem has to *move* (3.0.0 or newer), and a pin that must move is the " \
-                    "routing's answer rather than an edit — `POST /releases/route` is what says " \
-                    "whether a recorded release fits. An older Spring raises " \
-                    "`undefined method 'mechanism='` before the application boots, which reads as an " \
-                    "application error",
+        # **The gaps that name a mechanism rather than an edit.** The changes with no call site that are
+        # not "no rule yet": they need something this tool does not have, and saying which is the point
+        # of a gap. (`Spring` used to be here, and what it needed turned out to be a *floor* — a bridge
+        # whose work is a version rather than a presence.)
         "@rails npm packages" => "the fix is in `package.json`, which this tool does not read: the " \
                                  "three packages moved under the `@rails` scope and the build fails " \
                                  "loudly without it",
@@ -426,10 +452,6 @@ module AgentsFyi
         "assert_tag" => "the note says the argument shape differs, so a rename would break the " \
                         "assertion rather than move it: a rule would need to rewrite each " \
                         "assertion's arguments, which is reading the test rather than the line",
-        "halted_callback_hook" => "the note says a one-argument override raises `ArgumentError` with " \
-                                  "no deprecation cycle, so a rule would need the override's own " \
-                                  "signature — the line the scan located is the definition, and its " \
-                                  "arity is on the next one",
         "config_for" => "the note's replacement is a call on the *result* " \
                         "(`.with_indifferent_access`), which keeps every call site as it is — so " \
                         "what is missing is a rule that edits the assignment rather than the use",
@@ -462,6 +484,17 @@ module AgentsFyi
                                               "scans `.rb`, `.rake`, `.erb`, `.yml` and `.ru` — so " \
                                               "the ladder locates the line only when it appears in " \
                                               "an ERB template, and the edit is in the JavaScript",
+        "Spring" => "the bridge rewrites a declaration that asks for no version — `gem \"spring\"` " \
+                    "becomes `gem \"spring\", \">= 3.0.0\"`. A Gemfile that already names a version is " \
+                    "left as a decision, because replacing somebody's requirement is their call",
+        "halted_callback_hook" => "the rule adds the second parameter to `def " \
+                                  "halted_callback_hook(x)`. A definition written without parentheses, " \
+                                  "or with a splat, does not match and stays a decision",
+        "ActiveSupport::Callbacks.set_callback" => "the rule drops the ampersand from a captured block " \
+                                                   "on the line the scan located. A lambda written on " \
+                                                   "the line *after* `set_callback` is not matched, so " \
+                                                   "that call site stays a decision rather than becoming " \
+                                                   "a guess",
         "Rails.application.secrets" => "the fix is to read a nested *string* key as a symbol " \
                                         "(`secrets[:smtp][\"address\"]` is `secrets[:smtp][:address]`), " \
                                         "and a rule cannot see a string's contents: the mask blanks " \
@@ -883,6 +916,42 @@ module AgentsFyi
           replace: "\\k<indent>#{to}")
       end
 
+      # **A definition whose signature gained a parameter.** The one shape where the change is not in a
+      # call but in the *method*: 6.1 passes the callback's name as a second argument to
+      # `halted_callback_hook`, with no deprecation cycle, so a one-argument override raises
+      # `ArgumentError` the moment a callback halts. The parameter is named with a leading underscore
+      # because this tool does not know whether the override wants it — and a name the body already uses
+      # would be shadowed rather than added.
+      #
+      # A definition that already takes a second parameter does not match, which is what makes the rule
+      # idempotent without an `already` pattern: the argument run excludes commas, so `(message, name)`
+      # cannot reach the closing parenthesis.
+      def self.parameter_added(subject:, method:, parameter:)
+        Rule.new(family: :parameter_added, subject: subject,
+          pattern: /(?<head>\bdef\s+(?:self\.)?#{Regexp.escape(method)}\s*\(\s*[^(),]*)(?<close>\s*\))/,
+          replace: "\\k<head>, #{parameter}\\k<close>")
+      end
+
+      # **The block a callback receives becomes a parameter.** 4.1 passes the block to an `around`
+      # callback explicitly, so `->(r, &block)` is `->(r, block)` and the ampersand is the whole edit.
+      #
+      # The pattern names the *parameter list* rather than the ampersand alone, and the delimiter is part
+      # of the match for two measured reasons:
+      #
+      # * a bare `&(\w+)` would also match a block-pass argument — `set_callback(:x, :around, &block)`
+      #   passes the proc as the callback's body, and removing that ampersand passes the proc as an
+      #   argument instead. Only `->(` and a block's `|` introduce a parameter list, so those are what
+      #   the pattern requires;
+      # * a trailing lookahead cannot work here. The write re-matches the *region* (`Rule#after`), so a
+      #   pattern that ends in `(?=…)` needs the lookahead to succeed against a string that stops where
+      #   the match did — which is why `OPTION_VALUE` carries a `\z` alternative and why the closing
+      #   delimiter is a capture here instead.
+      def self.block_captured(subject:)
+        Rule.new(family: :block_captured, subject: subject,
+          pattern: /(?<pre>->\s*\(|\|)(?<args>[^|()]*?)&(?<name>\w+)(?<post>\s*[,|)])/,
+          replace: "\\k<pre>\\k<args>\\k<name>\\k<post>")
+      end
+
       # **The rules, by the subject the ladder and the scan both use.** Each is here because its own
       # note sanctions the shape, and `MultiJson` is here because its note forbids a *different* edit
       # than the one written.
@@ -1050,7 +1119,18 @@ module AgentsFyi
         # on the autoload paths" — the statement itself, which is why this is `line_replaced`.
         line_replaced(subject: "config.autoload_paths and $LOAD_PATH",
           from: "config.autoload_paths += %W(\#{config.root}/lib)",
-          to: "config.autoload_lib(ignore: %w(assets tasks))")
+          to: "config.autoload_lib(ignore: %w(assets tasks))"),
+
+        # "It now receives the callback name as a second argument. This one has no deprecation cycle — a
+        # one-argument override raises `ArgumentError`." The definition is the edit, and the parameter is
+        # named `_name` because whether the override wants it is not something this tool can know.
+        parameter_added(subject: "halted_callback_hook", method: "halted_callback_hook",
+          parameter: "_name"),
+
+        # "The around callback now receives the block as an argument: `->(r, &block) {...}` becomes
+        # `->(r, block) {...}`." Both spellings the note's own sentence covers — a lambda and a `do`
+        # block — are the same edit, because both are `&block` at the end of a parameter list.
+        block_captured(subject: "ActiveSupport::Callbacks.set_callback")
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the

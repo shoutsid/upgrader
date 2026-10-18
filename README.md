@@ -153,7 +153,8 @@ The pipeline has three stages that make the rest mean anything:
    `line_removed`, `call_replaced`, `finder_moved`, `find_conditions`, `option_added`,
    `argument_wrapped`, `block_value`, `value_moved`, `line_replaced`,
    `query_materialised`, `superclass_moved`, `setting_removed`, `call_inverted`,
-   `option_renamed`, `call_unwrapped`), so the next lighthouse writes an instance of
+   `option_renamed`, `call_unwrapped`, `parameter_added`, `block_captured`), so the next lighthouse
+   writes an instance of
    an existing family, and every change no rule covers carries a **gap** saying what
    would close it — the residue is a queue with reasons, not a list. A change whose fix
    is a *judgement* rather than an edit gets a **survey** instead: it reads the
@@ -168,7 +169,9 @@ The pipeline has three stages that make the rest mean anything:
    working — and the gem goes inside the block that names its group, because a test-only gem
    declared at the top level is installed in production; such a *bridge* is selected by what
    the scan located, by the rung itself when `app:update` is what will write the evidence
-   (`bootsnap`), or by a file in the tree (`sprockets-rails`). `docs/upgrades.md` has the policy.
+   (`bootsnap`), or by a file in the tree (`sprockets-rails`) — and a change whose answer is a
+   *version* rather than a presence is the same table's `floor` (`Spring` becomes
+   `gem "spring", ">= 3.0.0"`). `docs/upgrades.md` has the policy.
 7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer

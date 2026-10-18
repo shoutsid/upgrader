@@ -1006,7 +1006,12 @@ module AgentsFyi
         files = source_files
         if files.empty?
           stages << Record::Command.new(stage: Record::APPLY, command: "no Ruby source found to scan",
-            ran: false, exit_code: nil, seconds: 0.0, output_tail: "")
+            ran: false, exit_code: nil, seconds: 0.0,
+            # **A bridge and a survey are skipped here too, and that is said rather than silent**: both
+            # read the files the scan would have sent, so a repository with none gets neither. It is the
+            # degenerate case — a Rails application has Ruby — but a stage that quietly did less than its
+            # name says is the shape `AGENTS.md` keeps paying for.
+            output_tail: "no bridge declared and no survey run: both read the files the scan would have sent")
           # The plan's half is still this step's half: a repository with no Ruby source
           # this tool reads has not thereby moved, and the changes no machine may make
           # are exactly the ones a person still has to.
@@ -1125,7 +1130,7 @@ module AgentsFyi
       # insert is anchored to and that line with the declaration beside it. A `Repair` with an empty
       # `text` would read as "the line was empty" rather than "the file did not have it".
       def declare_bridges(bridges)
-        path = File.join(@worktree.root, "Gemfile")
+        path = working_copy_gemfile
         return [[], []] unless File.file?(path)
 
         lines = File.binread(path).split("\n", -1)
@@ -1133,8 +1138,28 @@ module AgentsFyi
         handled = []
         bridges.each do |bridge|
           bridge.gems.each do |gem|
-            if declaration_line(gem)
+            declared = declaration_line(gem)
+            # **A floor is about a gem the application already has.** "Spring 3.0.0 or newer" is not an
+            # instruction to install Spring, and an application without it is not asked to.
+            if declared.nil? && bridge.floor
               handled << bridge.subject
+              next
+            end
+
+            if declared
+              # A bridge with no floor is whole when the gem is declared. A floor's work *is* that
+              # declaration, and it only has anywhere to go when the line asks for no version at all —
+              # `gem "spring"` becomes `gem "spring", ">= 3.0.0"`, while a line that already names one is
+              # a person's call and stays a decision rather than being counted as handled.
+              if bridge.floor.nil?
+                handled << bridge.subject
+              elsif declaration_requirement(declared.last).nil?
+                index, line = declared
+                lines[index] = "#{line.to_s.sub(/\s*\z/, "")}, \"#{bridge.floor}\"\n"
+                repairs << Preflight::Repair.new(path: "Gemfile", line: index + 1, text: line,
+                  after: lines[index], subject: bridge.subject, note: bridge.why)
+                handled << bridge.subject
+              end
               next
             end
 
@@ -1157,6 +1182,17 @@ module AgentsFyi
         end
         File.binwrite(path, lines.join("\n")) if repairs.any?
         [repairs, handled.uniq]
+      end
+
+      # The Gemfile this step declares into.
+      def working_copy_gemfile = File.join(@worktree.root, "Gemfile")
+
+      # **What a declaration asks for beyond the name**, or nil. `gem "spring"` asks for nothing and
+      # `gem "spring", "~> 2.0"` asks for a version; read rather than parsed, because the shape of the
+      # line is the Gemfile's and the only question here is whether a floor has anywhere to go.
+      def declaration_requirement(line)
+        rest = line.to_s[/\A\s*gem\s+["'][^"']+["'](.*)\z/, 1].to_s.strip
+        rest.empty? ? nil : rest
       end
 
       # The line that closes the block declaring this group, and the indentation its body uses — which
