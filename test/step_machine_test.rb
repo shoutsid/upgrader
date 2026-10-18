@@ -534,6 +534,56 @@ class StepMachineTest < Minitest::Test
     assert pins.last.ok?, pins.last.output_tail
   end
 
+  # **A requirer line carries its requirement, and the widening has to read through it.** Bundler
+  # writes a requirer as `sinatra (>= 0.9.2) was resolved to 1.4.2`, and a pattern that expected the
+  # name to be followed straight by " was resolved to" saw none of them: measured at the 5.0 rung,
+  # the conflict on `rack` named `sinatra`, `rack-protection`, `vegas` and `warden` that way, the
+  # widening extracted none, and the pin was asked once and failed on a `rack` four other gems could
+  # have unlocked.
+  def test_a_pin_unlocks_a_requirer_whose_line_carries_its_requirement
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          rack (1.6.13)
+          rack-protection (1.5.0)
+          rails (4.2.0)
+            rack (~> 1.6.0)
+          resque (1.24.1)
+            sinatra (>= 0.9.2)
+          sinatra (1.4.2)
+            rack (>= 1.5.2, ~> 1.5)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.2.0)
+        resque
+
+      BUNDLED WITH
+         1.17.3
+    LOCK
+    runner = FakeRunner.new(answers: {
+      "sinatra" => [0, ""],
+      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+                             "versions for gem \"rack\":\n  In Gemfile:\n    rails (= 4.2.0) was " \
+                             "resolved to 4.2.0, which depends on\n      rack (~> 1.6.0)\n\n    " \
+                             "resque was resolved to 1.24.1, which depends on\n      " \
+                             "sinatra (>= 0.9.2) was resolved to 1.4.2, which depends on\n        " \
+                             "rack (>= 1.5.2, ~> 1.5)\n"]
+    })
+
+    record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
+
+    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+
+    assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
+    assert_includes pins.last.command, "sinatra",
+      "the requirer's own line carries a requirement the widening has to read through: #{pins.last.command}"
+    assert pins.last.ok?, pins.last.output_tail
+  end
+
   # **A requirer that merely *reaches* the conflict is not named, and that is measured rather than
   # tidy.** The message nests, and a gem three hops down is one that only touches the conflict:
   # measured at the 4.2 rung, `resque` appeared as a requirer of `rack` through `sinatra` and

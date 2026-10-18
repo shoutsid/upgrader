@@ -1802,11 +1802,20 @@ module AgentsFyi
         # the move never had to touch, and the same run with `rack` named and resque left alone
         # resolves. So the requirer is the name on the line whose *next* line begins with the gem
         # bundler could not place.
+        #
+        # **And the name carries its requirement.** Bundler writes a requirer as
+        # `sinatra (>= 0.9.2) was resolved to 1.4.2`, and the first pattern here required the name to
+        # be followed straight by " was resolved to" — so every requirer line with a parenthesised
+        # requirement was invisible: measured at the 5.0 rung, the conflict on `rack` named
+        # `sinatra`, `rack-protection`, `vegas` and `warden` that way, the widening extracted none of
+        # them, and the pin was asked once and failed on a `rack` four other gems could have unlocked.
+        # A dependency line that is the bare name is matched too, because bundler writes a
+        # requirement-less dependency as just the gem.
         named = quoted + bare
         requirers = text.to_s.lines.each_cons(2).filter_map do |line, following|
-          requirer = line[/^\s*(\S+) was resolved to/, 1]
+          requirer = line[/^\s*([A-Za-z0-9_.-]+)(?:\s*\([^)]*\))?\s+was resolved to/, 1]
           next unless requirer
-          next unless named.any? { |gem| following.strip.match?(/\A#{Regexp.escape(gem)}(?:\s|\()/) }
+          next unless named.any? { |gem| following.strip.match?(/\A#{Regexp.escape(gem)}(?:\s|\()|\A#{Regexp.escape(gem)}\z/) }
 
           requirer
         end
