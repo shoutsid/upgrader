@@ -528,6 +528,59 @@ class StepMachineTest < Minitest::Test
     assert pins.last.ok?, pins.last.output_tail
   end
 
+  # **A requirer that merely *reaches* the conflict is not named, and that is measured rather than
+  # tidy.** The message nests, and a gem three hops down is one that only touches the conflict:
+  # measured at the 4.2 rung, `resque` appeared as a requirer of `rack` through `sinatra` and
+  # `rack-protection`, naming it unlocked resque itself, and it resolved to 2.7.0 — a release that
+  # needs Ruby 2.3 while the era's interpreter is 2.1, which bundler reports but does not resolve
+  # around. The pin then failed on a gem the move never had to touch, and the same run with `rack`
+  # named and resque left alone resolves. So the requirer is the name on the line whose *next* line
+  # begins with the gem bundler could not place.
+  def test_a_pin_does_not_unlock_a_requirer_that_only_reaches_the_conflict
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          rack (1.5.2)
+          rails (4.2.0)
+            rack (~> 1.6.0)
+          resque (1.24.1)
+            sinatra (>= 0.9.2)
+          sinatra (1.4.2)
+            rack-protection (~> 1.4)
+          rack-protection (1.5.0)
+            rack
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.2.0)
+        resque
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    runner = FakeRunner.new(answers: {
+      "bundle update" => [6, "Resolving dependencies...\nBundler could not find compatible " \
+                             "versions for gem \"rack\":\n  In snapshot (Gemfile.lock):\n    " \
+                             "rack (= 1.5.2)\n\n  In Gemfile:\n    rails (= 4.2.0) was " \
+                             "resolved to 4.2.0, which depends on\n      rack (~> 1.6.0)\n\n    " \
+                             "resque was resolved to 1.24.1, which depends on\n      " \
+                             "sinatra (>= 0.9.2)\n"]
+    })
+
+    record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
+
+    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+
+    assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
+    assert_includes pins.last.command, "rack ", pins.last.command
+    refute_includes pins.last.command, "resque",
+      "#{pins.last.command} (resque only reaches the conflict through sinatra, and naming it " \
+      "unlocks a release this Ruby cannot run)"
+  end
+
   # **A step prunes before it installs, not only when an operator asks.** The home it mounts
   # into its own container is the bind mount Docker sets up at `docker run`, and what a finished
   # run left there is paid by the *next* step's container start — measured, twenty seconds to
