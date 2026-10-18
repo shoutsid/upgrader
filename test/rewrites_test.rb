@@ -441,6 +441,59 @@ class RewritesTest < Minitest::Test
       Rewrites.mask("    t.belongs_to :user, optional: true"))
   end
 
+  # **The same change inside an inline block on one line.** The lighthouse has 15 of these — a `let` or a
+  # `lambda` wrapping the request — and the anchored shape sees none of them: the statement is not the
+  # line. Measured over the whole application, the two shapes together are 63 call sites.
+  def test_a_request_helper_inside_an_inline_block_moves_its_arguments_too
+    wrapped = "      lambda { delete :destroy, item_id: @item, id: @bid, category_id: @category }.should change(Bid, :count).by(-1)"
+    nested = "      lambda { post :create, category: { name: 'Techbology' } }.should change(Category, :count).by(1)"
+    entry = entry(subject: "test request helpers take `params:`",
+      text: wrapped, path: "spec/controllers/bids_controller_spec.rb")
+
+    result = Rewrites.apply([entry, entry.merge("text" => nested)], rung: "5.1.0")
+
+    assert_equal [
+      "      lambda { delete :destroy, params: { item_id: @item, id: @bid, category_id: @category } }.should change(Bid, :count).by(-1)",
+      "      lambda { post :create, params: { category: { name: 'Techbology' } } }.should change(Category, :count).by(1)"
+    ], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **A wrapper whose close is not the last brace on the line is refused**, not read as the end of the
+  # arguments: `expect { get :index, a: 1 }.to change { Item.count }` would put the second block inside
+  # the params hash. The application has no such line, which is why the shape is a refusal rather than a
+  # second pattern.
+  def test_a_wrapper_whose_close_is_not_the_last_brace_is_refused
+    line = "      expect { get :index, category_id: @category }.to change { Item.count }"
+    entry = entry(subject: "test request helpers take `params:`", text: line, path: "spec/x_spec.rb")
+
+    assert_empty Rewrites.apply([entry], rung: "5.1.0").edits
+  end
+
+  # **Rails 5.1's `find` refuses an object, and the message names the fix.** Two refusals make the rule
+  # safe: an argument whose name says it is already an id, and an argument that is not a bare name.
+  # Measured over the application: 39 rewrites, and exactly one refusal — its own
+  # `app/workers/complete_auction.rb:8`, `Item.find(item_id)`.
+  def test_a_find_with_an_object_argument_takes_its_id
+    lines = [
+      "        Item.find(item).closed.should eql(false)",
+      "          Bid.find(@bid).amount.should eql(5000.to_d)",
+      "    item = Item.find(item_id)",
+      "      Item.find(params[:id])",
+      "      Item.find(User.first)",
+      "      Item.find(item.id)"
+    ]
+    entries = lines.each_with_index.map do |text, index|
+      entry(subject: "find with an object argument", text: text, path: "spec/model/item_spec.rb", line: index + 1)
+    end
+
+    result = Rewrites.apply(entries, rung: "5.1.0")
+
+    assert_equal [
+      "        Item.find(item.id).closed.should eql(false)",
+      "          Bid.find(@bid.id).amount.should eql(5000.to_d)"
+    ], result.edits.map { |edit| edit["after"] }
+  end
+
   # The rule degrades to the unconditional one when it cannot read the file, because the edit it makes
   # is the behaviour-preserving one either way — and refusing everything it could not read would leave
   # an association to fail validation silently, which is the note's own warning.

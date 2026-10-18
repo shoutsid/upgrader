@@ -1129,13 +1129,73 @@ module AgentsFyi
       #   form, whose first argument is the params hash and whose second may be the session;
       # * a second positional hash follows a comma (`… , { user_id: 1 }`, the same form one argument
       #   further in) — wrapping it would put a bare hash inside the params hash.
-      def self.arguments_keyed(subject:, calls:, keyword:, file: nil, rung: nil)
+      def self.arguments_keyed(subject:, calls:, keyword:, file: nil, rung: nil, wrapper: false)
         names = Array(calls).map { |call| Regexp.escape(call) }.join("|")
+        call = "(?:#{names})\\s+:[a-z_]\\w*\\s*,\\s*(?!.*,\\s*\\{)"
+        args = "(?<args>[a-z_]\\w*:.*)"
+        # **A call inside an inline block on one line, which the anchored shape cannot see.** The
+        # lighthouse has 15 of them — `let(:send_request) { get :show, id: @category }` and
+        # `lambda { delete :destroy, id: @bid }.should change(Bid, :count).by(-1)` — and they are the same
+        # change: the statement is not the line. The arguments end at the *last* `}` on the line, which is
+        # the wrapper's close; a hash inside the arguments is never the last one, and the `context` below
+        # refuses the one line where that is not true (`expect { … }.to change { … }`).
+        pattern = wrapper \
+          ? Regexp.new("\\A(?<lead>.*?\\{\\s*)(?<call>#{call})#{args}(?<tail>\\s*\\}.*)\\z") \
+          : Regexp.new("\\A(?<lead>\\s*)(?<call>#{call})#{args}(?<tail>\\s*)\\z")
         Rule.new(family: :arguments_keyed, subject: subject, file: file, rung: rung,
           already: /\b#{Regexp.escape(keyword)}:/,
-          pattern: Regexp.new("\\A(?<lead>\\s*)(?<call>(?:#{names})\\s+:[a-z_]\\w*\\s*,\\s*)" \
-                              "(?!.*,\\s*\\{)(?<args>[a-z_]\\w*:.*?)(?<tail>\\s*)\\z"),
-          replace: "\\k<lead>\\k<call>#{keyword}: { \\k<args> }\\k<tail>")
+          pattern: pattern,
+          # **The wrapper's own close has to be the last brace the line has.** The arguments are read to
+          # the *last* `}` on the line, which is the wrapper's close — unless the line wraps a second
+          # block after it: `expect { get :index, a: 1 }.to change { Item.count }` would put
+          # `change { Item.count }` inside the params hash. Measured, this application has no such line;
+          # the refusal is what keeps the shape honest rather than lucky.
+          context: wrapper ? method(:wrapper_closes_the_line) : nil,
+          replace: lambda do |match|
+            args = match[:args]
+            gap = args.match?(/\s\z/) ? " " : ""
+            "#{match[:lead]}#{match[:call]}#{keyword}: { #{args.sub(/\s+\z/, "")} }#{gap}#{match[:tail]}"
+          end)
+      end
+
+      # Whether the inline block this rule found closes at the line's last brace: the `{` the lead
+      # stopped at is matched forward, and everything after its close must carry no brace of its own.
+      def self.wrapper_closes_the_line(_lines, _found, raw, _tree)
+        text = mask(raw.to_s)
+        depth = 0
+        close = nil
+        text.each_char.with_index do |char, index|
+          depth += 1 if char == "{"
+          next unless char == "}"
+
+          depth -= 1
+          if depth.zero?
+            close = index
+            break
+          end
+        end
+        !close.nil? && !text[(close + 1)..].to_s.include?("{")
+      end
+
+      # **A finder that refuses an object now.** Rails 5.1 added the guard and named the fix in the same
+      # sentence — `ArgumentError: You are passing an instance of ActiveRecord::Base to \`find\`. Please
+      # pass the id of the object by calling \`.id\`.` — and this application failed 39 of its 201 examples
+      # on it: `Item.find(item)`, `Bid.find(@bid)`, `User.find(user_1)` and the rest.
+      #
+      # Two refusals, and the first is the whole safety: an argument whose *name* says it is already an id
+      # (`id`, `@item_id`) is left, because `item_id.id` is not this change — measured in this
+      # application's own `app/workers/complete_auction.rb:8`, `Item.find(item_id)`, where the rule would
+      # have broken a line that works. And an argument that is not a bare name — `find(params[:id])`,
+      # `find(5)`, `find(User.first)` — is left too: the guard refuses an *instance*, and the rule cannot
+      # see what a call returns.
+      def self.finder_takes_an_id(subject:, file: nil, rung: nil)
+        Rule.new(family: :finder_takes_an_id, subject: subject, file: file, rung: rung,
+          pattern: /(?<call>\b[A-Z]\w*\.find\()(?<arg>@?[a-z_]\w*)(?<close>\))/,
+          replace: lambda do |match|
+            next match[0] if match[:arg].match?(/\A@?(?:id|.*_id)\z/)
+
+            "#{match[:call]}#{match[:arg]}.id#{match[:close]}"
+          end)
       end
 
       # **The two ends of an ERB tag.** A rule whose pattern is anchored at `\A` and `\z` is saying "the
@@ -1804,7 +1864,21 @@ module AgentsFyi
         # `params`, so applying this at 4.1 would break the suite it exists to keep green.
         arguments_keyed(subject: "test request helpers take `params:`",
           calls: %w[get post patch put delete head], keyword: "params",
-          file: "{spec,test}/**/*.rb", rung: "5.1.0")
+          file: "{spec,test}/**/*.rb", rung: "5.1.0"),
+        # The same change inside an inline block: `let(:send_request) { get :show, id: @category }`, which
+        # is 15 of this application's 54 call sites.
+        arguments_keyed(subject: "test request helpers take `params:`",
+          calls: %w[get post patch put delete head], keyword: "params",
+          file: "{spec,test}/**/*.rb", rung: "5.1.0", wrapper: true),
+
+        # **A second change the guide does not name, from the same rung's suite.** Rails 5.1's `find`
+        # refuses an `ActiveRecord::Base` instance and says so in the message that names the fix; this
+        # application passes one in 40 places, 39 examples' worth. Read from `app/` as well as the two
+        # test trees, because the guard is the framework's and not the spec's — this application's own
+        # `app/workers/complete_auction.rb:8` passes an id (`item_id`), which is why the rule refuses a
+        # name that already says it is one.
+        finder_takes_an_id(subject: "find with an object argument",
+          file: "{spec,test,app}/**/*.rb", rung: "5.1.0")
       ].freeze
 
       # The edits to hand the applier, the subjects a rule *applied*, the subjects it left, and the
