@@ -146,19 +146,26 @@ module AgentsFyi
 
         # **The located line carries the companion's subject, so the rule that rewrites it is the one
         # that answers.** `Rewrites.apply` groups by subject; a manual entry naming any other subject
-        # would find no rule and be reported as a change needing a person.
+        # would find no rule and be reported as a change needing a person. The rules are re-labelled
+        # here rather than trusted to agree: a companion whose rule kept its own subject would apply
+        # nothing, silently, which is the failure mode this module must not have.
         def rule_edits(entry, files)
+          rules = Array(entry.rules).map do |rule|
+            next rule if rule.subject == entry.subject
+
+            rule.dup.tap { |copy| copy.subject = entry.subject }
+          end
           manual = files.flat_map do |path, lines|
             Array(lines).each_with_index.filter_map do |line, index|
               masked = Rewrites.mask(line)
-              next unless Array(entry.rules).any? { |rule| rule.pattern.match?(masked) }
+              next unless rules.any? { |rule| rule.pattern.match?(masked) }
 
               { "path" => path, "line" => index + 1, "text" => line, "subject" => entry.subject }
             end
           end
           return [] if manual.empty?
 
-          Rewrites.apply(manual, rules: entry.rules, files: files, changes: []).edits.map do |edit|
+          Rewrites.apply(manual, rules: rules, files: files, changes: []).edits.map do |edit|
             Edit.new(path: edit["path"], line: edit["line"], text: edit["text"],
               after: edit["after"], subject: entry.subject, note: entry.note)
           end

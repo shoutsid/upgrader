@@ -14,6 +14,7 @@ require "agents_fyi/upgrader"
 # the inference call to 3, and the three negated change matchers to 0.
 class CompanionsTest < Minitest::Test
   Companions = AgentsFyi::Upgrader::Companions
+  Rewrites = AgentsFyi::Upgrader::Rewrites
   ROOT = File.expand_path("../../..", __dir__)
   DIGEST = File.join(ROOT, "data", "gem_migrations.json")
 
@@ -95,6 +96,39 @@ class CompanionsTest < Minitest::Test
     root = tree("spec/items_spec.rb" => "lambda { post :create }.should change(Item, :count).by(1)\n")
 
     assert_empty Companions.edits(entry, root: root)
+  end
+
+  # **The mechanism is the reusable half: a second companion is data and adds no branch.** This drives
+  # an entry for a gem that does not exist against a synthetic tree, with a rule whose own subject
+  # deliberately disagrees with the entry's — the shape a hurried second instance would have, and one
+  # that would otherwise apply nothing because `Rewrites.apply` groups by subject.
+  def test_a_second_companion_is_data_and_needs_no_new_branch
+    second = Companions::Entry.new(
+      gem: "some-gem", requirement: "~> 2.0", subject: "some-gem 2",
+      note: "a second gem whose own upgrade needs an edit",
+      globs: %w[spec/**/*_spec.rb],
+      inserts: [
+        Companions::Insert.new(path: "config/initializers/some.rb", anchor: "# boot",
+          line: "SomeGem.configure", note: "a second insert")
+      ],
+      rules: [
+        Rewrites::Rule.new(family: :argument_dropped, subject: "a different subject",
+          pattern: /(?<call>\.should_not\s+change\([^)]*\))\s*\.by\(\s*-?\d+\s*\)/,
+          replace: '\k<call>')
+      ]
+    )
+    root = tree("config/initializers/some.rb" => "# boot\n",
+      "spec/x_spec.rb" => "lambda { 1 }.should_not change(X, :count).by(1)\n")
+
+    edits = Companions.edits(second, root: root)
+
+    assert_equal 2, edits.size, "the second companion's edits are #{edits.map(&:path).inspect}"
+    assert(edits.all? { |edit| edit.subject == "some-gem 2" },
+      "every edit is recorded under the entry's subject, not the rule's")
+    assert_equal "SomeGem.configure",
+      edits.find { |edit| edit.path == "config/initializers/some.rb" }.after.split("\n").last
+    refute_match(/\.by\(/, edits.find { |edit| edit.path == "spec/x_spec.rb" }.after.to_s,
+      "a rule whose subject disagreed with its entry applied nothing")
   end
 
   # The trigger is the move's own line: a companion for `~> 2.14.0` would be the edits for a move the
