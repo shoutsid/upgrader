@@ -239,6 +239,7 @@ module AgentsFyi
         return finish(pin) if pin.is_a?(Record)
 
         update(stages)
+        migrate_after_update(stages)
         boot(stages)
         @suite = suite(stages)
 
@@ -1138,6 +1139,33 @@ module AgentsFyi
         @out.puts("  database: #{argv.join(" ")}") if @out
         stages << command(Record::DATABASE, argv, chdir: root, env: application_env)
         stages.last
+      end
+
+      # **`app:update` can write a migration, and the database the baseline prepared is then stale.**
+      # Measured at the 6.0 rung: `app:update` adds
+      # `db/migrate/*_add_foreign_key_constraint_to_active_storage_attachments_for_blob_id.rb` to an
+      # application that has no ActiveStorage tables at all — the generated migration is guarded, so
+      # it is a no-op, but it is a *migration* — and the application's own `spec_helper` calls
+      # `ActiveRecord::Migration.check_pending!`, so the suite died before a single example ran:
+      # "Migrations are pending. To resolve this issue, run: rails db:migrate RAILS_ENV=test".
+      # `db:test:prepare` is not the command for it: that loads `db/schema.rb`, which only
+      # `db:migrate` has brought up to date. So the second preparation is the one Rails' own message
+      # names, it runs in the environment the first one did, and it runs **only when a migration
+      # actually arrived** (`@adopted`, which is what `app:update` added and this tool kept) — a rung
+      # that wrote no migration has nothing to re-prepare, and this touches the database the suite
+      # reads.
+      def migrate_after_update(stages)
+        arrived = @adopted.grep(%r{\Adb/migrate/})
+        return nil if arrived.empty?
+        return nil unless File.file?(File.join(@worktree.root, "config", "database.yml"))
+
+        argv = rails_five_or_newer? ? ["bin/rails", "db:migrate"] : ["bundle", "exec", "rake", "db:migrate"]
+        @out.puts("  database: #{argv.join(" ")} (#{arrived.size} migration(s) from app:update)") if @out
+        stage = command(Record::DATABASE, argv, chdir: @worktree.root, env: application_env)
+        stage.output_tail = "#{arrived.join(", ")} arrived with app:update, so the database the " \
+                            "baseline prepared is stale: #{stage.output_tail}"
+        stages << stage
+        stage
       end
 
       # The suite on the unmodified copy. Its *absence* is a fact about the application and is
