@@ -375,22 +375,22 @@ class CliTest < Minitest::Test
   end
 end
 
-  # **The process environment reaches the step**, and this is a fix rather than a detail. A `step` built
-  # without it read every knob the step owns as *absent* — so `UPGRADER_COMMAND_TIMEOUT=120` gave the
-  # fifteen-minute default, which is how it was found: a walk asked for two minutes and sat in
-  # `bundle update` for ten. The seam is a class rather than the real one, so the suite asserts what
-  # *would* be built rather than walking anything.
-  def test_the_cli_gives_the_step_the_environment_it_was_started_with
-    built = nil
-    fake = Class.new do
-      define_method(:initialize) { |**kwargs| built = kwargs }
-      def run = nil
-    end
-
-    status = Cli.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
-      out: StringIO.new, env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
-
-    assert_equal 0, status
-    refute_nil built, "the step was built"
-    assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
+# **The process environment reaches the step**, and this is a fix rather than a detail. A `step` built
+# without it read every knob the step owns as *absent* — so `UPGRADER_COMMAND_TIMEOUT=120` gave the
+# fifteen-minute default, which is how it was found: a walk asked for two minutes and sat in
+# `bundle update` for ten. The seam is a class rather than the real one, so the suite asserts what
+# *would* be built rather than walking anything.
+def test_the_cli_gives_the_step_the_environment_it_was_started_with
+  built = nil
+  fake = Class.new do
+    define_method(:initialize) { |**kwargs| built = kwargs }
+    def run = nil
   end
+
+  status = Cli.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
+    out: StringIO.new, env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
+
+  assert_equal 0, status
+  refute_nil built, "the step was built"
+  assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
+end
