@@ -127,8 +127,10 @@ The pipeline has three stages that make the rest mean anything:
    a gem the application does not declare is a *decision* — unless the entry is `declared`,
    which says the framework is about to bring the gem in and the newest release of it cannot
    run here. That one is an addition: there is no line of the application's to rewrite, so the
-   line is added, and the entry's condition (the Ruby it is right below) is evaluated against
-   the interpreter the move will run on.
+   line is added, and the entry's condition is evaluated against the move: the Ruby it is right
+   below (the rung's floor) and the release it is right for (`rails_below`/`rails_at_least`), so
+   one gem can be documented as having to move twice in a walk. An entry that does not apply says
+   so, and so does one whose clause this build does not know.
    The install itself is where a native gem meets the environment: nokogiri vendors its own
    libxml2 and builds it with libtool, whose install `chmod`s the static library — refused on
    the Docker Desktop share this walker's home is a bind mount of — so the bundle builds
