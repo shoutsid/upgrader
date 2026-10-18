@@ -184,6 +184,21 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A scan whose entries carry the rung that named them — which is what tells a call site this rung owns
+  # from one an earlier rung left, and whether the application has since crossed that rung.
+  class TwoRungCorpus < FakeCorpus
+    def scan(from:, to:, files:)
+      { "edits" => [],
+        "manual" => [
+          { "subject" => "render :text", "path" => "app/controllers/x.rb", "line" => 2, "step" => "3.2.0",
+            "note" => "the deprecation from 4.1 has run out", "kind" => "removed" },
+          { "subject" => "render :nothing", "path" => "app/controllers/x.rb", "line" => 3, "step" => "4.2.0",
+            "note" => "the deprecation from 4.1 has run out", "kind" => "removed" }
+        ],
+        "counts" => { "automatic" => 0, "manual" => 2 }, "next_step" => "two call sites" }
+    end
+  end
+
   class FakeTests
     attr_reader :machines
 
@@ -564,6 +579,20 @@ class StepMachineTest < Minitest::Test
     refute record.decisions.any? { |decision| decision.subject.to_s.start_with?("rails-dom-testing") },
       "the lock moved it and the residue still asks for it: " \
       "#{record.decisions.map(&:subject).inspect}"
+  end
+
+  # **A call site from a rung the application has crossed is not the same sentence as one it has not
+  # reached.** Measured at the 5.1 rung, whose `protect_from_forgery` decision said "has not crossed"
+  # about the rung that arrives at 5.0.0 — the version the tree *is* — so a call site carried unfixed
+  # since read as one the application had never been asked about.
+  def test_a_carried_call_site_says_whether_the_application_has_crossed_its_rung
+    record = step(app, machines: machines, corpus: TwoRungCorpus.new).run
+
+    reasons = record.decisions.to_h { |decision| [decision.subject.to_s, decision.reason.to_s] }
+    assert_includes reasons["render :text"].to_s, "already crossed",
+      "3.2.0 is below the application's own 4.0.0.rc1: #{reasons["render :text"].inspect}"
+    assert_includes reasons["render :nothing"].to_s, "has not crossed",
+      "4.2.0 is above it: #{reasons["render :nothing"].inspect}"
   end
 
   # **A line that already reads the new way is not work, and the *line* is what says so.** The 5.1

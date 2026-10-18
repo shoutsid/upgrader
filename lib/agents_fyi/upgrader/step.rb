@@ -1547,7 +1547,7 @@ module AgentsFyi
 
         located = carried.map do |change|
           decision(change, found[change["subject"].to_s]&.first, evidence: evidence,
-            rung: step["to_version"])
+            rung: step["to_version"], from: step["from_version"])
         end
         # And a manual call site the plan does not name is a change nobody has written
         # into the ladder, which is the most useful thing a refusal can say. Dropping it
@@ -1559,7 +1559,9 @@ module AgentsFyi
         # for an entry with no rung at all.
         unplanned = found.keys - carried.map { |change| change["subject"].to_s }
         located + unplanned.flat_map do |subject|
-          found[subject].map { |entry| decision(nil, entry, evidence: evidence, rung: step["to_version"]) }
+          found[subject].map do |entry|
+            decision(nil, entry, evidence: evidence, rung: step["to_version"], from: step["from_version"])
+          end
         end
       end
 
@@ -1567,7 +1569,7 @@ module AgentsFyi
       # scan's own entry otherwise. The reason joins both notes when they are two, in the
       # order a reader wants them: what the guide says the change is, then what this
       # application's line looks like.
-      def decision(change, entry, evidence: {}, rung: nil)
+      def decision(change, entry, evidence: {}, rung: nil, from: nil)
         subject = ((change && change["subject"]) || entry["subject"]).to_s
         # **The gap travels with the change, and that is the point of it.** A change no rule covers
         # is not a verdict about the application: it is a queue entry, and `Rewrites.gap_for` says
@@ -1577,7 +1579,7 @@ module AgentsFyi
         gap = Rewrites.gap_for(subject)
         reason = [change && change["note"], entry && entry["note"]]
                  .compact.reject { |note| note.to_s.empty? }.uniq.join(" — ")
-        reason = [reason, earlier_rung(entry, rung), survey_note(evidence[subject]),
+        reason = [reason, earlier_rung(entry, rung, from), survey_note(evidence[subject]),
                   gap && "not automated yet: #{gap}"]
                  .compact.reject(&:empty?).join(" — ")
         Record::Decision.new(
@@ -1593,12 +1595,34 @@ module AgentsFyi
       # scan's own answer says which: every entry carries the rung that named it. The walker scans from the
       # ladder's `earliest` so that a rule can fix a change an application never made — and the residue has
       # to say so, or an application that is behind reads as one that is merely unfinished.
-      def earlier_rung(entry, rung)
+      #
+      # **Whether the application has crossed that rung is a fact this step knows, and the sentence said
+      # the opposite of it.** Measured at the 5.1 rung: its `protect_from_forgery` entry is a change of the
+      # rung that arrives at 5.0.0, and the tree *is* 5.0.0 — a call site that has been carried unfixed
+      # since, not one the application has not reached yet. The two want different work: the first asks
+      # why the rung that owned it left it, the second asks whether the rung has run at all.
+      def earlier_rung(entry, rung, from = nil)
         named = (entry && entry["step"]).to_s
         return nil if named.empty? || rung.to_s.empty? || named == rung.to_s
 
-        "carried by an earlier rung — the one that arrives at #{named} — which this application has " \
-          "not crossed, so this call site is still in its old form"
+        if crossed?(from, named)
+          "carried by an earlier rung — the one that arrives at #{named}, which this application has " \
+            "already crossed, so this call site has been carried unfixed since"
+        else
+          "carried by an earlier rung — the one that arrives at #{named} — which this application has " \
+            "not crossed, so this call site is still in its old form"
+        end
+      end
+
+      # Whether the application's own version is at or past a rung. An unparseable version answers "not
+      # crossed", which is the sentence that asks a person to look rather than the one that claims they
+      # already have.
+      def crossed?(from, named)
+        return false if from.to_s.empty?
+
+        Gem::Version.new(from.to_s) >= Gem::Version.new(named.to_s)
+      rescue ArgumentError
+        false
       end
 
       # **What a survey found, in the decision's own words.** "None found" and "no survey" are two

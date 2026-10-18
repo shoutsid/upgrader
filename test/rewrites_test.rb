@@ -458,6 +458,25 @@ class RewritesTest < Minitest::Test
     ], result.edits.map { |edit| edit["after"] }
   end
 
+  # **And a third shape: the arguments and the wrapper's close both run past the line.** This
+  # application's `lambda{ post :create, item: { … }, category_id: @category`, with its `}` and
+  # `.should change(Item, :count).by(1)` on the next line — the rung's last two failing examples. The wrap
+  # closes the hash at the end of the line and the next line's `}` closes the block, which is why the rule
+  # requires the line's brace depth to be exactly one: any deeper and the arguments are not all here.
+  def test_a_wrapper_whose_arguments_run_past_the_line_wraps_what_the_line_holds
+    line = "      lambda{ post :create, item: { name: 'foo', min_accept_bid: 600 }, category_id: @category"
+    deeper = "      lambda{ post :create, item: { name: 'foo',"
+    entry = entry(subject: "test request helpers take `params:`", text: line,
+      path: "spec/controllers/items_controller_spec.rb")
+
+    result = Rewrites.apply([entry, entry.merge("text" => deeper)], rung: "5.1.0")
+
+    assert_equal [
+      "      lambda{ post :create, params: { item: { name: 'foo', min_accept_bid: 600 }, category_id: @category }"
+    ], result.edits.map { |edit| edit["after"] }
+    assert_equal 1, result.left.size, "a line whose arguments are not all on it is left"
+  end
+
   # **A wrapper whose close is not the last brace on the line is refused**, not read as the end of the
   # arguments: `expect { get :index, a: 1 }.to change { Item.count }` would put the second block inside
   # the params hash. The application has no such line, which is why the shape is a refusal rather than a

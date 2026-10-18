@@ -1139,9 +1139,19 @@ module AgentsFyi
         # change: the statement is not the line. The arguments end at the *last* `}` on the line, which is
         # the wrapper's close; a hash inside the arguments is never the last one, and the `context` below
         # refuses the one line where that is not true (`expect { … }.to change { … }`).
-        pattern = wrapper \
-          ? Regexp.new("\\A(?<lead>.*?\\{\\s*)(?<call>#{call})#{args}(?<tail>\\s*\\}.*)\\z") \
-          : Regexp.new("\\A(?<lead>\\s*)(?<call>#{call})#{args}(?<tail>\\s*)\\z")
+        pattern = if wrapper == :continues
+          # **The wrapper's close is on the *next* line, and both the arguments and the block run past
+          # this one.** This application has two of them (`lambda{ post :create, item: { … }, category_id:
+          # @category` / `}.should change(Item, :count).by(1)`), and the edit is still within the line: the
+          # hash this rule opens closes at the end of the line, and the wrapper's own `}` on the next line
+          # closes the block. `wrapper_continues_the_line` is what makes that true — the line's brace depth
+          # has to be exactly one, so the arguments it wraps are all the ones it read.
+          Regexp.new("\\A(?<lead>.*?\\{\\s*)(?<call>#{call})#{args}(?<tail>\\s*)\\z")
+        elsif wrapper
+          Regexp.new("\\A(?<lead>.*?\\{\\s*)(?<call>#{call})#{args}(?<tail>\\s*\\}.*)\\z")
+        else
+          Regexp.new("\\A(?<lead>\\s*)(?<call>#{call})#{args}(?<tail>\\s*)\\z")
+        end
         Rule.new(family: :arguments_keyed, subject: subject, file: file, rung: rung,
           already: /\b#{Regexp.escape(keyword)}:/,
           pattern: pattern,
@@ -1150,7 +1160,10 @@ module AgentsFyi
           # block after it: `expect { get :index, a: 1 }.to change { Item.count }` would put
           # `change { Item.count }` inside the params hash. Measured, this application has no such line;
           # the refusal is what keeps the shape honest rather than lucky.
-          context: wrapper ? method(:wrapper_closes_the_line) : nil,
+          context: case wrapper
+          when :continues then method(:wrapper_continues_the_line)
+          when true then method(:wrapper_closes_the_line)
+          end,
           replace: lambda do |match|
             args = match[:args]
             gap = args.match?(/\s\z/) ? " " : ""
@@ -1175,6 +1188,22 @@ module AgentsFyi
           end
         end
         !close.nil? && !text[(close + 1)..].to_s.include?("{")
+      end
+
+      # Whether the inline block this rule found is still open at the line's end, which is the shape where
+      # the call's arguments *and* the wrapper's close both run past the line — this application's
+      # `lambda{ post :create, item: { … }, category_id: @category` with its `}` and `.should change(…)` on
+      # the next line. The wrap adds the hash's close at the end of the line and the wrapper's own `}` on
+      # the next line closes the block; the depth has to be exactly one for that to be the same edit, since
+      # any deeper means the arguments are not all on this line and the added brace would close the wrong
+      # one.
+      def self.wrapper_continues_the_line(_lines, _found, raw, _tree)
+        depth = 0
+        mask(raw.to_s).each_char do |char|
+          depth += 1 if char == "{"
+          depth -= 1 if char == "}"
+        end
+        depth == 1
       end
 
       # **A finder that refuses an object now.** Rails 5.1 added the guard and named the fix in the same
@@ -1870,6 +1899,13 @@ module AgentsFyi
         arguments_keyed(subject: "test request helpers take `params:`",
           calls: %w[get post patch put delete head], keyword: "params",
           file: "{spec,test}/**/*.rb", rung: "5.1.0", wrapper: true),
+        # And the third shape: the arguments *and* the wrapper's close both run past the line — this
+        # application's `lambda{ post :create, item: { … }, category_id: @category` with its `}` and
+        # `.should change(Item, :count).by(1)` on the next line. Two of the rung's call sites, and its last
+        # two failing examples.
+        arguments_keyed(subject: "test request helpers take `params:`",
+          calls: %w[get post patch put delete head], keyword: "params",
+          file: "{spec,test}/**/*.rb", rung: "5.1.0", wrapper: :continues),
 
         # **A second change the guide does not name, from the same rung's suite.** Rails 5.1's `find`
         # refuses an `ActiveRecord::Base` instance and says so in the message that names the fix; this
