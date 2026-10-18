@@ -1,5 +1,5 @@
 {
-  "note": "The interpreters a step may execute on, read by Interpreters and by scripts/upgrader-images.sh. `ruby` is the interpreter's own version *inside the image*, and it is compared against a step's `requires_ruby` floor — so it must be the image's version rather than the era a person names. Each `base` is pinned by the manifest digest that was pulled on 2026-10-17 and its runtime version was read back with `docker run --rm <base> ruby -v`; the digest is what makes the pin real, and the version string is what makes the floor arithmetic honest. `image` is the reference the walker runs and the deployment may override by digest (UPGRADER_INTERPRETER_IMAGES). `bundler` is the version installed into the image, chosen per era because Bundler 2.x cannot run on 2.1/2.2 at all and 1.x cannot read the lockfiles of the releases the later eras exist for. There is deliberately no `os` column: which Debian release a base is, and whether its packages have moved to archive.debian.org, is a fact the image carries in /etc/os-release, and the two eras this file used to be wrong about (2.5 is buster, 2.7 is bullseye) are why the Dockerfile reads it instead of being told.",
+  "note": "The interpreters a step may execute on, read by Interpreters and by scripts/upgrader-images.sh. `ruby` is the interpreter's own version *inside the image*, and it is compared against a step's `requires_ruby` floor — so it must be the image's version rather than the era a person names. Each `base` is pinned by the manifest digest that was pulled on 2026-10-17 and its runtime version was read back with `docker run --rm <base> ruby -v`; the digest is what makes the pin real, and the version string is what makes the floor arithmetic honest. `image` is the reference the walker runs and the deployment may override by digest (UPGRADER_INTERPRETER_IMAGES). `bundler` is the version installed into the image, chosen per era because Bundler 2.x cannot run on 2.1/2.2 at all and 1.x cannot read the lockfiles of the releases the later eras exist for. There is deliberately no `os` column: which Debian release a base is, and whether its packages have moved to archive.debian.org, is a fact the image carries in /etc/os-release, and the two eras this file used to be wrong about (2.5 is buster, 2.7 is bullseye) are why the Dockerfile reads it instead of being told. **One base is deliberately not the newest of its line, and the reason is a release's own code: the 2.2 era is `ruby:2.2.9`, not `2.2.10`.** Rails 5.0.0's `railties/lib/rails/ruby_version_check.rb:1` is `if RUBY_VERSION < '2.2.2'` — a *string* comparison — so `'2.2.10' < '2.2.2'` is true and the release the 5.0 rung moves to aborts on the newest 2.2 patch (`Rails 5 requires Ruby 2.2.2 or newer. You're running ruby 2.2.10p489`). Any 2.2.x with a single-digit patch satisfies the string comparison, and 2.2.9 is the newest that does.",
   "interpreters": [
     {
       "name": "2.1",
@@ -10,8 +10,8 @@
     },
     {
       "name": "2.2",
-      "ruby": "2.2.10",
-      "base": "ruby:2.2@sha256:4987b5e2f03b7086c493208ef616b711fe73228391a80faf451975f9e0195236",
+      "ruby": "2.2.9",
+      "base": "ruby:2.2.9@sha256:aede69da0e5d89020cddfde853d0b0aad30ec855411a0b9666c714c18f9d6cb9",
       "image": "agentsfyi-upgrader-ruby-2.2:dev",
       "bundler": "1.17.3"
     },
