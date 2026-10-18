@@ -160,8 +160,8 @@ class RewritesTest < Minitest::Test
   # verdict, and a change a rule covers needs no gap at all.
   def test_a_gap_says_what_would_close_it_and_what_nobody_has_looked_at_says_so
     assert_nil Rewrites.gap_for("MultiJson"), "a covered change needs no gap"
-    assert_includes Rewrites.gap_for("default_scope"), "callers that chain conditions onto the scope"
-    assert_includes Rewrites.gap_for("alias_attribute"), "the attribute's own definition"
+    assert_includes Rewrites.gap_for("default_scope"), "the survey names the callers"
+    assert_includes Rewrites.gap_for("alias_attribute"), "the survey names the aliases"
     assert_includes Rewrites.gap_for("assigns / assert_template"),
       "installed in production"
     assert_includes Rewrites.gap_for("config.secret_token"), "leave it in place and add"

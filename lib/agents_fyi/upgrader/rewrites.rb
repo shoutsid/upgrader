@@ -631,13 +631,20 @@ module AgentsFyi
                     "as a decision either way, and the change's own note is what says which"
 
       GAPS = {
-        "default_scope" => "a rule would need the callers that chain conditions onto the scope, and " \
-                           "whether the merge changes what they read — the candidate patch " \
-                           "(`unscope`, `rewhere`, `unscoped`) depends on them",
-        "json and hstore columns" => "a rule would need the column's usages to tell a symbol key " \
-                                     "from a string one; the patch is per call site",
-        "alias_attribute" => "a rule would need the attribute's own definition to write the " \
-                             "explicit method the new release wants",
+        # **A survey does not retire the gap, and these three sentences were written before one existed.**
+        # A survey reports the call sites; it does not make the edit, so the change is still not
+        # automated — but a sentence that says "a rule would need the callers" while a survey is already
+        # naming them is a sentence that disagrees with the code beside it.
+        "default_scope" => "the survey names the callers that chain a condition on the same column, and " \
+                           "the edit is not a rule because the candidate patch (`unscope`, `rewhere`, " \
+                           "`unscoped`) is a choice between three intentions",
+        "json and hstore columns" => "the survey names the lines that index into the column with a " \
+                                     "symbol; the patch is per call site and its value is the key, which " \
+                                     "is a decision about what the code meant",
+        "alias_attribute" => "the survey names the aliases whose original attribute the file defines " \
+                             "itself; whether to define the alias method by hand or to use " \
+                             "`alias_method` is a choice about the method's body, which the line does " \
+                             "not show",
         "after_commit / after_rollback" => "the change is where an error raised in the callback " \
                                            "*goes*, which the line does not show; `on:` and the " \
                                            "transactional-callbacks default are decisions about the " \
