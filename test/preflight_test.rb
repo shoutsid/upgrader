@@ -167,8 +167,10 @@ class PreflightTest < Minitest::Test
   # **A digest entry can be scoped to the rung, and that is what lets one gem move twice in a walk.**
   # Measured at the 4.2 rung: Rails 4.2 removed `ActionDispatch::Routing::Mapper::Scope#merge!` and
   # devise 3.0.4's own routes file calls it, so the `~> 3.0.0` line that 4.0 and 4.1 need is the wrong
-  # one there. The walker takes the entry whose condition holds, applies it, and says in a note which
-  # entry it did not apply and why.
+  # one there. The walker takes the entry whose condition holds, applies it *at the pin* (a rung-scoped
+  # line waits for the release it is about — see
+  # `test_a_rewrite_scoped_to_the_rung_waits_for_the_pin`), and says in a note which entry it did not
+  # apply and why.
   def test_a_digest_entry_scoped_to_a_rung_is_the_one_that_applies
     gemfile = %(source "https://rubygems.org"\ngem "devise", "~> 3.0.0"\n)
     corpus = lambda do
@@ -181,20 +183,30 @@ class PreflightTest < Minitest::Test
     end
 
     up = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
-    up_result = preflight(up, corpus: corpus.call, rails: "4.2.0")
+    up_result = preflight(up, corpus: corpus.call, ruby: "2.0", rails: "4.2.0")
 
-    assert_includes read(up, "Gemfile"), %(gem "devise", "~> 3.2"),
-      "the entry scoped at 4.2 and above is the one that applies here"
+    assert_empty up_result.repairs, "a rung-scoped line is applied at the pin, not here"
+    assert_equal %w[devise], up_result.deferred.map { |deferred| deferred["gem"] },
+      "the entry scoped at 4.2 and above is the one that holds here"
+    assert(up_result.notes.any? { |note| note.include?("rails_below 4.2") },
+      "the entry that does not apply has to say so: #{up_result.notes.inspect}")
+
+    applied = Preflight.new(root: up, corpus: corpus.call, ruby: "2.0", rails: "4.2.0")
+      .declare_deferred(up_result.deferred)
+
+    assert_equal %w[devise], applied.repairs.map(&:subject)
+    assert_includes read(up, "Gemfile"), %(gem "devise", "~> 3.2")
     refute_includes read(up, "Gemfile"), "3.0.0"
-    assert_equal 1, up_result.notes.size, "the entry that does not apply has to say so"
-    assert_includes up_result.notes.first, "rails_below 4.2"
 
     before = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
-    before_result = preflight(before, corpus: corpus.call, rails: "4.1.0")
+    before_result = preflight(before, corpus: corpus.call, ruby: "2.0", rails: "4.1.0")
 
+    assert_equal %w[devise], before_result.deferred.map { |deferred| deferred["gem"] },
+      "the entry 4.0 and 4.1 need is the one held here"
     assert_includes read(before, "Gemfile"), %(gem "devise", "~> 3.0.0")
     refute_includes read(before, "Gemfile"), "3.2"
-    assert_includes before_result.notes.first, "rails_at_least 4.2"
+    assert(before_result.notes.any? { |note| note.include?("rails_at_least 4.2") },
+      "the entry that does not apply has to say so: #{before_result.notes.inspect}")
   end
 
   # **A declaration scoped to the rung cannot be made before the pin names that rung.** Measured at
@@ -213,7 +225,7 @@ class PreflightTest < Minitest::Test
       "the preflight declared a gem the Gemfile's own framework cannot carry: #{result.details.inspect}"
     refute_includes read(dir, "Gemfile"), "responders"
     assert_equal %w[responders], result.deferred.map { |deferred| deferred["gem"] }
-    assert_includes result.summary, "1 declaration(s) for the rung"
+    assert_includes result.summary, "1 entry(ies) held for the pin"
     assert_equal %w[responders], result.to_h["deferred"]
     assert(result.notes.any? { |note| note.include?("waits for the pin") },
       "a deferred declaration that says nothing reads as one the digest did not have: " \
@@ -225,6 +237,53 @@ class PreflightTest < Minitest::Test
     assert_equal %w[responders], later.repairs.map(&:subject)
     assert_includes read(dir, "Gemfile"), %(gem "responders", "~> 2.0")
     assert_includes later.details, %(Gemfile: `gem "responders", "~> 2.0"` declared (responders))
+  end
+
+  # **A line scoped to the rung waits for the pin for the same reason a declaration does, and the
+  # failure this was measured on is a green baseline turned red.** At the 6.0 rung the application's
+  # own `loofah ~> 2.0.3` was moved to the line actionpack 6.0 asks for, *before* the baseline: the
+  # bundle stage's conservative update then took loofah 2.21.1 — whose earlier sibling releases
+  # declare `nokogiri >= 1.5.9` while their code calls `Nokogiri::HTML4` — while nokogiri stayed at the
+  # 1.9.1 only the 5.2 stack needs, and the 5.2 baseline died on that constant. A line whose whole
+  # reason is the release the move ends at belongs where the Gemfile and the pin agree.
+  def test_a_rewrite_scoped_to_the_rung_waits_for_the_pin
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "5.2.0"\ngem "loofah", "~> 2.0.3"\n)
+    corpus = FakeCorpus.new(entries: [entry(gem: "loofah", replacement: "loofah",
+      requirement: "~> 2.22", condition: { "rails_at_least" => "6.0" })])
+
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    result = preflight(dir, corpus: corpus, ruby: "2.5", rails: "6.0.0")
+
+    assert_empty result.repairs,
+      "the preflight moved a line for a rung the Gemfile does not name yet: #{result.details.inspect}"
+    assert_includes read(dir, "Gemfile"), %(gem "loofah", "~> 2.0.3")
+    assert_equal %w[loofah], result.deferred.map { |deferred| deferred["gem"] }
+    assert(result.notes.any? { |note| note.include?("waits for the pin") },
+      "a held rewrite that says nothing reads as one the digest did not have: #{result.notes.inspect}")
+
+    later = Preflight.new(root: dir, corpus: corpus, ruby: "2.5", rails: "6.0.0")
+      .declare_deferred(result.deferred)
+
+    assert_equal %w[loofah], later.repairs.map(&:subject)
+    assert_includes read(dir, "Gemfile"), %(gem "loofah", "~> 2.22")
+    refute_includes read(dir, "Gemfile"), "2.0.3"
+  end
+
+  # **The other half of the same rule: `ruby`-scoped is the machine, so it stays here.** The install
+  # that chooses the interpreter is the first thing a step does, so an entry scoped by the *machine*
+  # has to be in the Gemfile before it — the 5.0 rung's `json` floor is the measured case, where a
+  # release's own C source does not compile on the interpreter the ladder allows.
+  def test_a_rewrite_scoped_to_the_interpreter_is_applied_here
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "5.2.0"\ngem "ffi", "~> 1.9"\n)
+    corpus = FakeCorpus.new(entries: [entry(gem: "ffi", replacement: "ffi",
+      requirement: "~> 1.16.0", condition: { "ruby_at_least" => "2.5" })])
+
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    result = preflight(dir, corpus: corpus, ruby: "2.5", rails: "6.0.0")
+
+    assert_equal %w[ffi], result.repairs.map(&:subject)
+    assert_includes read(dir, "Gemfile"), %(gem "ffi", "~> 1.16.0")
+    assert_empty result.deferred
   end
 
   # **A gem can be too *old* for the interpreter as well as too new for it.** `ruby_below` catches

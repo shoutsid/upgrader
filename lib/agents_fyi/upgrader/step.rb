@@ -451,8 +451,9 @@ module AgentsFyi
           ruby: step["requires_ruby"] || @lockfile.locked_ruby, rails: rung_of(step))
         result = @preflight.run
         # **What the preflight could not do because the Gemfile and the pin did not agree yet.**
-        # A `declared` entry scoped to the rung is applied by `declare_for_the_rung`, after the
-        # pin is rewritten and before its resolve (`rewrite`).
+        # A rung-scoped entry — a declaration *or* a rewrite of a line the application already
+        # declares — is applied by `declare_for_the_rung`, after the pin is rewritten and before
+        # its resolve (`rewrite`).
         @deferred = result.deferred
         stages << Record::Command.new(
           stage: Record::PREFLIGHT, command: "preflight: #{result.summary}",
@@ -1717,10 +1718,10 @@ module AgentsFyi
         end
 
         File.write(path, updated)
-        # **The digests' declarations wait for this line, and this is the line.** A
-        # `declared` entry is about a gem the *target* framework brings in; rung-scoped ones
-        # are deferred by the preflight (which runs before this rewrite, because the machine
-        # choice is a `bundle install` of the Gemfile as it stands) and are applied here,
+        # **The digest's rung-scoped entries wait for this line, and this is the line.** A `declared`
+        # entry is about a gem the *target* framework brings in; rung-scoped entries — declarations
+        # and rewrites alike — are deferred by the preflight (which runs before this rewrite, because
+        # the machine choice is a `bundle install` of the Gemfile as it stands) and are applied here,
         # between the pin and the resolve. Measured at the 4.2 rung: `responders ~> 2.0`
         # beside `rails 4.1.0` makes the resolver answer `railties (< 5, >= 4.2.0.alpha)`
         # against `railties (= 4.1.0)` for every era, so no interpreter installs the bundle;
@@ -1730,11 +1731,12 @@ module AgentsFyi
         nil
       end
 
-      # The declarations the preflight deferred because the Gemfile still named the release
+      # The rung-scoped entries the preflight held because the Gemfile still named the release
       # the move starts from, applied now that the pin agrees with the rung. Its own stage,
-      # because "the digest declared a gem this application never had" is a fact a reader of
-      # the record has to see beside the pin it made possible — and because a declaration
-      # that silently did not happen is the empty answer this pipeline keeps paying for.
+      # because "the digest declared a gem this application never had" — or moved a line it could
+      # not move yet — is a fact a reader of the record has to see beside the pin it made
+      # possible, and because an entry that silently did not happen is the empty answer this
+      # pipeline keeps paying for.
       def declare_for_the_rung(stages)
         entries = @deferred.to_a
         result =

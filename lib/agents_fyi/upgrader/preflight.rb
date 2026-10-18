@@ -73,15 +73,17 @@ module AgentsFyi
 
       # Everything the preflight did, in the two lists a record already has places for
       # and the sentences that say what it could not do. `deferred` is the third list and
-      # deliberately not an outcome: a `declared` entry scoped to the rung cannot be applied
-      # while the Gemfile still names the release the move starts from, so it travels to the
-      # caller that rewrites the pin (`Step#declare_for_the_rung`).
+      # deliberately not an outcome: an entry scoped to the rung cannot be applied while the
+      # Gemfile still names the release the move starts from, so it travels to the caller that
+      # rewrites the pin (`Step#declare_for_the_rung`).
       Result = Struct.new(:repairs, :decisions, :notes, :deferred, keyword_init: true) do
         def empty? = repairs.empty? && decisions.empty?
 
-        # The one-line summary the `preflight:` stage carries, and the mode prints.
+        # The one-line summary the `preflight:` stage carries, and the mode prints. The held
+        # entries are `entry(ies)` rather than `declaration(s)` because both kinds travel this way
+        # now: a `declared` entry adds a line, and a rewrite moves one the application declared.
         def summary
-          later = deferred.to_a.empty? ? "" : ", #{deferred.size} declaration(s) for the rung"
+          later = deferred.to_a.empty? ? "" : ", #{deferred.size} entry(ies) held for the pin"
           "#{repairs.size} repair(s), #{decisions.size} decision(s)#{later}" \
             "#{notes.empty? ? "" : ", #{notes.size} note(s)"}"
         end
@@ -164,17 +166,28 @@ module AgentsFyi
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: deferred)
       end
 
-      # **The declarations this stage could not make, because the Gemfile and the pin did not
-      # agree yet.** Each entry already passed `holds?` when it was deferred, so it is applied
+      # **The rung-scoped entries this stage could not apply, because the Gemfile and the pin did
+      # not agree yet.** Each entry already passed `holds?` when it was deferred, so it is applied
       # here rather than re-evaluated: `Step#rewrite` calls this after the Rails pin is rewritten
-      # and before the pin's resolve, which is the one place a rung-scoped declaration is both
-      # true of the Gemfile and not yet contradicted by it.
+      # and before the pin's resolve, which is the one place a rung-scoped entry is both true of
+      # the Gemfile and not yet contradicted by it. Both kinds travel this way, and they are
+      # applied by the two halves the preflight already has: a `declared` entry adds a line the
+      # application does not have, and every other kind rewrites the line it declares.
       def declare_deferred(entries)
         repairs = []
         decisions = []
         notes = []
         Array(entries).each do |entry|
-          declare(entry, declaration(entry["gem"].to_s), repairs, decisions, notes)
+          name = entry["gem"].to_s
+          found = declaration(name)
+          if entry["kind"].to_s == "declared"
+            declare(entry, found, repairs, decisions, notes)
+          elsif found
+            rewrite_declared(entry, found, repairs, notes)
+          else
+            notes << "the digest's entry for #{name} was held for the pin, but the Gemfile " \
+                     "declares no line of its own for it: #{entry["note"]}"
+          end
         end
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: [])
       end
@@ -323,23 +336,48 @@ module AgentsFyi
           return
         end
 
+        # **A rewrite scoped to the rung waits for the pin, exactly as a declaration does.** The
+        # line the digest names is a fact about the framework being moved to — actionpack 6.0 asks
+        # `loofah (~> 2.2, >= 2.2.2)` — and beside the release the Gemfile still names it is not
+        # merely early, it is wrong: measured at the 6.0 rung, moving `loofah ~> 2.0.3` to the line
+        # the rung states let the bundle stage's own conservative update take loofah 2.21.1 while
+        # nokogiri stayed at the 1.9.1 the 5.2 stack needs, and the 5.2 baseline died on
+        # `uninitialized constant Nokogiri::HTML4` — a green baseline turned red by a line that rung
+        # had not asked for yet. Interpreter-scoped entries are the other half and stay here: those
+        # are facts about the *machine*, and the install that chooses it has to see them.
+        if rung_scoped?(entry)
+          deferred << entry
+          notes << "the digest's entry for #{name} waits for the pin: it is scoped by " \
+                   "#{condition_sentence(entry)}, and the line it rewrites is a fact about that " \
+                   "release rather than about the one the Gemfile still names"
+          return
+        end
+
+        rewrite_declared(entry, found, repairs, notes)
+      end
+
+      # **One mechanical rewrite of a line the application already declares.** The digest names the
+      # release or the requirement; this writes the line. Two things are refused rather than guessed:
+      # a declaration it cannot parse in full (`unrewritable`) and a kind it has no rewrite for. A
+      # line that already reads the way the digest asks is not an edit — a second pass over a tree,
+      # or a line the application moved itself, is a repair list with nothing in it.
+      def rewrite_declared(entry, found, repairs, notes)
+        name = entry["gem"].to_s
+        index, line = found
         skip = unrewritable(line, kind: entry["kind"].to_s)
         if skip
           notes << "Gemfile:#{index + 1} declares #{name} as `#{line.strip}`, which #{skip}; " \
                    "#{entry["note"]}"
-          return
+          return nil
         end
 
         after = rewrite(entry, line)
         if after.nil?
           notes << "the digest says #{name} becomes #{entry["replacement"] || "nothing"}; " \
                    "this tool has no rewrite for that"
-          return
+          return nil
         end
-        # Already what the digest asks for — a second preflight over the same tree, or a
-        # declaration the application updated itself. Nothing changed, so there is nothing
-        # to record: a repair list is the lines that moved.
-        return if after == line
+        return nil if after == line
 
         lines = File.binread(File.join(@root, "Gemfile")).split("\n", -1)
         if after.empty?
