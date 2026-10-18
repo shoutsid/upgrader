@@ -769,6 +769,37 @@ class RewritesTest < Minitest::Test
       Rewrites.apply([twice], rules: [everything]).edits.map { |e| e["after"] }
   end
 
+  # **An assertion rewrite, where a wrong answer does not fail — it passes.** `assert_tag` is gone in 4.2
+  # and `assert_select` is not a rename: the note's own mapping is the guide's, so the rule is written for
+  # the *documented* forms and refuses the rest. The refusals are the half that matters, and the first
+  # version of this rule got them wrong in a way worth recording: it returned the arguments it had captured
+  # instead of the whole match, so a refusal *deleted* `assert_tag` and left `tag: "div", descendant: …`
+  # behind — a line that no longer parses. A refusal returns the region, because an unchanged region is
+  # what `Rule#after` reads as "no edit".
+  def test_an_assertion_rule_rewrites_the_documented_forms_and_refuses_the_rest
+    assert_equal [%q(    assert_select "div#post")],
+      assert_after(%q(    assert_tag tag: "div", attributes: { id: "post" }))
+    assert_equal [%q(    assert_select "span", text: "Hello")],
+      assert_after(%q(    assert_tag :tag => "span", :content => "Hello"))
+    assert_equal [%q(    assert_select "a.button", text: "Home")],
+      assert_after(%q(    assert_tag tag: "a", attributes: { class: "button" }, content: "Home"))
+    assert_equal [%q(    assert_select "h1")], assert_after(%q(    assert_tag(tag: "h1")))
+
+    # Every one of these is a form this cannot read exactly, and each stays a decision.
+    [%q(    assert_tag tag: "div", descendant: { tag: "span" }),
+      %q(    assert_tag tag: "div", attributes: { href: "/x" }),
+      %q(    assert_tag tag: tag_name),
+      %q(    assert_tag tag: "div", attributes: { id: "a" }, count: 2),
+      %q(    assert_tag tag: "div"; assert_tag tag: "span")].each do |text|
+      assert_empty assert_after(text), "this form is not one the rule can express: #{text.strip}"
+    end
+  end
+
+  def assert_after(text)
+    Rewrites.apply([entry(subject: "assert_tag", path: "spec/x_spec.rb", text: text)])
+      .edits.map { |edit| edit["after"] }
+  end
+
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose
   # fix is a judgement. `default_scope` is the case: 4.1 merges the scope with the conditions a caller
   # chains, and which of `unscope`, `rewhere` and `unscoped` an application meant is not something a
@@ -928,7 +959,7 @@ class RewritesTest < Minitest::Test
       "test/controllers/posts_controller_test.rb:18", "test/views/posts_test.rb:4"],
       found.findings.map { |path, line, _| "#{path}:#{line}" }
     assert_includes Rewrites.findings_sentence(found.findings), "test/views/posts_test.rb:4"
-    assert_includes found.sentence, "the assertions to rewrite"
+    assert_includes found.sentence, "the assertions the rule could not express as a selector"
   end
 
   # **A setting's own value is the fact**, and for `force_ssl` there are two: which controllers ask for it

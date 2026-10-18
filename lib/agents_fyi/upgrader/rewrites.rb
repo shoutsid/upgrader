@@ -441,8 +441,8 @@ module AgentsFyi
         survey_calls(subject: "sanitize / strip_tags",
           sentence: "the calls whose output changed, which is what has to be reviewed"),
         survey_calls(subject: "assert_tag",
-          sentence: "the assertions to rewrite — the note says the argument shape differs, so this is a " \
-                    "test to move rather than a name to rename"),
+          sentence: "the assertions the rule could not express as a selector, and so left as a " \
+                    "decision"),
         survey_calls(subject: "format.any",
           sentence: "the blocks whose Content-Type now comes from the block rather than the request"),
 
@@ -740,9 +740,6 @@ module AgentsFyi
                                  "cookie cannot be read by Rails 3 — so the two together are what " \
                                  "makes a rollback possible. A rename would be the opposite of the " \
                                  "note, and the new value must not come from the repository",
-        "assert_tag" => "the note says the argument shape differs, so a rename would break the " \
-                        "assertion rather than move it: a rule would need to rewrite each " \
-                        "assertion's arguments, which is reading the test rather than the line",
         "config_for" => "the note's replacement is a call on the *result* " \
                         "(`.with_indifferent_access`), which keeps every call site as it is — so " \
                         "what is missing is a rule that edits the assignment rather than the use",
@@ -786,6 +783,11 @@ module AgentsFyi
                                                    "the line *after* `set_callback` is not matched, so " \
                                                    "that call site stays a decision rather than becoming " \
                                                    "a guess",
+        "assert_tag" => "the rule rewrites the *documented* forms — a tag, an `id` or `class` " \
+                        "attribute and a `content`, all quoted literals — into the selector the guide " \
+                        "maps them to. A `descendant:`, a `count:`, an attribute that is neither `id` " \
+                        "nor `class`, a value held in a variable and a second statement on the line are " \
+                        "all refused, because a wrong assertion does not fail: it passes",
         "ActiveStorage::BaseController" => "the rule adds the include to a subclass whose own file " \
                                            "calls `send_blob_stream` — the note's own condition is a " \
                                            "controller *that streams*, and that is a fact about the " \
@@ -1301,6 +1303,26 @@ module AgentsFyi
           pattern: Regexp.new(from.to_s), replace: to)
       end
 
+      # The value of one key in an `assert_tag` hash, or nil. Both spellings the release accepted are read
+      # — `tag: "div"` and `:tag => "div"` — and **only a quoted literal counts**: a variable is not
+      # blanked by the mask, so it does not match, and a rule that wrapped one in quotes would be asserting
+      # against the variable's *name*.
+      def self.assert_tag_value(args, key)
+        match = args.match(/(?:\b#{key}:|:#{key}\s*=>)\s*(?<q>["'])(?<value>[^"']*)\k<q>/)
+        match && match[:value]
+      end
+
+      # The same, for a key inside `attributes: { ... }`. `:refused` when the hash names anything this rule
+      # cannot express as a CSS selector, which is how "an attribute that is neither id nor class" leaves
+      # the line a decision.
+      def self.assert_tag_attribute(args, key)
+        hash = args.match(/(?:attributes:|:attributes\s*=>)\s*\{(?<body>[^}]*)\}/)
+        return nil if hash.nil?
+        return :refused if hash[:body].match?(/\b(?!id\b|class\b)[a-z_]\w*\s*(?::|=>)/)
+
+        assert_tag_value(hash[:body], key)
+      end
+
       RULES = [
         # `link_to 'Delete', path, confirm: 'Sure?'` becomes `data: {confirm: 'Sure?'}`, and the
         # helpers built on link_to go the same way.
@@ -1525,6 +1547,43 @@ module AgentsFyi
             name = match[:name].to_s
             symbol = name.match?(/\A[a-zA-Z_]\w*\z/) ? ":#{name}" : ":#{name.inspect}"
             "#{match[:head]}#{symbol}#{match[:tail]}"
+          end),
+
+        # "A different argument shape, so this is a test to rewrite." `assert_tag` is gone in 4.2, and
+        # `assert_select` is not a rename — the note's own mapping is the guide's:
+        # `assert_tag tag: "div", attributes: { id: "foo" }` is `assert_select "div#foo"`. So the rule is
+        # written for the *documented* forms and refuses the rest, which is the family's whole discipline
+        # applied to an assertion: a wrong assertion does not fail, it *passes*, so a form this cannot read
+        # exactly is left as a decision rather than guessed at.
+        #
+        # A callable `replace` is what makes it possible — the values are inside strings the mask blanks —
+        # and the same hook is what makes the refusal expressible: returning the region unchanged is what
+        # `Rule#after` reads as "no edit". A `descendant:`, a `count:`, a tag held in a variable, an
+        # attribute that is neither `id` nor `class`, or a second statement on the line all take that path.
+        Rule.new(family: :assertion_rewritten, subject: "assert_tag",
+          pattern: /assert_tag\s*\(?\s*(?<args>[^()]*?)\s*\)?\s*\z/,
+          replace: lambda do |match|
+            args = match[:args].to_s
+            # **A refusal returns the whole match, not the arguments it captured.** Returning `args`
+            # deleted `assert_tag` and left its arguments behind — `tag: "div", descendant: ...` — which is
+            # a line that no longer parses. `Rule#after` reads an unchanged region as "no edit", so the
+            # region is what a refusal has to return.
+            #
+            # **And a second statement on the line is a refusal**, which the same test found: the pattern
+            # runs to the end of the line, so `assert_tag tag: "div"; assert_tag tag: "span"` was read as
+            # one call whose arguments carried a second assertion — and rewriting the first *deleted* the
+            # second. A `;` inside a string would be refused the same way, which is the safe direction.
+            next match[0] if args.match?(/\b(descendant|children|ancestor|sibling|parent|count|minimum|maximum)\b/) ||
+                             args.include?(";") || args.match?(/\bassert_tag\b/)
+
+            tag = assert_tag_value(args, "tag")
+            id = assert_tag_attribute(args, "id")
+            klass = assert_tag_attribute(args, "class")
+            content = assert_tag_value(args, "content")
+            next match[0] if tag.nil? || [id, klass, content].any? { |value| value == :refused }
+
+            selector = "#{tag}#{id && "##{id}"}#{klass && ".#{klass}"}"
+            "assert_select #{selector.inspect}#{content ? ", text: #{content.inspect}" : ""}"
           end)
       ].freeze
 
