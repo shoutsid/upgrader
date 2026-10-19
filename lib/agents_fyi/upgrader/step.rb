@@ -164,6 +164,7 @@ module AgentsFyi
         @applied = []
         @refused = []
         @decisions = []
+        @repairs = []
         # The digest entries the preflight held for this rung, filled in when it runs and empty before
         # it. The pin's naming rule reads the Gemfile (`declared_gems`) rather than this list, so which
         # stage moved a line does not change the answer.
@@ -460,9 +461,31 @@ module AgentsFyi
         @out.puts("  repair: #{result}") if @out && !result.attempts.empty?
         return nil if result.attempts.empty?
 
+        # **A repair is knowledge, captured while it is still knowable.** The record is written from
+        # the final state, where the suite is green: what the failure said, and which files the repair
+        # changed, are gone by then. It becomes a corpus report (`Filing.repair_report_for`) rather
+        # than a line in this run's log.
+        @repairs << repair_outcome(subject, result, before_the_move: before_the_move) if result.repaired
+
+
         # The re-run happened inside the loop (`rerun` assigns the ivar it was built around),
         # so what this returns is the *latest* reading of the stage, green or not.
         before_the_move ? @baseline : @suite
+      end
+
+      # What the repair did, from the attempts and the tree it left: the files each attempt changed,
+      # and their diff against the base — the repair's own change, which is the part of the step's
+      # patch a reader would have to guess at otherwise.
+      def repair_outcome(subject, result, before_the_move:)
+        files = result.attempts.flat_map { |attempt| Array(attempt.changed) }.uniq
+        diff = if files.empty?
+          ""
+        else
+          Open3.capture2e("git", "-C", @worktree.root, "diff", "--", *files).first
+        end
+        Repair::Outcome.new(failure: subject.output_tail, suite: @suite_plan&.command,
+          attempts: result.attempts.length, files: files, diff: diff,
+          before_the_move: before_the_move)
       end
 
       def repair_stage(attempt)
@@ -2470,7 +2493,7 @@ module AgentsFyi
           era: @machine.respond_to?(:era) ? @machine.era : nil,
           stages: stages, applied: @applied, refused: @refused, decisions: @decisions,
           patch: capture_patch, baseline: @baseline, suite: @suite,
-          verdict: verdict, why: why, brief: @brief
+          verdict: verdict, why: why, brief: @brief, repairs: @repairs
         )
       end
 
@@ -2638,6 +2661,14 @@ module AgentsFyi
 
         filing = Filing.file(corpus: client, record: record)
         @out.puts("  filed: #{filing.action} — #{filing.reason}") if @out && filing.action != "skipped"
+
+        # **And every repair the step performed, as a report with the repair as its fix.** A passed
+        # rung whose suite was red and green again is the corpus's most useful shape — a failure an
+        # application really had, and the change that resolved it — and it used to live only in this
+        # record. Each one is filed through precheck, so a duplicate is the corpus's decision.
+        Filing.file_repairs(corpus: client, record: record).each do |repair|
+          @out.puts("  filed repair: #{repair.action} — #{repair.reason}") if @out && repair.action != "skipped"
+        end
       rescue Corpus::Unreachable, Corpus::Refused => e
         # The record is the product and it exists whether or not the corpus took it, so
         # this does not change the verdict or raise. It is logged with the service's own

@@ -259,12 +259,13 @@ module AgentsFyi
 
       attr_reader :repository, :commit, :worktree, :from_version, :to_version, :name,
         :requires_ruby, :interpreter, :image, :machine, :era, :stages, :applied, :refused,
-        :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief
+        :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief, :repairs
 
       def initialize(repository:, from_version:, to_version:, verdict:, why:, commit: nil,
                      worktree: nil, name: nil, requires_ruby: nil, interpreter: nil, image: nil,
                      machine: nil, era: nil, stages: [], applied: [], refused: [], decisions: [],
-                     patch: "", baseline: nil, suite: nil, recorded_at: nil, brief: nil)
+                     patch: "", baseline: nil, suite: nil, recorded_at: nil, brief: nil,
+                     repairs: [])
         @repository = repository
         @commit = commit
         @worktree = worktree
@@ -293,6 +294,10 @@ module AgentsFyi
         # The memory the rung was walked with (`Brief`). Nil for a refusal that never got as far as
         # asking, and that is a different fact from a brief the corpus answered with nothing.
         @brief = brief
+        # The repairs this step performed (`Repair::Outcome`): the baseline's and the move's. Kept
+        # apart from the patch because the patch is what the rung *is*, and a repair is what made it
+        # pass — the distinction the corpus's reports are filed on.
+        @repairs = repairs
       end
 
       # A refusal is a record too, and this is how one is built: nothing ran, and the
@@ -345,6 +350,7 @@ module AgentsFyi
           "verdict" => @verdict,
           "why" => @why,
           "brief" => @brief&.to_h,
+          "repairs" => @repairs.map(&:to_h),
           "baseline" => @baseline&.to_h,
           "suite" => @suite&.to_h,
           "stages" => @stages.map(&:to_h),

@@ -110,6 +110,60 @@ module AgentsFyi
         }
       end
 
+      # **A repair, as a report whose fix is the repair.** The failure is the *problem* — measured
+      # before the repair, because that is the failure an application had — and the repair's own diff
+      # is the *resolution*. The rung and the suite are the attempt, so a reader can see which move
+      # this was and how it was checked.
+      #
+      # It is filed through the same precheck as a failure: a repair is a claim, and the corpus's
+      # duplicate rule is what decides whether it is a new claim or the same one recorded again.
+      def self.repair_report_for(record:, outcome:)
+        return nil if outcome.nil?
+
+        failure = text(outcome.failure, record: record)
+        return nil if failure.strip.empty?
+
+        broken = outcome.before_the_move ? "the baseline" : "the move"
+        files = Array(outcome.files)
+        suite = outcome.suite.to_s.empty? ? "the suite" : outcome.suite.to_s
+        resolution = +"the repair changed #{files.empty? ? "no file" : files.join(", ")}"
+        resolution << ", and the suite was green after it."
+        resolution << "\n\n```diff\n#{outcome.diff}\n```" unless outcome.diff.to_s.strip.empty?
+
+        {
+          "title" => clip("#{LIBRARY} #{record.to_version}: #{broken} left `#{suite}` red, and a " \
+                          "bounded repair made it green — #{Record.first_line(failure)}",
+            MAX_TITLE).to_s.rstrip,
+          "library" => LIBRARY,
+          "version" => record.to_version.to_s,
+          "ecosystem" => ECOSYSTEM,
+          "subject_kind" => SUBJECT_KIND,
+          "from_version" => record.from_version.to_s,
+          "environment" => environment_for(record: record),
+          "problem" => "A Rails #{record.from_version} -> #{record.to_version} step was measured " \
+                       "against this application's own suite: #{broken} (`#{suite}`) was red before " \
+                       "the repair, and a bounded repair made it green. Its output began: " \
+                       "#{head_of(failure)}",
+          "attempted" => "the rung #{record.from_version} -> #{record.to_version} ran #{outcome.attempts} " \
+                         "repair attempt(s) in the step's own tree, each followed by `#{suite}` again; " \
+                         "the verdict is the suite's, never the repair's. The step carried on after " \
+                         "the repair, and its own record is the run this report came from.",
+          "trace" => failure,
+          "resolution" => resolution
+        }
+      end
+
+      # One report per repair the step performed. A step that was repaired and passed is the
+      # corpus's best shape: a real failure, and the change that resolved it.
+      def self.file_repairs(corpus:, record:)
+        Array(record&.repairs).filter_map do |outcome|
+          payload = repair_report_for(record: record, outcome: outcome)
+          next if payload.nil?
+
+          file_payload(corpus: corpus, payload: payload)
+        end
+      end
+
       # File one failed step, or say why nothing was written.
       #
       # Every HTTP failure propagates: a run that silently filed nothing would look exactly
@@ -119,6 +173,13 @@ module AgentsFyi
         payload = report_for(record: record)
         return Result.new(action: "skipped", reason: skip_reason(record)) if payload.nil?
 
+        file_payload(corpus: corpus, payload: payload)
+      end
+
+      # The one path a report takes: precheck, then the write, with the corpus's own verdict deciding
+      # which verdicts are worth writing (`FILABLE`) and its duplicate answer at the write read as the
+      # corpus already having it.
+      def self.file_payload(corpus:, payload:)
         answer = corpus.precheck(precheck_payload(payload))
         verdict = answer.is_a?(Hash) ? answer["verdict"].to_s : ""
         unless FILABLE.include?(verdict)

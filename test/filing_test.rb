@@ -44,14 +44,70 @@ class FilingTest < Minitest::Test
     )
   end
 
-  def record_for(verdict:, stages: [], baseline: nil, suite: nil, worktree: nil)
+  def record_for(verdict:, stages: [], baseline: nil, suite: nil, worktree: nil, repairs: [])
     AgentsFyi::Upgrader::Record.new(
       repository: "https://github.com/acme/storefront.git", commit: "9f2c1ab8",
       worktree: worktree, from_version: "6.0.4.4", to_version: "7.1.0", verdict: verdict,
       why: "the suite failed after a green baseline", name: "Rails 7.1",
       interpreter: "ruby 3.3.12", image: "agents-fyi-upgrader:latest",
-      stages: stages, baseline: baseline, suite: suite, applied: [1, 2], refused: [], decisions: []
+      stages: stages, baseline: baseline, suite: suite, applied: [1, 2], refused: [], decisions: [],
+      repairs: repairs
     )
+  end
+
+  # **A repair is a report whose fix is the repair.** The failure is measured before the repair — it
+  # is the failure an application really had — and the repair's own diff is the resolution, so the
+  # next application that meets it can be given the change rather than a sentence about it.
+  def test_a_repair_becomes_a_report_with_the_failure_as_the_problem_and_the_diff_as_the_fix
+    outcome = AgentsFyi::Upgrader::Repair::Outcome.new(
+      failure: "  1) Layout renders the footer\n     Failure/Error: undefined method `x'\n",
+      suite: "bundle exec rspec", attempts: 2,
+      files: ["app/views/layouts/application.html.erb"],
+      diff: "diff --git a/app/views/layouts/application.html.erb b/app/views/layouts/application.html.erb\n-<%= x %>\n+<%= y %>",
+      before_the_move: false
+    )
+    record = record_for(verdict: AgentsFyi::Upgrader::Record::PASSED, repairs: [outcome])
+
+    payload = AgentsFyi::Upgrader::Filing.repair_report_for(record: record, outcome: outcome)
+
+    assert_includes payload["title"], "rails 7.1.0"
+    assert_includes payload["title"], "bounded repair made it green"
+    assert_includes payload["problem"], "was red before the repair"
+    assert_includes payload["problem"], "undefined method `x'"
+    assert_includes payload["resolution"], "app/views/layouts/application.html.erb"
+    assert_includes payload["resolution"], "+<%= y %>", "the repair's own diff is not in the fix"
+    assert_includes payload["attempted"], "2 repair attempt(s)"
+    assert_equal "ruby", payload["ecosystem"]
+    assert_equal "7.1.0", payload["version"]
+  end
+
+  # A repair with nothing to say about what failed is not filed: a report whose problem is empty is
+  # a claim the corpus cannot compare with anything.
+  def test_a_repair_with_no_recorded_failure_is_not_a_report
+    outcome = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "  \n", suite: "rspec", attempts: 1,
+      files: [], diff: "", before_the_move: false)
+
+    assert_nil AgentsFyi::Upgrader::Filing.repair_report_for(
+      record: record_for(verdict: AgentsFyi::Upgrader::Record::PASSED, repairs: [outcome]),
+      outcome: outcome
+    )
+  end
+
+  # And it takes the same door as a failure: precheck first, and the corpus's verdict decides whether
+  # the write happens. A repair the corpus says it already holds is answered, not written twice.
+  def test_repairs_are_filed_through_precheck_and_a_duplicate_is_not_written_again
+    corpus = FakeCorpus.new(verdict: "duplicate")
+    outcome = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "boom", suite: "rspec", attempts: 1,
+      files: ["app/models/user.rb"], diff: "", before_the_move: true)
+    record = record_for(verdict: AgentsFyi::Upgrader::Record::PASSED, repairs: [outcome])
+
+    results = AgentsFyi::Upgrader::Filing.file_repairs(corpus: corpus, record: record)
+
+    assert_equal 1, results.length
+    assert_equal "not_filed", results.first.action
+    assert_equal "duplicate", results.first.verdict
+    refute_nil corpus.prechecked, "the repair skipped the precheck"
+    assert_nil corpus.submitted, "a duplicate precheck still wrote a report"
   end
 
   # The shape the pipeline produces when the suite fails and nothing before it did: every

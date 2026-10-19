@@ -992,6 +992,31 @@ class StepTest < Minitest::Test
       "the suite must be run again after the attempt"
   end
 
+  # **What a repair did is captured while it is knowable, and filed as knowledge.** The record is
+  # written from the final state, where the suite is green: the failure the repair answered, and the
+  # files it changed to do so, exist only while the loop runs. Both travel in the record, and the
+  # corpus receives the repair as a report whose problem is that failure and whose resolution is the
+  # repair — the write-back rule `docs/refactor/adr/0008` states.
+  def test_a_repair_is_recorded_with_what_it_answered_and_filed_as_a_report
+    dir = track(app)
+    corpus = RecordingCorpus.new(payload: plan(changes: []))
+    record = step(dir, corpus: corpus, tests: SequencedTests.new(results: [green, red, green]),
+      repair: FakeRepair, contribute: true,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal 1, record.repairs.length
+    repair = record.repairs.first
+    assert_includes repair.failure, "1 failure", "the failure the repair answered is not in the record"
+    assert_equal ["app/models/user.rb"], repair.files
+    assert_equal 1, repair.attempts
+
+    filed = corpus.calls.select { |call| call.first == :create_report }.map(&:last)
+    report = filed.find { |payload| payload["resolution"].to_s.include?("app/models/user.rb") }
+    refute_nil report, "the repair was not filed; the run filed #{filed.map { |p| p["title"] }.inspect}"
+    assert_includes report["problem"], "was red before the repair"
+    assert_equal "ruby", report["ecosystem"]
+  end
+
   # The switch. Off is the default for a step run by hand, and the deployment turns it on
   # with a number — so the same fixture, without the number, is a failed step with no model.
   def test_repair_is_off_unless_the_environment_asks_for_attempts
