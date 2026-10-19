@@ -63,7 +63,7 @@ module AgentsFyi
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
                      publish_class: Publish, suite_env: nil, services: nil, env: ENV,
-                     force: false, record: nil)
+                     force: false, record: nil, project: nil)
         @api = api
         @home = home
         @to = to
@@ -81,6 +81,10 @@ module AgentsFyi
         # `Machine::Services`): a step must not own it, because the next step needs it too.
         @services = services
         @publish = publish
+        # **The project this loop walks, declared rather than named.** From it come the target
+        # release, the starting ref, the suite, the services and the branch namespace; without one
+        # every one of those is a command-line flag (docs/refactor/adr/0008, the adapter).
+        @project = project
         # **`force` reaches the step, because the step is where the ledger's "settled" answer is read.**
         # The loop has no opinion about it of its own, and a flag the loop swallowed would look like it
         # had walked a rung it never touched — measured, `serve --walk --force` printed "already settled:
@@ -176,6 +180,7 @@ module AgentsFyi
       # a deployment that names its own repositories from one that is being given them.
       def work_from
         return "#{@repos.size} repository(ies) to walk" unless @repos.empty?
+        return "the project's own repository (#{@project.repo})" unless @project.nil? || @project.repo.to_s.empty?
 
         "the work list comes from the service's queue"
       end
@@ -208,6 +213,7 @@ module AgentsFyi
       # is the deliberate idle an unset target has always meant.
       def target
         return @to unless @to.to_s.empty?
+        return @project.to unless @project.nil? || @project.to.to_s.empty?
         return nil unless @walk
 
         @target ||= @corpus.ladder.fetch("top")
@@ -244,7 +250,8 @@ module AgentsFyi
           root: record.worktree.to_s.empty? ? @home : record.worktree,
           repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
-          token: ENV[Publish::ENV_TOKEN]
+          token: ENV[Publish::ENV_TOKEN],
+          branch_pattern: @project&.delivery&.branch
         ).call
         @out.puts("serve: #{record.repository} — #{result}")
       end
@@ -255,7 +262,24 @@ module AgentsFyi
       # the service decides what it means; the whole point of the queue is that the order in
       # it is the corpus's answer rather than a list somebody pasted into a compose file.
       def work
-        @repos.empty? ? queued : @repos
+        return @repos unless @repos.empty?
+
+        # A project names the repository it is; a loop with one declaration needs no queue to say
+        # which application it walks, though the queue still decides *when* when it is present.
+        project_spec = project_spec()
+        return [project_spec] if project_spec
+        return queued if @project.nil?
+
+        []
+      end
+
+      # `owner/name@ref` for the project's own repository, or nil when it declared no starting ref.
+      def project_spec
+        return nil if @project.nil?
+        return nil if @project.repo.to_s.empty?
+
+        ref = @project.base_ref.to_s
+        ref.empty? ? @project.repo : "#{@project.repo}@#{ref}"
       end
 
       # The queue as shorthand specs, or nothing at all when the service could not be
@@ -313,7 +337,7 @@ module AgentsFyi
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
-          record: @record
+          record: @record, project: @project
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")

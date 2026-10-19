@@ -233,7 +233,7 @@ class StepMachineTest < Minitest::Test
       @machines = []
     end
 
-    def detect(_root) = AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
+    def detect(_root, declared: nil, stack: nil) = AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
     def no_suite_reason(_root, _stack = nil) = "no suite"
 
     def run(root, _suite, timeout:, env:, machine: nil, stack: nil)

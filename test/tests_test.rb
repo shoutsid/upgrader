@@ -107,6 +107,26 @@ class TestsTest < Minitest::Test
     end
   end
 
+  # **A declared suite wins over what the repository would have matched.** The declaration is the
+  # operator's statement about their own application, and an engine that guessed a different suite
+  # from the tree would be measuring the rung with something other than what the project says it
+  # measures itself with — silently, because both suites are green.
+  def test_a_declared_suite_wins_over_what_the_repository_would_have_matched
+    with_app("spec/spec_helper.rb" => "", "test/test_helper.rb" => "", "bin/rails" => "") do |dir|
+      assert_equal :rspec, detect(dir).kind
+
+      # The duck type `Tests.detect` asks of a declaration: a kind, a command, and whether the
+      # project says it has no suite at all. `Project::Suite` is one; this test names the shape so
+      # the runner does not depend on the declaration class.
+      declared = Struct.new(:kind, :command) do
+        def none? = kind.to_s == "none"
+      end.new("minitest", "bin/rails test")
+      assert_equal :minitest, Tests.detect(dir, declared: declared).kind
+      assert_equal "bin/rails test", Tests.detect(dir, declared: declared).command
+      assert_includes Tests.detect(dir, declared: declared).reason, "the project declares"
+    end
+  end
+
   def test_a_suite_that_exits_non_zero_ran_and_failed
     result = run_suite(kind: :rspec, script: "exit 3")
 

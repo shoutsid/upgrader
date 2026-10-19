@@ -30,6 +30,11 @@ module AgentsFyi
       # `UPGRADER_TO` refuses to have: the deployment names the service (`--api`, `AGENTS_FYI_URL`)
       # and a caller that names none is told so.
       API_ENV = "AGENTS_FYI_URL"
+
+      # The project a mode walks when none is named on the command line. The deployment sets it, for
+      # the reason `UPGRADER_TO` is set there: which application is being walked is a fact about the
+      # deployment, not about the engine.
+      PROJECT_ENV = "UPGRADER_PROJECT"
       DEFAULT_HOME = "~/.cache/agents-fyi-upgrader"
 
       USAGE = <<~TEXT
@@ -38,12 +43,14 @@ module AgentsFyi
 
         Usage:
           agents-fyi-upgrader plan  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
+                                    [--project SLUG]
           agents-fyi-upgrader preflight --repo PATH|URL [--ref REF] [--api URL]
                                     [--record DIR]
           agents-fyi-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--record DIR] [--work DIR] [--force] [--publish]
                                     [--suite-env FILE]
-          agents-fyi-upgrader serve [--repos OWNER/NAME[@REF] ...] [--to VERSION] [--api URL]
+          agents-fyi-upgrader serve [--project SLUG] [--repos OWNER/NAME[@REF] ...]
+                                    [--to VERSION] [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--force] [--publish] [--suite-env FILE]
@@ -107,6 +114,12 @@ module AgentsFyi
         return usage_error(options[:error]) if options[:error]
         return help if options[:help]
         return usage_error("no command given") unless options[:command]
+        begin
+          @project = load_project(options)
+        rescue Project::Invalid => e
+          return usage_error("the project declaration is not usable: #{e.message}")
+        end
+        apply_project(options)
         # A mode that asks the service without one named is a usage refusal rather than a failed
         # request: there is nowhere to send it.
         if NEEDS_API.include?(options[:command]) && options[:api].empty? && @corpus.nil?
@@ -134,6 +147,25 @@ module AgentsFyi
       end
 
       private
+
+      # The declaration the operator named. A project is *data*, so a declaration that does not parse
+      # is a usage refusal: the walk has no opinion about an application it cannot read.
+      def load_project(options)
+        slug = options[:project].to_s.strip
+        slug.empty? ? nil : Project.find(slug)
+      end
+
+      # **A declaration supplies the defaults; a flag overrides one.** The walk's repository, the ref
+      # it starts from and the release it moves to are properties of the application, so an operator
+      # who names a project should not have to repeat them — and a flag named beside it still wins,
+      # which is how "walk this project from *this* ref" is said.
+      def apply_project(options)
+        return if @project.nil?
+
+        options[:repo] = @project.repo if options[:repo].to_s.empty?
+        options[:ref] = @project.base_ref if options[:ref].to_s.empty? && !@project.base_ref.to_s.empty?
+        options[:to] = @project.to if options[:to].to_s.empty?
+      end
 
       # The corpus a mode asks. One place, so an injected corpus (the suite's) is the one every mode
       # sees and no mode can reach a service the caller did not name.
@@ -237,7 +269,7 @@ module AgentsFyi
             home: options[:home], out: @out, work: options[:work], record: options[:record],
             ledger: Ledger.load(File.join(options[:home], "ledger.json")),
             suite_timeout: options[:step_timeout], force: options[:force],
-            suite_env: options[:suite_env], services: services, env: @env
+            suite_env: options[:suite_env], services: services, env: @env, project: @project
           ).run
           return step_status(record) unless options[:publish]
 
@@ -299,7 +331,7 @@ module AgentsFyi
             step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
             walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
             force: options[:force], record: options[:record],
-            suite_env: options[:suite_env], services: services, env: @env
+            suite_env: options[:suite_env], services: services, env: @env, project: @project
           ).run
         ensure
           services&.stop!
@@ -336,6 +368,7 @@ module AgentsFyi
         options = {
           command: command,
           api: @env[API_ENV].to_s.strip,
+          project: @env[PROJECT_ENV].to_s.strip,
           home: File.expand_path(@env["UPGRADER_HOME"].to_s.empty? ? DEFAULT_HOME : @env["UPGRADER_HOME"]),
           interval: 600,
           step_timeout: Step::DEFAULT_SUITE_TIMEOUT
@@ -348,6 +381,9 @@ module AgentsFyi
           opts.on("--to VERSION", "the Rails release the move ends at, e.g. 7.1.0 " \
                   "(default: the top of the service's ladder)") { |v| options[:to] = v }
           opts.on("--api URL", "the service to ask (default $AGENTS_FYI_URL)") { |v| options[:api] = v }
+          opts.on("--project SLUG", "the declared application to walk (default $UPGRADER_PROJECT)") do |v|
+            options[:project] = v
+          end
           opts.on("--record DIR", "where `step` writes the patch and the JSON record") { |v| options[:record] = v }
           opts.on("--work DIR", "where `step` puts its working copy (default $UPGRADER_HOME)") { |v| options[:work] = v }
           opts.on("--home DIR", "this client's own directory: worktrees and the ledger") { |v| options[:home] = File.expand_path(v) }

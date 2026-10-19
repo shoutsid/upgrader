@@ -37,10 +37,12 @@ module AgentsFyi
       # it as an environment variable and the CLI never mentions it.
       ENV_TOKEN = "UPGRADER_GITHUB_TOKEN"
 
-      # The namespace every branch this tool pushes lives under. Load-bearing for two
-      # reasons: a re-run of the same rung updates one branch instead of opening a second
-      # one, and `push --force` is only ever used inside a namespace this tool owns.
-      BRANCH_PREFIX = "agents-fyi/upgrade-"
+      # The namespace a branch lives under when the project declares none. Load-bearing for two
+      # reasons: a re-run of the same rung updates one branch instead of opening a second one, and
+      # `push --force` is only ever used inside a namespace this tool owns. A project may name its
+      # own pattern (`Project::Delivery#branch`, with `<release>` substituted), because a fork or a
+      # second project should not have to publish into this one's namespace.
+      DEFAULT_BRANCH = "agents-fyi/upgrade-<release>"
 
       # What publishing did, in one value. `pushed` and `pull_request` are separate because
       # they fail separately: a branch can reach the remote and the API refuse to open a
@@ -65,10 +67,12 @@ module AgentsFyi
         end
       end
 
-      def self.branch_for(version) = "#{BRANCH_PREFIX}#{version}"
+      def self.branch_for(version, pattern: DEFAULT_BRANCH)
+        pattern.to_s.gsub("<release>", version.to_s)
+      end
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
-                     out: nil, api: nil, git: nil, pause: nil)
+                     out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -86,6 +90,9 @@ module AgentsFyi
         # How a retry waits, injectable so a test drives three attempts without sleeping through
         # them. See `push` for why a push is retried at all.
         @pause = pause || ->(seconds) { sleep(seconds) }
+        # The project's branch pattern, or this tool's own namespace: the one place a branch name is
+        # built, so a chain's base and its branch can never be spelled by two rules.
+        @branch_pattern = branch_pattern.to_s.empty? ? DEFAULT_BRANCH : branch_pattern.to_s
       end
 
       def call
@@ -149,7 +156,7 @@ module AgentsFyi
         request_pull_request(attempt: attempt + 1, **arguments)
       end
 
-      def branch = self.class.branch_for(@to_version)
+      def branch = self.class.branch_for(@to_version, pattern: @branch_pattern)
 
       # The previous rung's branch when the remote has it, and the repository's own default
       # branch when it does not — the first rung of a walk targets the branch the
@@ -162,7 +169,7 @@ module AgentsFyi
       # request needs a base and refusing to open one over a naming guess is worse than
       # saying which guess was made — the branch and the request are both in the record.
       def base_branch
-        previous = self.class.branch_for(@from_version)
+        previous = self.class.branch_for(@from_version, pattern: @branch_pattern)
         return previous if remote_has?(previous)
 
         remote_default_branch || api_default_branch || "main"

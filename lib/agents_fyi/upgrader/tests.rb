@@ -2,6 +2,11 @@
 
 require_relative "shell"
 
+# The suite candidates are the stack's, so this file has a load-time dependency on the pack. Said
+# here rather than left to the library's require list, because a test that loads this file alone
+# (`test/tests_test.rb` does) must still see `Stacks::Rails`.
+require "agents_fyi/upgrader/stacks"
+
 module AgentsFyi
   module Upgrader
     # Does this application have a suite, and what happened when it ran?
@@ -53,9 +58,18 @@ module AgentsFyi
       # Rakefile and no `bin/rails` has a suite, and how to run it is not stated in
       # anything this tool reads — so it is not run, and `no_suite_reason` says what
       # was looked for.
-      def self.detect(root)
+      def self.detect(root, declared: nil, stack: Stacks::Rails)
         base = File.expand_path(root)
-        found = CANDIDATES.select { |candidate| candidate[:matches].call(base) }
+        # **A declared suite wins over detection.** The project's declaration is the operator's
+        # statement about its own application, and a suite this tool would have guessed differently
+        # is a disagreement worth failing on rather than quietly overriding — the rung says
+        # `unverified` with the declared command in the record.
+        if declared && !declared.none?
+          return Suite.new(kind: declared.kind.to_sym, command: declared.command,
+            reason: "the project declares this suite")
+        end
+
+        found = stack.suite_candidates.select { |candidate| candidate[:matches].call(base) }
         return nil if found.empty?
 
         entry = found.first

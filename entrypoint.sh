@@ -182,6 +182,11 @@ fi
 if [ -n "${UPGRADER_PUBLISH}" ]; then
     set -- "$@" --publish
 fi
+# The declaration the loop walks. The deployment names it; the engine reads it and has no default,
+# for the reason --api has none: which application is being walked is the deployment's fact.
+if [ -n "${UPGRADER_PROJECT}" ]; then
+    set -- "$@" --project "${UPGRADER_PROJECT}"
+fi
 if [ -n "${UPGRADER_SUITE_ENV_FILE}" ]; then
     set -- "$@" --suite-env "${UPGRADER_SUITE_ENV_FILE}"
 fi

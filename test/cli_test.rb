@@ -351,7 +351,7 @@ class CliTest < Minitest::Test
     flags = AgentsFyi::Upgrader::CLI::USAGE.scan(/--[a-z-]+/).uniq
     assert_operator flags.length, :>, 5, "the usage text names no flags"
 
-    valued = %w[--repo --ref --to --api --record --work --home --heartbeat --interval
+    valued = %w[--repo --ref --to --api --project --record --work --home --heartbeat --interval
                 --step-timeout --cycles --rungs --repos --suite-env]
     flags.each do |flag|
       argv = ["serve", flag]
@@ -400,6 +400,46 @@ class CliTest < Minitest::Test
     assert_equal 0, status
     refute_nil built, "the step was built"
     assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
+  end
+
+  # **A declaration supplies the defaults, and a flag still wins.** The repository, the ref the walk
+  # starts from and the release it moves to are properties of the application, so an operator naming
+  # a project should not have to repeat them — and "walk this project from *this* ref" is said by
+  # naming one flag beside it.
+  def test_a_named_project_supplies_the_repository_the_ref_and_the_target
+    cli = AgentsFyi::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
+    cli.instance_variable_set(:@project, AgentsFyi::Upgrader::Project.find("lighthouse"))
+
+    options = { repo: nil, ref: nil, to: nil }
+    cli.send(:apply_project, options)
+
+    assert_equal "shoutsid/biddingapp", options[:repo]
+    assert_equal "agents-fyi/baseline", options[:ref]
+    assert_equal "8.1.0", options[:to]
+  end
+
+  def test_a_flag_beside_a_project_overrides_what_the_declaration_says
+    cli = AgentsFyi::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
+    cli.instance_variable_set(:@project, AgentsFyi::Upgrader::Project.find("lighthouse"))
+
+    options = { repo: "https://github.com/acme/other.git", ref: "main", to: "7.1.0" }
+    cli.send(:apply_project, options)
+
+    assert_equal "https://github.com/acme/other.git", options[:repo]
+    assert_equal "main", options[:ref]
+    assert_equal "7.1.0", options[:to]
+  end
+
+  # A declaration that cannot be read is a refusal at the door rather than a walk measured against
+  # half a project: the operator named a declaration and there is no application behind it.
+  def test_an_unusable_declaration_is_refused_before_any_mode_runs
+    err = StringIO.new
+    status = AgentsFyi::Upgrader::CLI.new(["prune", "--project", "no-such-project"],
+      out: StringIO.new, err: err, env: {}).run
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, status
+    assert_includes err.string, "the project declaration is not usable"
+    assert_includes err.string, "no-such-project"
   end
 
   # **There is no default service.** A walker pointed at no service must say so rather than talk to

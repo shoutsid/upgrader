@@ -79,7 +79,7 @@ module AgentsFyi
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil, pause: nil, stack: nil
+        progress: nil, pause: nil, stack: nil, project: nil
       )
         @repository = repository
         @to = to
@@ -138,7 +138,11 @@ module AgentsFyi
         # The stack pack: what a release changes and how a command is spelled for it.
         # The project declares which pack by name; until the entry points are wired to the
         # declaration, the Rails pack is what a step runs.
-        @stack = stack || Stacks.for("rails")
+        # The project this step walks, when the caller declared one. It supplies the suite, the
+        # environment *names* the suite reads and the stack; the entry points that have a
+        # declaration pass it (docs/refactor/adr/0008, the adapter).
+        @project = project
+        @stack = stack || Stacks.for(project&.stack || "rails")
         # **The application's own environment, when the deployment knows it.** A repository
         # that carries no secrets is the ordinary case, not the exception: this walk's first
         # real application reads `ENV["RAILS_SECRET_TOKEN"]` and that value lives in a
@@ -1222,12 +1226,26 @@ module AgentsFyi
       # suite expects, the bundle this run installed, and the deployment's own values for the
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
-        @tests.machine_test_env(@stack).merge(@worktree.bundle_env(machine: @machine)).merge(@suite_env)
+        @tests.machine_test_env(@stack).merge(@worktree.bundle_env(machine: @machine))
+          .merge(project_env).merge(@suite_env)
       end
 
       # `KEY=VALUE` lines, `#` comments and blank lines ignored, and a missing file is an
       # empty environment rather than a failure — the operator named a path, and a path that
       # is not there says "nothing to add" rather than "refuse to walk".
+      # **The suite's environment, by name.** The declaration names what the application's suite
+      # reads (`RAILS_SECRET_TOKEN`) and the deployment carries the value; a name this process does
+      # not carry is *absent* rather than empty, because an empty string is what a forwarded-but-
+      # unset variable looks like and it would silently disable the suite rather than say so.
+      def project_env
+        return {} if @project.nil?
+
+        @project.env_names.each_with_object({}) do |name, values|
+          value = @env[name].to_s
+          values[name] = value unless value.empty?
+        end
+      end
+
       def read_env_file(path)
         return {} if path.to_s.empty?
 
@@ -1309,7 +1327,7 @@ module AgentsFyi
       # recorded as one: `nil` here is what makes the verdict `unverified` rather than
       # `passed`, which is's fourth rule.
       def baseline(stages)
-        @suite_plan = @tests.detect(@worktree.root)
+        @suite_plan = @tests.detect(@worktree.root, declared: @project&.suite, stack: @stack)
         unless @suite_plan
           reason = @tests.respond_to?(:no_suite_reason) ? @tests.no_suite_reason(@worktree.root, @stack) : "no suite"
           stages << Record::Command.new(stage: Record::BASELINE, command: reason, ran: false,

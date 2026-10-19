@@ -225,7 +225,7 @@ class StepTest < Minitest::Test
       @machines = []
     end
 
-    def detect(_root)
+    def detect(_root, declared: nil, stack: nil)
       return nil if @suite.nil?
 
       AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")

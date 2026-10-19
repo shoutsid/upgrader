@@ -160,10 +160,14 @@ class ServeTest < Minitest::Test
   # Publishing, as much of it as the loop touches: it records every record it was handed.
   class FakePublish
     def self.published = @published ||= []
-    def self.reset! = @published = []
+    # Every argument the loop handed the publisher, so a wiring the *result* cannot show (the branch
+    # pattern, which the double's result already substitutes) is still asserted.
+    def self.calls = @calls ||= []
+    def self.reset! = (@published = []) && (@calls = [])
 
     def initialize(**kwargs)
       @kwargs = kwargs
+      self.class.calls << kwargs
     end
 
     def call
@@ -209,12 +213,43 @@ class ServeTest < Minitest::Test
   end
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
-            ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil)
+            ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil,
+            project: nil)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
       walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish, force: force,
-      record: record)
+      record: record, project: project)
+  end
+
+  # **A project supplies the walk.** A loop given a declaration needs no `--repo`, `--ref` or `--to`:
+  # the application's own facts say which repository to clone, which ref to start from and which
+  # release to move to — and the same declaration travels to the step, which reads its suite and its
+  # environment names from it. Measured on the lighthouse: all three were flags before, which is how
+  # the engine came to know one application (docs/refactor/adr/0008).
+  def test_a_project_supplies_the_repository_the_ref_the_target_and_the_step
+    project = AgentsFyi::Upgrader::Project.find("lighthouse")
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
+
+    serve(corpus: FakeCorpus.new, to: nil, repos: [], project: project, cycles: 1).run
+
+    call = FakeStep.calls.last
+    assert_equal "https://github.com/shoutsid/biddingapp.git", call[:repository]
+    assert_equal "agents-fyi/baseline", call[:ref]
+    assert_equal "8.1.0", call[:to]
+    assert_same project, call[:project]
+  end
+
+  # And the branch namespace is the project's: a fork or a second project publishes under its own
+  # prefix rather than this tool's, which is why the pattern is declared rather than assumed.
+  def test_a_project_s_publishing_pattern_reaches_the_publisher
+    project = AgentsFyi::Upgrader::Project.find("lighthouse")
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
+
+    serve(corpus: FakeCorpus.new, to: nil, repos: [], project: project, cycles: 1, publish: true,
+      walk: true, rungs: 1).run
+
+    assert_equal "agents-fyi/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
   end
 
   # **The loop waits only when waiting is the answer.** A passed rung has the next one ready now, and
