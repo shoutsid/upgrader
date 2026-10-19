@@ -1,0 +1,25 @@
+{
+  "slug": "lighthouse",
+  "repo": "shoutsid/biddingapp",
+  "base_ref": "agents-fyi/baseline",
+  "from": "4.0.0",
+  "to": "8.1.0",
+  "stack": "rails",
+  "suite": {
+    "kind": "rspec",
+    "command": "bundle exec rspec"
+  },
+  "services": [
+    "postgres",
+    "redis"
+  ],
+  "env_names": [
+    "RAILS_SECRET_TOKEN"
+  ],
+  "eras": "auto",
+  "delivery": {
+    "provider": "github",
+    "branch": "agents-fyi/upgrade-<release>",
+    "chain": true
+  }
+}
