@@ -78,7 +78,8 @@ module AgentsFyi
         work: nil, record: nil, ledger: nil, suite_timeout: DEFAULT_SUITE_TIMEOUT,
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
-        research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil
+        research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
+        progress: nil
       )
         @repository = repository
         @to = to
@@ -141,6 +142,11 @@ module AgentsFyi
         # (the suite, the database preparation, the update, the boot) and never into the
         # bundle or the machine commands, which are this tool's own.
         @suite_env = read_env_file(suite_env)
+        # **Where the loop says what it is doing while it does it.** A step can be forty minutes
+        # of a bundle resolve and a suite, and the record of it only exists at the end — so
+        # without this the only live signal is this container's stdout. See `Progress` for why it
+        # is a file rather than an endpoint.
+        @progress = progress || Progress.new(home: home, out: out)
       end
 
       def run
@@ -153,6 +159,10 @@ module AgentsFyi
         # stage moved a line does not change the answer.
         @deferred = []
         @out.puts("step: #{@repository} -> #{@to}") if @out
+        # The console's view of this step from the moment it starts. The move is not known until the
+        # lockfile is read, so what is announced here is the repository and the target it is walking
+        # to; every stage after this one announces itself with the move filled in.
+        @progress.cycle(note: "planning #{@repository} -> #{@to}", repo: @repository)
 
         # What finished runs left behind, reclaimed before this one adds to it: the home is the
         # bind mount the step's own container is given, and its size is paid at `docker run`.
@@ -1317,6 +1327,7 @@ module AgentsFyi
       # silently runs against whatever the image happens to have. The `machine` is what
       # decides whether that directory is on this host or inside the step's container.
       def run_suite(stages, stage)
+        announce(stage, @suite_plan.command)
         result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout,
           env: application_env, machine: @machine)
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
@@ -2456,6 +2467,18 @@ module AgentsFyi
       # so a container that could not reach rubygems held a step in `bundle update` until somebody noticed.
       # `excerpt_bytes` is how a caller says its output is *evidence* rather than a payload: a
       # resolver prints the blocks that name why it refused, and `Shell::RESOLVER_BYTES` keeps them all.
+      # **What this step is doing, said while it does it.** Every stage goes through here — the
+      # machine commands through `command`, the suite through `run_suite` — so the operator's
+      # console shows the stage that is *running* rather than the one that finished. `@from` is
+      # nil before the lockfile is read and `@worktree` before the working copy exists, so the
+      # fields that are not known yet are left out rather than invented.
+      def announce(stage, detail, note: "")
+        @progress.stage(repo: @repository, from: @from, to: @to,
+          commit: (@worktree.commit if @worktree.respond_to?(:commit)),
+          era: (@machine.era if @machine.respond_to?(:era)),
+          stage: stage, detail: detail, note: note)
+      end
+
       def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL,
                   excerpt_bytes: Shell::TAIL_BYTES)
         runner_machine = machine || @machine
@@ -2466,6 +2489,7 @@ module AgentsFyi
         # fact. Nothing is dropped: the run's own page and the API's `argv` still read `command`.
         display = argv
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
+        announce(stage, display.join(" "))
         @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
           timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
       end
@@ -2501,6 +2525,10 @@ module AgentsFyi
       # asked for it. Both happen here so that a step which cannot finish still
       # settles what it established.
       def finish(record)
+        # Nothing is in flight once this returns, and the console says so rather than showing the
+        # last stage for ever — a stalled-looking panel that is really a finished step is the same
+        # lie in the other direction as a working loop that looks idle.
+        @progress.clear
         # A refusal is settled too, and it must be: re-deriving it reaches the same
         # refusal. What is *not* recorded is a move whose starting release could not be
         # read — "unknown -> 7.1.0" is not a key about anything, and a ledger entry

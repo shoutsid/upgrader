@@ -209,23 +209,45 @@ class DeployConfigTest < Minitest::Test
     assert_equal 0, others, "another client mounts the upgrader's ledger"
   end
 
-  # **A suite env the container cannot see is a setting nothing reads.** `UPGRADER_SUITE_ENV_FILE` was
-  # forwarded to the container and the file it names was never mounted, so a repository whose secrets live
-  # in a git-ignored file could not boot its own suite — and the walk's first real application is one:
-  # `config/initializers/secret_token.rb` is `Bidding::Application.config.secret_key_base =
-  # ENV["RAILS_SECRET_TOKEN"]`, so without it every controller spec dies on `RuntimeError: You must set
-  # config.secret_key_base in your app's config`, the *baseline* goes red, and the rung comes out
-  # `unverified` — a verdict about the application's own suite that says nothing about the move. Measured
-  # on the deployment: 4.0.0 -> 4.1.0 came out `unverified` with the pin, `app:update`, the boot and the
-  # post-move suite all exiting 0. `/dev/null` is the default so that a deployment which sets nothing gets
-  # an empty file rather than a mount that does not exist.
-  def test_the_application_environment_is_mounted_where_the_setting_names_it
+  # **The application's environment is a value the container writes, not a file it mounts.** It was a
+  # host bind, and a bind mount is a dependency on the host's file sharing: with that off the setting
+  # named a path the container could not see, so a repository whose suite needs a secret from a
+  # git-ignored file could never boot it — for ever, with the container reporting healthy while it
+  # happened. Measured on the deployment: 4.0.0 -> 4.1.0 came out `unverified` with the pin,
+  # `app:update`, the boot and the post-move suite *all exiting 0*, the baseline red on
+  # `RuntimeError: You must set config.secret_key_base in your app's config` — the walk's first real
+  # application sets `secret_key_base` from `ENV["RAILS_SECRET_TOKEN"]`.
+  def test_the_application_environment_is_a_value_the_container_writes_itself
     block = config("upgrader")
 
-    assert_match(%r{^\s+-\s*\$\{UPGRADER_SUITE_ENV_FILE_HOST:-/dev/null\}:/etc/agents-fyi/suite\.env:ro}, block,
-      "the file the setting names is never mounted into the container")
-    assert_match(/UPGRADER_SUITE_ENV_FILE:\s*\$\{UPGRADER_SUITE_ENV_FILE:-\}/, block,
-      "the path the container reads is not forwarded")
+    assert_match(/UPGRADER_SUITE_ENV:\s*\$\{UPGRADER_SUITE_ENV:-\}/, block,
+      "the value an operator sets is not forwarded to the container")
+    refute_match(%r{suite\.env:/etc/agents-fyi/suite\.env}, block,
+      "the deployment still bind-mounts a host file, which the host's file sharing may refuse")
+
+    entrypoint = File.read(ENTRYPOINT_PATH, encoding: "utf-8")
+    assert_includes entrypoint, '"${UPGRADER_HOME}/suite.env"',
+      "the entrypoint does not write the value into the service's own home"
+    assert_includes entrypoint, 'UPGRADER_SUITE_ENV_FILE="${UPGRADER_HOME}/suite.env"',
+      "the entrypoint does not hand the CLI the path it just wrote"
+  end
+
+  # **The operator's live view is mounted where the console reads it.** The walker writes what it is
+  # doing into a volume of its own (`Progress`) and the console reads it read-only; without the mount
+  # the panel says "not mounted" — honest, but "is it working?" then has no answer again. Measured:
+  # the loop sat in a pipe read with no child for long enough that the question was asked of the
+  # logs, and the run it was inside of is only written when the step *ends*.
+  def test_the_walkers_live_view_is_mounted_where_the_console_reads_it
+    assert_includes config("upgrader"), "upgrader_state:/home/upgrader/.cache/agents-fyi-upgrader/state",
+      "the walker does not mount the volume its live view is written to"
+
+    service = config("service")
+    assert_includes service, "upgrader_state:/var/lib/agents-fyi/upgrader-state:ro",
+      "the console does not mount the walker's view, so its page cannot say what it is doing"
+    assert_includes service, "UPGRADER_STATE_DIR: /var/lib/agents-fyi/upgrader-state",
+      "the console is pointed somewhere other than where the volume is mounted"
+    assert_includes compose, "\n  upgrader_state:",
+      "the volume the two halves share is not declared"
   end
 
   def test_the_service_that_executes_steps_is_built_with_a_compiler

@@ -107,6 +107,10 @@ module AgentsFyi
         @interval = interval
         @step_timeout = step_timeout
         @out = out
+        # **What the loop is doing, where the operator's console can read it.** The step announces
+        # its own stages; this is what the loop itself announces — the interval between cycles,
+        # which is otherwise indistinguishable from a step that has stopped moving.
+        @progress = Progress.new(home: home, out: out)
         @ledger = ledger
         @cycles = cycles
         # Built here rather than lazily, and defaulted rather than required, because the
@@ -389,6 +393,10 @@ module AgentsFyi
         return if @interval <= 0
 
         @out.puts("serve: sleeping #{@interval}s")
+        # The console's view while nothing is in flight: the loop is between cycles, and a panel
+        # that kept the last step's stage would describe work that stopped. A *stalled* step and a
+        # sleeping loop look nothing alike from outside unless the loop says which it is.
+        @progress.cycle(note: "between cycles — sleeping #{@interval}s")
         deadline = Time.now + @interval
         sleep(0.5) until @stop || Time.now >= deadline
       end

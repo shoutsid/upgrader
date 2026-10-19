@@ -67,9 +67,22 @@ set -eu
 # **The application's own environment, when the deployment knows it.** A repository that
 # carries no secrets is the ordinary case: this walk's first real application reads
 # `ENV["RAILS_SECRET_TOKEN"]` from a git-ignored `config/application.yml`, so a fresh clone
-# cannot boot its own suite. The file is `KEY=VALUE` lines, it is mounted read-only from
-# wherever the operator keeps it, and the CLI merges it into every command that runs *the
-# application* — the suite, the database preparation, the update, the boot.
+# cannot boot its own suite. The CLI merges the file's `KEY=VALUE` lines into every command
+# that runs *the application* — the suite, the database preparation, the update, the boot.
+#
+# It arrives as a **value** rather than a mounted file, and that is a change with a reason: a
+# bind mount is a dependency on the host's file sharing, and with that off the setting named a
+# path the container could not see — a repository whose suite can never boot, with the
+# container reporting healthy while it happened. The value is written into this container's own
+# home (a volume, so it survives a restart and is rewritten on every boot) and the path is then
+# handed to the CLI. `UPGRADER_SUITE_ENV_FILE` still works for a file already inside the
+# container, which is what a deployment that mounts one would set.
+: "${UPGRADER_SUITE_ENV:=}"
+if [ -n "${UPGRADER_SUITE_ENV}" ]; then
+    printf '%s\n' "${UPGRADER_SUITE_ENV}" > "${UPGRADER_HOME}/suite.env"
+    chmod 600 "${UPGRADER_HOME}/suite.env"
+    UPGRADER_SUITE_ENV_FILE="${UPGRADER_HOME}/suite.env"
+fi
 : "${UPGRADER_SUITE_ENV_FILE:=}"
 # There is deliberately no log level, and this is a bug fixed rather than a preference.
 #
