@@ -46,6 +46,12 @@ module AgentsFyi
       # leave the heartbeat untouched for a day — which is the failure the heartbeat is for.
       DEFAULT_RUNGS_PER_CYCLE = 3
 
+      # The first retry delay for a rung that did not pass, doubled while the same rung keeps not
+      # passing and capped at the interval. Thirty seconds rather than the interval because the
+      # usual reason a rung does not pass is one somebody has just changed something for — and ten
+      # minutes of waiting is a window in which nobody can tell whether the change worked.
+      BACKOFF_FLOOR = 30
+
       # `contribute` is passed through to every step, and the default is the difference
       # between this class and `step` run by hand: the loop owns an operator's account and
       # the decision to walk somebody's application at all, so a run made here is the one
@@ -141,13 +147,15 @@ module AgentsFyi
         end
 
         cycle = 0
+        pause = 0
         until @stop
           cycle += 1
-          walk
+          outcome = walk
           touch
           break if @cycles && cycle >= @cycles
 
-          wait
+          pause = delay_for(outcome, previous: pause)
+          nap(pause, outcome)
         end
 
         @ledger.save!
@@ -166,18 +174,22 @@ module AgentsFyi
       end
 
       def walk
-        return if target.nil?
+        return :idle if target.nil?
 
-        work.each do |spec|
-          break if @stop
+        outcomes = work.map { |spec| walk_spec(spec) }
+        return :blocked if outcomes.include?(:blocked)
 
-          repository, ref = self.class.split(spec)
-          if @walk
-            walk_repository(repository, ref)
-          else
-            run_one(repository, ref)
-          end
-        end
+        outcomes.include?(:worked) ? :worked : :idle
+      end
+
+      def walk_spec(spec)
+        repository, ref = self.class.split(spec)
+        return walk_repository(repository, ref) if @walk
+
+        record = run_one(repository, ref)
+        return :idle if record.nil?
+
+        record.passed? ? :worked : :blocked
       end
 
       # The target every step in this cycle moves towards: the one the operator named, or —
@@ -199,13 +211,22 @@ module AgentsFyi
 
       # One repository, walked: rungs taken while they pass, up to the cycle's budget, and
       # each passed rung published when the operator asked for that.
+      #
+      # **The outcome is returned because it decides whether the loop waits**, and inferring it
+      # from the log is how the loop came to pause ten minutes after a rung that had just passed:
+      # `:blocked` is a rung that ran and did not pass (retry soon, not instantly), `:idle` is a
+      # move the ledger had already settled (nothing ran at all), and `:worked` is a passed rung,
+      # where the next one is ready now.
       def walk_repository(repository, ref)
         @rungs.times do
           record = run_one(repository, ref)
-          break unless record&.passed?
+          return :idle if record.nil?
+
+          return :blocked unless record.passed?
 
           publish(record) if @publish
         end
+        :worked
       end
 
       # A passed rung's branch and pull request, from the record the step produced. A publish
@@ -389,15 +410,35 @@ module AgentsFyi
       # period, mid-step, which is exactly what `stop_grace_period` exists to avoid. Half
       # a second of granularity against an interval measured in minutes costs nothing and
       # is a stop request that is always answered.
-      def wait
-        return if @interval <= 0
+      # **How long the loop waits, and why it waits at all.** Its own work is never a reason to
+      # pause. The interval's stated justification — "a loop that walked faster would re-read ledgers
+      # that cannot have changed" — is an argument against *spinning*, not against doing the next
+      # useful thing, and it was applied after **every** cycle: a rung that had just passed waited
+      # ten minutes before the next one began, which is latency bought for nothing. Two things are
+      # worth waiting for:
+      #
+      # * **Nothing to do** — an empty queue, or a target whose rungs are settled — where the interval
+      #   is genuinely the poll's period.
+      # * **A rung that just did not pass** — retrying instantly would spin on the same command, and
+      #   retrying in ten minutes wastes a window in which somebody may have just fixed what stopped
+      #   it. So that delay starts at `BACKOFF_FLOOR` and doubles while the same rung keeps not
+      #   passing, capped at the interval; a passed rung resets it.
+      def delay_for(outcome, previous:)
+        return 0 if outcome == :worked
+        return [previous.zero? ? BACKOFF_FLOOR : previous * 2, @interval].min if outcome == :blocked
 
-        @out.puts("serve: sleeping #{@interval}s")
-        # The console's view while nothing is in flight: the loop is between cycles, and a panel
-        # that kept the last step's stage would describe work that stopped. A *stalled* step and a
-        # sleeping loop look nothing alike from outside unless the loop says which it is.
-        @progress.cycle(note: "between cycles — sleeping #{@interval}s")
-        deadline = Time.now + @interval
+        @interval
+      end
+
+      # The loop's own rest, said out loud and shown to the console: a *stalled* step and a sleeping
+      # loop look nothing alike from outside unless the loop says which it is.
+      def nap(seconds, outcome)
+        return if seconds <= 0
+
+        reason = outcome == :blocked ? "the rung did not pass; retrying" : "nothing to do"
+        @out.puts("serve: sleeping #{seconds}s (#{reason})")
+        @progress.cycle(note: "waiting #{seconds}s — #{reason}")
+        deadline = Time.now + seconds
         sleep(0.5) until @stop || Time.now >= deadline
       end
 

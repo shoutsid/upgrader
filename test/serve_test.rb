@@ -200,6 +200,29 @@ class ServeTest < Minitest::Test
       record: record)
   end
 
+  # **The loop waits only when waiting is the answer.** A passed rung has the next one ready now, and
+  # the ten-minute pause that used to follow *every* cycle was latency bought for nothing: the
+  # interval's stated justification — "a loop that walked faster would re-read ledgers that cannot
+  # have changed" — is an argument against *spinning*, not against doing the next useful thing. What
+  # is worth waiting for is nothing to do, or a rung that did not pass; and that one backs off, because
+  # retrying instantly spins on the same command while retrying in ten minutes wastes the window in
+  # which somebody may have just fixed what stopped it.
+  def test_only_nothing_to_do_or_a_blocked_rung_waits_and_a_blocked_one_backs_off
+    walker = serve(interval: 600)
+
+    assert_equal 0, walker.send(:delay_for, :worked, previous: 600),
+      "a passed rung waited before starting the next one"
+    assert_equal AgentsFyi::Upgrader::Serve::BACKOFF_FLOOR,
+      walker.send(:delay_for, :blocked, previous: 0),
+      "a rung that did not pass is retried after the whole interval"
+    assert_equal 120, walker.send(:delay_for, :blocked, previous: 60),
+      "the retry delay does not grow while the same rung keeps not passing"
+    assert_equal 600, walker.send(:delay_for, :blocked, previous: 600),
+      "the backoff is not capped at the interval"
+    assert_equal 600, walker.send(:delay_for, :idle, previous: 0),
+      "an empty queue is not polled on the interval"
+  end
+
   # **`serve --record` writes what `step --record` writes.** The option was advertised and never passed,
   # so a walk's record lived only in the corpus — and a record the corpus refuses as a duplicate
   # (`filed: not_filed`, which is what it answered for every one of the lighthouse's failed 5.1 runs)

@@ -42,10 +42,13 @@ set -eu
 # supplies every flag `serve` needs, so the next required flag to be added fails the suite
 # rather than the deployment.
 : "${UPGRADER_TO:=}"
-# How long a cycle waits between walks. Ten minutes is the miner's cadence and it is
-# chosen against the work rather than against the API: a step is a bundle resolve, an
-# `app:update` and a whole test suite, so a loop that walked faster would re-read
-# ledgers that cannot have changed.
+# **How long the loop polls when there is nothing to do — not a pause between rungs.** A passed
+# rung starts the next one immediately, and a rung that did not pass is retried on a backoff
+# (`BACKOFF_FLOOR`, 30s, doubling while the same rung keeps not passing, capped here). Ten minutes
+# is the miner's cadence and it is the right period for a queue that is empty or settled: the old
+# justification — "a loop that walked faster would re-read ledgers that cannot have changed" — is
+# an argument against *spinning*, and applying it after every cycle bought a fixed ten-minute pause
+# between useful things.
 : "${UPGRADER_INTERVAL:=600}"
 # How long one step may take before it is killed. Generous on purpose: a Rails step
 # includes the application's own suite, and a step killed in the middle of it records
