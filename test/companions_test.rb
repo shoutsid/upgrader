@@ -199,4 +199,192 @@ class CompanionsTest < Minitest::Test
       "the move cannot be a preflight repair: rspec-rails 3 stops providing assigns, and the gem " \
       "that restores it requires actionpack ~> 5.x"
   end
+
+  # **A block is several lines, and its evidence is one of them.** The insert has to land after the
+  # require that loads the test framework — `Shoulda::Matchers.configure` resolves `:rspec` through
+  # the gem's own registry, so the framework has to be loaded before the block runs — and a second
+  # pass over a tree the first pass fixed must not insert it again. That is what `marker` is for: a
+  # check that looked for the whole block among the file's lines would never find it.
+  def test_a_block_insert_lands_whole_and_is_recognised_by_its_marker
+    shoulda = Companions::SHOULDA_MATCHERS
+    helper = "ENV['RAILS_ENV'] ||= 'test'\nrequire 'rspec/rails'\n\nRSpec.configure do |config|\nend\n"
+    root = tree("spec/spec_helper.rb" => helper)
+
+    edits = Companions.edits(shoulda, root: root)
+
+    assert_equal 1, edits.size, "the companion's edits are #{edits.map(&:path).inspect}"
+    insert = edits.first
+    assert_equal 2, insert.line, "the anchor is the `require 'rspec/rails'` line"
+    assert_equal "require 'rspec/rails'\n#{Companions::SHOULDA_CONFIGURATION}", insert.after
+    assert_includes insert.after, "with.test_framework :rspec"
+    assert_includes insert.after, "with.library :rails"
+
+    Applier.new(root).apply(edits.map(&:to_h))
+    assert_empty Companions.edits(shoulda, root: root),
+      "a second pass over a configured helper is not a second insert"
+    assert(Companions.placed?(shoulda, root: root), "the marker is what says the block is there")
+  end
+
+  # **An application that spells the require another way gets no edit, and the caller has to be able
+  # to say so.** `edits` returns an empty list both when the block is already there and when nothing
+  # carries the anchor; `placed?` is the difference, and at the 7.0 rung it is the difference between
+  # a green baseline and a rung that stops with nothing in the record saying why.
+  def test_a_helper_without_the_anchor_is_not_placed_rather_than_configured
+    root = tree("spec/spec_helper.rb" => "ENV['RAILS_ENV'] ||= 'test'\n")
+
+    assert_empty Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+    refute Companions.placed?(Companions::SHOULDA_MATCHERS, root: root),
+      "no file carries the marker, so the companion is not placed"
+  end
+
+  # **The digest and the companion have to agree about the line here too, and this one is
+  # interpreter-scoped.** The entry that moves shoulda-matchers off 2.8.0 is scoped by `ruby_at_least
+  # 2.7` — the interpreter that removed `BigDecimal.new`, which 2.8.0 calls in a class body at boot —
+  # and the companion's edits are keyed to that same requirement.
+  def test_the_shoulda_companion_is_the_line_the_digest_declares
+    digest = JSON.parse(File.read(DIGEST)).fetch("migrations")
+    rung = digest.select { |migration| migration["gem"] == "shoulda-matchers" }
+      .find { |migration| migration.dig("when", "ruby_at_least") == "2.7" }
+
+    refute_nil rung, "the digest has no shoulda-matchers rule for the 2.7 era"
+    assert_equal Companions::SHOULDA_MATCHERS.requirement, rung["requirement"],
+      "the digest moves shoulda-matchers to #{rung["requirement"].inspect} and the companion's " \
+      "edits are keyed to #{Companions::SHOULDA_MATCHERS.requirement.inspect}"
+    assert_equal true, rung["mechanical"],
+      "the line move is a preflight repair, which is what lets its companion be applied there"
+  end
+
+  # **The second half of the same move: the matchers are included with a `type`, and rspec-rails
+  # infers one only from the plural directory names.** Measured at the 7.0 rung, the gem's own
+  # configuration block alone left the baseline red with the *same* 26 failures — this application's
+  # model specs live in `spec/model`, so their example groups carry no type at all and every matcher
+  # with them. The insert is computed from the tree, and each call is guarded by itself, because a
+  # person who derived one directory has fixed that one and not the others.
+  def test_a_singular_spec_directory_has_its_type_derived
+    shoulda = Companions::SHOULDA_MATCHERS
+    root = tree(
+      "spec/model/user_spec.rb" => "describe User do\nend\n",
+      "spec/spec_helper.rb" => "require 'rspec/rails'\nRSpec.configure do |config|\nend\n"
+    )
+
+    edits = Companions.edits(shoulda, root: root)
+    derive = edits.find { |edit| edit.after.to_s.include?("define_derived_metadata") }
+
+    refute_nil derive, "no type was derived: #{edits.map(&:after).inspect}"
+    assert_equal "spec/spec_helper.rb", derive.path
+    assert_includes derive.after,
+      "  config.define_derived_metadata(file_path: %r{/spec/model/}) { |metadata| " \
+      "metadata[:type] = :model }"
+    assert_includes derive.after, "RSpec.configure do |config|", "the call goes inside the block"
+
+    Applier.new(root).apply(edits.map(&:to_h))
+    assert_empty Companions.edits(shoulda, root: root),
+      "a second pass is not a second derivation"
+  end
+
+  # A directory rspec-rails *does* infer a type from gets nothing: `spec/models` is already `:model`,
+  # and `spec/routing` is spelled the same way in the mapping, so neither is in the table.
+  def test_a_plural_spec_directory_needs_no_derivation
+    root = tree(
+      "spec/models/user_spec.rb" => "describe User do\nend\n",
+      "spec/spec_helper.rb" => "require 'rspec/rails'\nRSpec.configure do |config|\nend\n"
+    )
+
+    edits = Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+
+    refute(edits.any? { |edit| edit.after.to_s.include?("define_derived_metadata") },
+      "a plural directory was derived: #{edits.map(&:after).inspect}")
+  end
+
+  # **The four edits 3.0 makes necessary in the application's own files, and each is a fact that file
+  # already states.** Measured on the 7.0 rung's baseline: with the configuration block and the type
+  # derivation in place it was still 26 failures → 3 → 2, and closing the rest meant asking the
+  # application what it means rather than assuming it.
+  def test_a_model_spec_gets_the_applications_own_definition_of_a_valid_record
+    shoulda = Companions::SHOULDA_MATCHERS
+    root = tree("spec/model/bid_spec.rb" => "describe Bid do\n  it { should belong_to(:item) }\nend\n")
+
+    edits = Companions.edits(shoulda, root: root)
+    subject = edits.find { |edit| edit.after.to_s.include?("subject {") }
+
+    refute_nil subject, "no subject was derived: #{edits.map(&:after).inspect}"
+    assert_includes subject.after, "describe Bid do\n  subject { FactoryGirl.build(:bid) }"
+
+    Applier.new(root).apply(edits.map(&:to_h))
+    assert_empty Companions.edits(shoulda, root: root), "a second pass is not a second subject"
+  end
+
+  # **The association says what its presence validation already means.** `RequiredMatcher` does not
+  # accept `validates_presence_of` as proof — it asks for the `:required` error Rails' own `required:`
+  # produces — so the model has to declare it. `optional: true` is the application saying the opposite
+  # and it wins.
+  def test_an_association_the_model_validates_the_presence_of_is_declared_required
+    root = tree(
+      "app/models/bid.rb" => <<~RUBY
+        class Bid < ApplicationRecord
+          belongs_to :item, counter_cache: true
+          belongs_to :user, optional: true
+          validates_presence_of :item, :amount
+        end
+      RUBY
+    )
+
+    edits = Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+
+    assert_equal 1, edits.size, "the required association is the one edit: #{edits.map(&:after).inspect}"
+    assert_includes edits.first.after, "belongs_to :item, counter_cache: true, required: true"
+    refute(edits.any? { |edit| edit.after.to_s.include?("belongs_to :user") },
+      "an association the model calls optional was made required")
+  end
+
+  # **An option proc that dereferences an association raises when the association is absent**, and
+  # 3.0's matchers null it to ask their question. Guarding the *validation* with `if: :item` was
+  # measured first and is wrong — it skips the check `validate_numericality_of(:amount)` asserts — so
+  # the proc itself answers for the absent association.
+  def test_an_option_proc_that_dereferences_an_association_is_made_nil_safe
+    root = tree(
+      "app/models/bid.rb" => <<~RUBY
+        class Bid < ApplicationRecord
+          validates_numericality_of :amount,
+            greater_than_or_equal_to: Proc.new { |bid| bid.item.min_bid_amount.to_f }
+        end
+      RUBY
+    )
+
+    edits = Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+    guarded = edits.find { |edit| edit.after.to_s.include?("Proc.new") }
+
+    refute_nil guarded, "the proc was not guarded: #{edits.map(&:after).inspect}"
+    assert_includes guarded.after, "Proc.new { |bid| bid.item ? bid.item.min_bid_amount.to_f : 0 }"
+  end
+
+  # **Devise is what validates the email, and it does so case-insensitively** — and the `devise` call
+  # is several lines in this application, which a single-line pattern missed (measured: the rule
+  # silently did nothing). A `validate_uniqueness_of(:username)` the model declares itself is left
+  # alone: telling it to be case-insensitive would assert something the model does not do.
+  def test_devises_case_insensitive_email_gets_the_matching_matcher_option
+    root = tree(
+      "app/models/user.rb" => <<~RUBY,
+        class User < ApplicationRecord
+          devise :database_authenticatable,
+                 :validatable
+          validates_uniqueness_of(:username)
+        end
+      RUBY
+      "spec/model/user_spec.rb" => <<~RUBY
+        describe User do
+          it { should validate_uniqueness_of(:email) }
+          it { should validate_uniqueness_of(:username) }
+        end
+      RUBY
+    )
+
+    edits = Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+    email = edits.find { |edit| edit.after.to_s.include?(":email") }
+
+    refute_nil email, "the email matcher was not told: #{edits.map(&:after).inspect}"
+    assert_includes email.after, "validate_uniqueness_of(:email).case_insensitive"
+    refute(edits.any? { |edit| edit.after.to_s.include?(":username).case_insensitive") },
+      "a case-sensitive uniqueness assertion was told to be case-insensitive")
+  end
 end
