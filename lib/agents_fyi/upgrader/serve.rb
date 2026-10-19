@@ -101,6 +101,9 @@ module AgentsFyi
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
         @publish_class = publish_class
+        # The read-only projection the console's walk view joins: delivery facts beside the progress
+        # file, because the ledger itself is deliberately not mounted into the service.
+        @deliveries = Deliveries.new(home: @home, out: @out)
         # The deployment's own values for the applications it walks, passed to every step this
         # loop makes (see `Step#read_env_file` for the shape and the reason).
         @suite_env = suite_env
@@ -268,22 +271,22 @@ module AgentsFyi
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
       def remember_delivery(record, result, root:, pattern:)
-        return if @ledger.nil?
-
-        @ledger.deliver(
+        state = {
+          "attempted" => true,
+          "delivered" => delivered?(result, record.repository),
+          "branch" => result.branch,
+          "commit" => result.commit,
+          "pull_request" => result.pull_request,
+          "reason" => result.reason,
+          "root" => root.to_s,
+          "branch_pattern" => pattern.to_s
+        }
+        @ledger&.deliver(
           repo: record.repository, commit: record.commit,
-          from_version: record.from_version, to_version: record.to_version,
-          state: {
-            "attempted" => true,
-            "delivered" => delivered?(result, record.repository),
-            "branch" => result.branch,
-            "commit" => result.commit,
-            "pull_request" => result.pull_request,
-            "reason" => result.reason,
-            "root" => root.to_s,
-            "branch_pattern" => pattern.to_s
-          }
+          from_version: record.from_version, to_version: record.to_version, state: state
         )
+        @deliveries.record(repo: record.repository, from_version: record.from_version,
+          to_version: record.to_version, delivery: state)
       end
 
       # A branch is delivered when it is on the remote. A pull request is part of delivery only on
@@ -324,17 +327,20 @@ module AgentsFyi
             report_base: ENV["UPGRADER_PUBLIC_URL"]
           ).call
           @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
+          state = delivery.merge(
+            "attempted" => true,
+            "delivered" => delivered?(result, entry.repo),
+            "branch" => result.branch,
+            "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
+            "pull_request" => result.pull_request,
+            "reason" => result.reason
+          )
           @ledger.deliver(
             repo: entry.repo, commit: entry.commit,
-            from_version: entry.from_version, to_version: entry.to_version,
-            state: delivery.merge(
-              "delivered" => delivered?(result, entry.repo),
-              "branch" => result.branch,
-              "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
-              "pull_request" => result.pull_request,
-              "reason" => result.reason
-            )
+            from_version: entry.from_version, to_version: entry.to_version, state: state
           )
+          @deliveries.record(repo: entry.repo, from_version: entry.from_version,
+            to_version: entry.to_version, delivery: state)
         end
       end
 

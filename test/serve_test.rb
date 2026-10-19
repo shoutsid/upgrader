@@ -661,6 +661,26 @@ class ServeTest < Minitest::Test
       "the retry did not carry the commit the first attempt produced"
   end
 
+  # **The console reads a feed, not the ledger.** The ledger is the loop's own book and is not
+  # mounted into the service; the delivery facts are written beside the progress file, where the
+  # console's read-only mount can join them to the runs it already holds.
+  def test_a_published_rung_is_written_to_the_delivery_feed
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    FakePublish.reset!
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    serve(corpus: corpus, cycles: 1, to: "5.0.0", walk: true, publish: true, rungs: 1).run
+
+    path = File.join(home, "state", "deliveries.json")
+    assert File.file?(path), "the delivery feed was not written where the console reads it"
+    entries = JSON.parse(File.read(path)).fetch("deliveries")
+    entry = entries.find { |row| row["to_version"] == "5.0.0" }
+    refute_nil entry
+    assert_equal true, entry["delivered"]
+    assert_equal "https://github.com/acme/storefront/pull/1", entry["pull_request"]
+    assert_equal "9f2c1ab8", entry["commit"]
+  end
+
   def test_publishing_is_off_unless_asked_for
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
     FakePublish.reset!
