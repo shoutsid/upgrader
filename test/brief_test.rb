@@ -42,6 +42,25 @@ class BriefTest < Minitest::Test
     AgentsFyi::Upgrader::Brief.new(corpus: corpus)
   end
 
+  # **A link only when the reader's base is known.** The walker's own API base is often an internal
+  # hostname; a pull request is read on GitHub, so the deployment names the public base and the
+  # report becomes a link. Without one the title is named rather than pointed at a host nobody can
+  # resolve.
+  def test_reports_are_linked_when_a_readers_base_is_named
+    corpus = FakeCorpus.new(moves: { "rails" => { "changes" => [{
+      "id" => "r1", "title" => "a known failure", "library" => "rails",
+      "version" => "6.0.0", "status" => "resolved_verified",
+      "change_kind" => "config", "resolution" => "set the flag"
+    }] } })
+
+    result = brief_for(corpus).call(from: "5.2.0", to: "6.0.0")
+
+    assert_includes result.to_markdown(base: "https://agents.example"),
+      "[a known failure](https://agents.example/reports/r1)"
+    refute_includes result.to_markdown, "https://agents.example/reports/r1",
+      "a brief with no reader base linked a host it does not know"
+  end
+
   # The framework half: a report filed against this very window, with its fix, is what the brief
   # exists to surface. Asked with the ecosystem named, because the service's default is python.
   def test_the_framework_move_carries_what_the_corpus_observed

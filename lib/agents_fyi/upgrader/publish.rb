@@ -79,7 +79,8 @@ module AgentsFyi
       end
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
-                     out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil)
+                     out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
+                     report_base: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -104,6 +105,11 @@ module AgentsFyi
         # carries the commit the first attempt produced: the tree has moved on, and re-committing a
         # clean tree would publish a different fact than the one the suite established.
         @commit = commit.to_s
+        # **Where a reviewer can open a report.** The walker's API base is often an internal
+        # hostname (`http://service:8001`); a link built from it in a pull request is unopenable.
+        # The deployment names the public base, and no base means the report is named rather than
+        # linked.
+        @report_base = report_base.to_s.chomp("/")
       end
 
       def call
@@ -298,7 +304,7 @@ module AgentsFyi
           lines << ""
           lines << "## What the corpus already knew"
           lines << ""
-          lines << @record.brief.to_markdown
+          lines << @record.brief.to_markdown(base: @report_base.empty? ? nil : @report_base)
         end
 
         if @record
@@ -308,6 +314,31 @@ module AgentsFyi
           lines << "## What established it"
           lines << ""
           evidence.each { |line| lines << "- #{line}" }
+        end
+
+        # **An accepted decision is not a "needs a decision".** It was answered before the rung ran,
+        # its effects were applied before the baseline, and the suite that establishes the rung ran
+        # with them in place — so it belongs to what the rung *is*, not to what is still owed. The
+        # origin (`decision:<id>`) is the only place that attribution survives into the record.
+        if @record
+          decided = @record.applied.select do |edit|
+            edit.respond_to?(:origin) && edit.origin.to_s.start_with?("decision:")
+          end
+          unless decided.empty?
+            lines << ""
+            lines << "## Decisions in force"
+            lines << ""
+            lines << "These edits come from accepted decisions, applied before the baseline, and the"
+            lines << "suite ran with them in place:"
+            lines << ""
+            decided.group_by(&:origin).each do |origin, edits|
+              lines << "### `#{origin}`"
+              edits.each do |edit|
+                lines << "- `#{edit.path}`:#{edit.line} `#{edit.text.to_s.strip}` → " \
+                         "`#{edit.after.to_s.strip}`"
+              end
+            end
+          end
         end
 
         if @record && !@record.refused.empty?

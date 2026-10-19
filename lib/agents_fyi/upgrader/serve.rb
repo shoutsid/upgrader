@@ -257,7 +257,8 @@ module AgentsFyi
         result = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
-          token: ENV[Publish::ENV_TOKEN], branch_pattern: pattern
+          token: ENV[Publish::ENV_TOKEN], branch_pattern: pattern,
+          report_base: ENV["UPGRADER_PUBLIC_URL"]
         ).call
         @out.puts("serve: #{record.repository} — #{result}")
         remember_delivery(record, result, root: root, pattern: pattern)
@@ -319,7 +320,8 @@ module AgentsFyi
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
             out: @out, token: ENV[Publish::ENV_TOKEN],
-            branch_pattern: delivery["branch_pattern"]
+            branch_pattern: delivery["branch_pattern"],
+            report_base: ENV["UPGRADER_PUBLIC_URL"]
           ).call
           @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
           @ledger.deliver(

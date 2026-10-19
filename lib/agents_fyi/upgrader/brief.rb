@@ -77,22 +77,27 @@ module AgentsFyi
 
         # The brief as the pull request body and the console render it. A reviewer should be able to
         # read what the walk knew before it decided, in the order it decided it.
-        def to_markdown
+        # `base` is where the corpus is reachable *by the reader*: a pull request is opened on
+        # GitHub, so a link built from the walker's own `API_BASE_URL` (`http://service:8001`) is a
+        # link nobody can open. Without a base the report is named rather than linked, which is the
+        # honest rendering of "this walker does not know where you read it".
+        def to_markdown(base: nil)
           return "_Nothing in the corpus speaks to this rung, and every read answered._" if empty? && !truncated
 
-          sections.reject(&:empty?).map { |section| render(section) }.compact.join("\n")
+          sections.reject(&:empty?).map { |section| render(section, base: base) }.compact.join("\n")
         end
 
         private
 
-        def render(section)
+        def render(section, base: nil)
           lines = ["### #{section.title}", "", "_#{section.question}_", ""]
           if section.items.empty?
             lines << "- #{section.state}#{section.note.to_s.empty? ? "" : ": #{section.note}"}"
           else
             section.items.each do |item|
-              line = "- #{item.identifying? ? "**same failure**" : "mention"} · " \
-                     "#{item.title.to_s.strip}"
+              title = item.title.to_s.strip
+              title = "[#{title}](#{base}/reports/#{item.id})" if base && !item.id.to_s.empty?
+              line = "- #{item.identifying? ? "**same failure**" : "mention"} · #{title}"
               line += " — #{item.status}" unless item.status.to_s.empty?
               line += " · fix: #{item.fix}" unless item.fix.to_s.empty?
               lines << line

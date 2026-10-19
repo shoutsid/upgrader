@@ -64,7 +64,7 @@ class PublishTest < Minitest::Test
   end
 
   def passed_record(repository:, from: "4.0.0.rc1", to: "4.1.0", verdict: "passed",
-                    decisions: [], refused: [])
+                    decisions: [], refused: [], applied: [], brief: nil)
     Record.new(
       repository: repository, commit: "abc12345", from_version: from, to_version: to,
       name: "Rails 4.1", verdict: verdict,
@@ -72,7 +72,7 @@ class PublishTest < Minitest::Test
         "the suite was green before this step and failed after it (exit 1)",
       interpreter: "ruby 2.1.10", image: "agentsfyi-upgrader-ruby-2.1:dev",
       machine: "ruby 2.1.10 (agentsfyi-upgrader-ruby-2.1:dev@sha256:#{"a" * 64})",
-      era: "2.1", decisions: decisions, refused: refused,
+      era: "2.1", decisions: decisions, refused: refused, applied: applied, brief: brief,
       stages: [
         Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 0,
           seconds: 42.0, output_tail: "12 examples, 0 failures"),
@@ -348,6 +348,37 @@ class PublishTest < Minitest::Test
 
     refute result.pushed
     assert_includes result.reason, "failed"
+  end
+
+  # **The body carries the decisions that were in force and links the reports it cites.** An
+  # accepted decision was applied before the baseline, so it belongs to what the rung is; the
+  # report links are built from the deployment's public base, not the walker's internal one.
+  def test_the_request_body_carries_the_decisions_in_force_and_links_the_reports
+    _bare, clone = origin_and_clone
+    applied = AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/index.html.erb",
+      line: 16, text: "<td><%= link_to 'Show', bid %></td>", after: "",
+      subject: "bids", origin: "decision:6b1f0a52-0000-4000-8000-000000000001", note: "the list's link")
+    brief = AgentsFyi::Upgrader::Brief::Result.new(
+      sections: [AgentsFyi::Upgrader::Brief::Section.new(key: "framework", title: "Rails 6.0",
+        question: "what the corpus recorded", state: "answers",
+        items: [AgentsFyi::Upgrader::Brief::Item.new(id: "r1", title: "a known failure",
+          match: "signature")], total: 1)],
+      asked: 1, truncated: false, unavailable: 0
+    )
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "5.2.0", to_version: "6.0.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "5.2.0",
+        to: "6.0.0", applied: [applied], brief: brief),
+      token: "ghp_secret", git: FakeGit.new, api: api,
+      report_base: "https://agents.example").call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "## Decisions in force"
+    assert_includes body, "decision:6b1f0a52-0000-4000-8000-000000000001"
+    assert_includes body, "app/views/bids/index.html.erb"
+    assert_includes body, "[a known failure](https://agents.example/reports/r1)"
   end
 
   def test_the_default_branch_is_read_from_the_remote_before_the_api_is_asked
