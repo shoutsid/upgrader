@@ -209,6 +209,25 @@ class DeployConfigTest < Minitest::Test
     assert_equal 0, others, "another client mounts the upgrader's ledger"
   end
 
+  # **A suite env the container cannot see is a setting nothing reads.** `UPGRADER_SUITE_ENV_FILE` was
+  # forwarded to the container and the file it names was never mounted, so a repository whose secrets live
+  # in a git-ignored file could not boot its own suite — and the walk's first real application is one:
+  # `config/initializers/secret_token.rb` is `Bidding::Application.config.secret_key_base =
+  # ENV["RAILS_SECRET_TOKEN"]`, so without it every controller spec dies on `RuntimeError: You must set
+  # config.secret_key_base in your app's config`, the *baseline* goes red, and the rung comes out
+  # `unverified` — a verdict about the application's own suite that says nothing about the move. Measured
+  # on the deployment: 4.0.0 -> 4.1.0 came out `unverified` with the pin, `app:update`, the boot and the
+  # post-move suite all exiting 0. `/dev/null` is the default so that a deployment which sets nothing gets
+  # an empty file rather than a mount that does not exist.
+  def test_the_application_environment_is_mounted_where_the_setting_names_it
+    block = config("upgrader")
+
+    assert_match(%r{^\s+-\s*\$\{UPGRADER_SUITE_ENV_FILE_HOST:-/dev/null\}:/etc/agents-fyi/suite\.env:ro}, block,
+      "the file the setting names is never mounted into the container")
+    assert_match(/UPGRADER_SUITE_ENV_FILE:\s*\$\{UPGRADER_SUITE_ENV_FILE:-\}/, block,
+      "the path the container reads is not forwarded")
+  end
+
   def test_the_service_that_executes_steps_is_built_with_a_compiler
     # A step installs a real application's bundle, and a bundle names gems that ship no
     # prebuilt binary — so this image needs a toolchain, and the `plan`-only image must
