@@ -186,6 +186,19 @@ module AgentsFyi
         @worktree, @lockfile, pinned = prepared
         @from = pinned.version
 
+        # **Nothing to move is not a run.** A target that names the release the tree is already on
+        # has no rung to walk — the loop asked the ladder, was refused with "`8.1.0` and `8.1.0` are
+        # the same Rails release", and *recorded that refusal* every ten minutes: eight rows saying a
+        # finished walk is finished, and a corpus whose queue list grew while nothing was learnt
+        # (`docs/refactor/adr/0008`, "settled is not delivered"). `nil` is this step's answer for
+        # "nothing ran", which the loop reports as idle; the target's own `done` is what says it is
+        # complete, and a passed rung that failed to *deliver* is the delivery queue's work, not a
+        # reason to walk it again.
+        if @to.to_s == @from.to_s
+          @out.puts("  already at #{@to}: there is no rung to walk") if @out
+          return nil
+        end
+
         # The plan comes from the service and nowhere else: this tool keeps no copy of
         # the ladder, so a move it cannot ask about is a move it cannot make.
         step = planned(stages)
@@ -218,6 +231,14 @@ module AgentsFyi
         preflight = preflight_stage(stages, step)
         @applied.concat(preflight.repairs)
         @decisions.concat(preflight.decisions)
+
+        # **What this project has already decided, applied before anything is measured.** A decision's
+        # effect is how this application *is*, not part of the move: it runs on every walk, in the
+        # declared order, and the baseline below measures the tree with it in force — which is what
+        # makes a red suite after the move attributable to the move. It sits beside the preflight for
+        # the same reason: both are preconditions of measuring, not changes the rung is judged for.
+        # Each edit carries `origin: decision:<id>`, so a reader can tell it from the ladder's own.
+        decisions_stage(stages, step)
 
         # **The era is the oldest the rung's floor allows, and the ledger is not a starting point.** The
         # ledger is keyed per *repository*, so a walk that climbs keeps a hint that is always at or below
@@ -267,12 +288,6 @@ module AgentsFyi
             rerun: -> { @baseline = run_suite(stages, Record::BASELINE) })
           @baseline = repaired || @baseline
         end
-
-        # **What this project has already decided, applied before anything is scanned.** An accepted
-        # answer's effects are machinery, not notes: they run on every walk, in the declared order, and
-        # what they wrote is in the same `applied` list as the ladder's own edits — named by
-        # `origin: decision:<id>` so a reader can tell them apart.
-        decisions_stage(stages, step)
 
         applied, refused, decisions = apply(stages, step)
         @applied.concat(applied)
@@ -1415,9 +1430,10 @@ module AgentsFyi
         stages.last
       end
 
-      # The project's accepted decisions, as effects on the tree. Nothing is applied that no operator
-      # accepted, and a condition this build does not understand refuses rather than applies — both
-      # rules live in `Effects`, beside the write they protect.
+      # The project's accepted decisions, as effects on the tree — before the baseline, so the
+      # application is measured as it is with its decisions in force. Nothing is applied that no
+      # operator accepted, and a condition this build does not understand refuses rather than applies;
+      # both rules live in `Effects`, beside the write they protect.
       def decisions_stage(stages, step)
         decisions = @project&.decisions
         return if decisions.nil? || decisions.empty?

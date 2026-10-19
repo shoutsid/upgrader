@@ -509,10 +509,10 @@ class StepTest < Minitest::Test
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
-           suite_env: nil, applier: nil, pause: nil, project: nil)
+           suite_env: nil, applier: nil, pause: nil, project: nil, to: "6.0.0")
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
-      repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
+      repository: "acme/storefront", to: to, api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: applier || FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
@@ -979,6 +979,19 @@ class StepTest < Minitest::Test
   # one shape a repair may be attempted on — the failure is then attributable to the move —
   # and the verdict afterwards is the *suite's* again: a repaired step passes because the
   # suite says so, never because a model said it fixed something.
+  # **A target that names the release the tree is on has no rung to walk.** The step used to ask the
+  # ladder, be refused, and hand that refusal back as a run — which the loop recorded, every cycle,
+  # for a target that was finished. `nil` means nothing ran, which the loop reports as idle.
+  def test_a_target_that_is_the_tree_s_release_has_no_rung_and_records_nothing
+    dir = track(app)
+    corpus = RecordingCorpus.new(payload: plan)
+
+    record = step(dir, corpus: corpus, to: "4.2.11", contribute: true).run
+
+    assert_nil record, "a no-op target produced a record"
+    assert_empty corpus.calls, "a no-op target was recorded: #{corpus.calls.map(&:first).inspect}"
+  end
+
   # **A decision the project already made is applied before the scan reads the tree.** It is machinery:
   # the same edit on every walk, in the `decisions` stage, named by the decision that made it — which is
   # what the hand-made `agents-fyi/baseline` branch did, and the reason it could not be re-derived.
@@ -1008,6 +1021,8 @@ class StepTest < Minitest::Test
 
     stages = record.stages.map(&:stage)
     assert_includes stages, "decisions"
+    assert_operator stages.index("decisions"), :<, stages.index("baseline"),
+      "the baseline measured the tree before the decision was applied to it"
     assert_operator stages.index("decisions"), :<, stages.index("apply"),
       "the scan read the tree before the decision was applied to it"
     edit = record.applied.find { |applied| applied.origin == "decision:layout-category-link" }

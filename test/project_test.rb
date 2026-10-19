@@ -56,7 +56,12 @@ class ProjectTest < Minitest::Test
     assert_equal "operator:9f2c1ab8", project.decisions.first["accepted_by"]
     assert_equal "patch", project.decisions.first["effects"].first["kind"]
     assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
-    assert_equal [], lighthouse.decisions, "the lighthouse declares no decisions yet"
+    # The lighthouse declares the two 6.0 view facts its walk met, each with the effects an operator
+    # accepted; a decision is data here, which is what makes the walk apply it without knowing the
+    # application (`docs/refactor/adr/0008`, decision 3).
+    assert_equal 2, lighthouse.decisions.length
+    assert(lighthouse.decisions.all? { |decision| decision["accepted_by"].start_with?("operator:") })
+    assert_operator lighthouse.decisions.sum { |decision| decision["effects"].length }, :>=, 3
   end
 
   def test_an_unknown_field_in_a_decision_is_refused

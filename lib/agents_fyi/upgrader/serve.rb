@@ -322,6 +322,17 @@ module AgentsFyi
           return nil
         end
 
+        # **A finished target is not work.** `done` means its last attempt passed and `refused` means
+        # the ladder will refuse the same move again, so both leave the list the loop walks — the
+        # knock this removes is the one that filled the corpus with `8.1.0 -> 8.1.0` rows every ten
+        # minutes. A passed rung whose run or pull request failed to arrive is a *delivery* retry and
+        # has its own queue; walking it again is not that retry.
+        status = row.is_a?(Hash) ? row["status"].to_s : ""
+        if %w[done refused].include?(status)
+          out.puts("serve: #{url} is #{status}, so it is not work — skipped")
+          return nil
+        end
+
         ref = row["ref"].to_s
         ref.empty? ? url : "#{url}@#{ref}"
       end
