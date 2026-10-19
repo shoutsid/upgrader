@@ -320,16 +320,6 @@ module AgentsFyi
           return declare(entry, declaration(name), repairs, decisions, notes)
         end
 
-        # **A gem's own upgrade can need an edit to the application's code, and which stage it belongs
-        # to is the entry's clause.** A companion is that rule (see `Companions`), and the two
-        # timings are the same two the digest's own entries have: an entry scoped by the *interpreter*
-        # is a fact about the machine, so its gem has already moved by the time the baseline runs and
-        # the suite the baseline measures is the one that needs the edits; an entry scoped by the
-        # *rung* moves at the pin, so its edits belong at the gems stage, after the baseline and
-        # before the pin's resolve — `Step#apply_companions`, keyed to the route's own move, which is
-        # why nothing is done for one here.
-        apply_companion(entry, repairs, notes) unless rung_scoped?(entry)
-
         found = declaration(name)
         if found.nil?
           return unless locked_gems.include?(name)
@@ -364,44 +354,6 @@ module AgentsFyi
         end
 
         rewrite_declared(entry, found, repairs, notes)
-      end
-
-      # **The rule of a gem's own upgrade, applied where the entry's clause says it belongs.** The
-      # digest moves a line and `Companions` holds the edits a gem's own release forces on the
-      # application's files; both are the same fact seen twice, and the companion is keyed to the
-      # digest's own requirement so the two cannot drift.
-      #
-      # Only an entry a machine may act on has a companion applied: `mechanical` is the digest's
-      # statement that the line moves, and a companion is the code edits *of that move* — applied
-      # beside a line nobody moved, they would be edits for a gem state the application is not in.
-      # The edits go through the applier, so they are line-checked and recorded exactly as every other
-      # edit this tool makes, and a refusal is a note rather than a silent nothing.
-      def apply_companion(entry, repairs, notes)
-        return unless entry["mechanical"] == true
-
-        companion = Companions.for(entry["gem"], entry["requirement"])
-        return if companion.nil?
-
-        edits = Companions.edits(companion, root: @root)
-        if edits.empty?
-          # **An empty list is two facts and the record has to tell them apart.** The file already
-          # carries the insert (a move a person finished, and no note is owed) or no file here carries
-          # its anchor — and that second one is a suite that will stay red with nothing in the record
-          # saying why, which is the failure this whole stage exists to prevent.
-          unless Companions.placed?(companion, root: @root)
-            notes << "the companion for #{entry["gem"]} had nothing to apply: none of " \
-                     "#{Array(companion.inserts).map(&:path).join(", ")} carries the anchor its edits " \
-                     "go beside, so #{companion.note}"
-          end
-          return
-        end
-
-        result = Applier.new(@root).apply(edits.map(&:to_h))
-        repairs.concat(result.applied)
-        result.refused.each do |refusal|
-          notes << "the companion for #{entry["gem"]} refused an edit at #{refusal.path}:" \
-                   "#{refusal.line} — #{refusal.reason}"
-        end
       end
 
       # **One mechanical rewrite of a line the application already declares.** The digest names the
@@ -481,6 +433,12 @@ module AgentsFyi
       # * `rails_below` / `rails_at_least` — the release the move ends at, which is what lets a gem
       #   have to move twice in one walk.
       #
+      # **And a third thing a move knows: the application's own gems.** `declares` is the clause for a
+      # fact about a gem that is only true of an application *holding another one* — measured at the
+      # 7.0 rung, where the sibling that keeps `shoulda-matchers` 2.8.0 loading is worth declaring only
+      # to an application that has it. A `declared` entry travels with every answer, so a clause is
+      # where that scoping has to live: the caller is the only party that knows its own Gemfile.
+      #
       # A clause this stage cannot evaluate makes the whole entry inapplicable: an unnamed interpreter,
       # a rung in a mode that was not told one, or a clause this build does not know. The call site
       # says which, so a skipped entry is visible rather than silent.
@@ -497,7 +455,7 @@ module AgentsFyi
       # interpreter (`ruby_below`, where the *newest* installable release is the problem) or too old
       # for a new one (`ruby_at_least`, where the release's own C source does not compile — measured
       # on the 5.0 rung, json 1.7.7's `rb_str_new` call against Ruby 2.2's variadic macro).
-      KNOWN_CLAUSES = %w[ruby_below ruby_at_least rails_below rails_at_least].freeze
+      KNOWN_CLAUSES = %w[ruby_below ruby_at_least rails_below rails_at_least declares].freeze
 
       # The two clauses that name the *rung* rather than the machine. A `declared` entry scoped
       # by one of them is about the framework the gem arrives with, so it is deferred until the
@@ -512,6 +470,12 @@ module AgentsFyi
       def clause_holds?(clause, value)
         return true if value.empty?
         return false unless KNOWN_CLAUSES.include?(clause)
+
+        # **`declares` is a question about the application rather than about the machine**, so it is
+        # answered from the Gemfile this stage has already read and never from a version: the fact it
+        # scopes is only true of an application holding another gem, and the caller is the only party
+        # that knows its own Gemfile.
+        return declared_gems.include?(value) if clause == "declares"
 
         named = clause.start_with?("ruby") ? @ruby : @rails
         return false if named.empty?
@@ -535,7 +499,17 @@ module AgentsFyi
         unknown = condition.keys.reject { |clause| KNOWN_CLAUSES.include?(clause.to_s) }
         return "it states #{unknown.join(", ")}, which this build does not know" if unknown.any?
 
-        unnamed = condition.keys.select { |clause| (clause.to_s.start_with?("ruby") ? @ruby : @rails).empty? }
+        # **A `declares` clause is about the application, so its miss says so.** "This move does not
+        # meet it" would send a reader to look at the rung for a fact that is about their own Gemfile.
+        absent = condition.keys.select do |clause|
+          clause.to_s == "declares" && !declared_gems.include?(condition[clause].to_s.strip)
+        end
+        if absent.any?
+          return "the application does not declare #{absent.map { |clause| condition[clause] }.join(", ")}"
+        end
+
+        unnamed = condition.keys.reject { |clause| clause.to_s == "declares" }
+          .select { |clause| (clause.to_s.start_with?("ruby") ? @ruby : @rails).empty? }
         if unnamed.any?
           return "it is scoped by #{unnamed.join(", ")}, and this stage was not told " \
                  "#{unnamed.map { |clause| clause.to_s.start_with?("ruby") ? "the interpreter" : "the rung" }.uniq.join(" or ")}"

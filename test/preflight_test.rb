@@ -16,7 +16,6 @@ require "agents_fyi/upgrader"
 class PreflightTest < Minitest::Test
   Preflight = AgentsFyi::Upgrader::Preflight
   Corpus = AgentsFyi::Upgrader::Corpus
-  Companions = AgentsFyi::Upgrader::Companions
 
   GEMFILE = <<~GEM
     source "https://rubygems.org"
@@ -98,25 +97,6 @@ class PreflightTest < Minitest::Test
   # protocol rule rewrites — so a test about the digest's declarations asserts the declaration rather
   # than counting repairs that were already there. (`PLAIN_LOCKFILE`, above, is that lockfile.)
   PLAIN_GEMFILE = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\n)
-
-  # The application the companion tests use: the two test gems whose own upgrades need code edits,
-  # declared and locked, so the digest's entries for them are entries about *this* application and a
-  # companion can be looked up by the line the digest declares.
-  TEST_GEMFILE = %(source "https://rubygems.org"\n\ngem "rails", "4.0.0.rc1"\n) +
-    %(gem "shoulda-matchers", "~> 2.7"\ngem "rspec-rails", "~> 2.14.0"\n)
-  TEST_LOCKFILE = <<~LOCK
-    GEM
-      remote: https://rubygems.org/
-      specs:
-        rails (4.0.0.rc1)
-        rspec-rails (2.14.2)
-        shoulda-matchers (2.8.0)
-
-    DEPENDENCIES
-      rails (= 4.0.0.rc1)
-      rspec-rails (~> 2.14.0)
-      shoulda-matchers (~> 2.7)
-  LOCK
 
   def app(gemfile: GEMFILE, lockfile: LOCKFILE)
     dir = Dir.mktmpdir
@@ -660,80 +640,44 @@ class PreflightTest < Minitest::Test
     assert_empty result.to_h["decisions"]
   end
 
-  # **A gem's own upgrade can need an edit to the application's code, and an interpreter-scoped entry
-  # has to make it here — before the baseline runs.** Measured at the 7.0 rung: the 2.7 era forces
-  # shoulda-matchers off 2.8.0 (the digest's `~> 4.1` entry, because 2.8.0 calls `BigDecimal.new` in a
-  # class body it loads at boot), shoulda-matchers 3.0 stopped including its matchers automatically,
-  # and the *baseline* is then 17 failures with 16 of them matcher methods that are simply absent —
-  # `NoMethodError: undefined method `validate_presence_of'`. A companion applied at the gems stage,
-  # after the baseline, cannot save that rung; the edits have to be in the tree the baseline reads.
-  def test_a_companion_for_an_interpreter_scoped_entry_is_applied_before_the_baseline
-    dir = app(gemfile: TEST_GEMFILE, lockfile: TEST_LOCKFILE)
-    FileUtils.mkdir_p(File.join(dir, "spec"))
-    File.write(File.join(dir, "spec", "spec_helper.rb"),
-      "ENV['RAILS_ENV'] ||= 'test'\nrequire 'rspec/rails'\n\nRSpec.configure do |config|\nend\n")
+  # **A `declared` entry travels with every answer, so the clause that scopes it has to be the caller's
+  # own Gemfile.** Measured at the 7.0 rung: the sibling that keeps shoulda-matchers 2.8.0 loading on
+  # Ruby 2.7 (`bigdecimal ~> 1.4`) is worth declaring only to an application that holds the gem — a
+  # caller without it would get a native build of an old bigdecimal for nothing, and the service cannot
+  # know which caller it is answering. `declares` is that clause, and it is answered from the Gemfile
+  # this stage has already read.
+  def test_a_declared_entry_scoped_by_declares_is_applied_where_the_application_holds_the_gem
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\ngem "shoulda-matchers", "~> 2.7"\n)
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
     corpus = FakeCorpus.new(entries: [
-      entry(gem: "shoulda-matchers", replacement: "shoulda-matchers", requirement: "~> 4.1",
-        condition: { "ruby_at_least" => "2.7" })
+      entry(gem: "bigdecimal", kind: "declared", replacement: nil, requirement: "~> 1.4",
+        condition: { "ruby_at_least" => "2.7", "declares" => "shoulda-matchers" })
     ])
 
     result = preflight(dir, corpus: corpus, ruby: "2.7.8")
 
-    companion = result.repairs.find { |repair| repair.subject == "shoulda-matchers 3" }
-    refute_nil companion, "the companion was not applied: #{result.repairs.map(&:subject).inspect}"
-    assert_equal "spec/spec_helper.rb", companion.path
-    assert_equal "companion", companion.origin
-    assert_includes read(dir, "spec/spec_helper.rb"),
-      "require 'rspec/rails'\n#{Companions::SHOULDA_CONFIGURATION}"
-    assert_empty(result.notes.grep(/companion/),
-      "a companion that applied is not a note: #{result.notes.grep(/companion/).inspect}")
-
-    # The digest's own line moved too, and the two repairs are the same fact seen twice.
-    assert_equal ["shoulda-matchers", "shoulda-matchers 3"],
-      result.repairs.map { |repair| repair.subject }.sort
+    declaration = result.repairs.find { |repair| repair.subject == "bigdecimal" }
+    refute_nil declaration, "the declaration was not made: #{result.repairs.map(&:subject).inspect}"
+    assert_includes read(dir, "Gemfile"), %(gem "bigdecimal", "~> 1.4")
   end
 
-  # **A rung-scoped entry's companion is not applied here.** Its gem moves at the pin, so the edits
-  # belong at the gems stage — after the baseline, before the pin's resolve — where
-  # `Step#apply_companions` keys them to the route's own move. Applying them early is the mistake the
-  # digest's own rung-scoped timing already paid for: a rung-scoped rewrite applied early turned the
-  # 5.2 baseline red.
-  def test_a_companion_for_a_rung_scoped_entry_waits_for_the_gems_stage
-    dir = app(gemfile: TEST_GEMFILE, lockfile: TEST_LOCKFILE)
-    FileUtils.mkdir_p(File.join(dir, "spec"))
-    File.write(File.join(dir, "spec", "spec_helper.rb"),
-      "RSpec.configure do |config|\nend\n")
+  # And where the application does not hold the gem, the skip is a *sentence about the Gemfile* rather
+  # than "this move does not meet it" — which would send a reader to look at the rung for a fact that is
+  # about their own file.
+  def test_a_declared_entry_scoped_by_declares_is_skipped_with_the_reason_where_the_gem_is_absent
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
     corpus = FakeCorpus.new(entries: [
-      entry(gem: "rspec-rails", replacement: "rspec-rails", requirement: "~> 3.5.0",
-        condition: { "rails_at_least" => "5.0" })
-    ])
-
-    result = preflight(dir, corpus: corpus, ruby: "2.7.8", rails: "5.0.0")
-
-    assert_nil result.repairs.find { |repair| repair.subject == "rspec-rails 3" },
-      "a rung-scoped companion was applied before the pin: #{result.repairs.map(&:subject).inspect}"
-    refute_includes read(dir, "spec/spec_helper.rb"), "infer_spec_type_from_file_location!"
-  end
-
-  # **An empty companion is two facts, and the record says which.** The helper already carries the
-  # block (a move a person finished) or it carries no anchor for it — and the second one is a suite
-  # that will stay red with nothing in the record saying why, which is the failure this stage exists
-  # to prevent. So the note names the files that were looked at and the gem's own reason.
-  def test_a_companion_with_no_anchor_is_a_note_rather_than_a_silent_nothing
-    dir = app(gemfile: TEST_GEMFILE, lockfile: TEST_LOCKFILE)
-    FileUtils.mkdir_p(File.join(dir, "spec"))
-    File.write(File.join(dir, "spec", "spec_helper.rb"), "ENV['RAILS_ENV'] ||= 'test'\n")
-    corpus = FakeCorpus.new(entries: [
-      entry(gem: "shoulda-matchers", replacement: "shoulda-matchers", requirement: "~> 4.1",
-        condition: { "ruby_at_least" => "2.7" })
+      entry(gem: "bigdecimal", kind: "declared", replacement: nil, requirement: "~> 1.4",
+        condition: { "ruby_at_least" => "2.7", "declares" => "shoulda-matchers" })
     ])
 
     result = preflight(dir, corpus: corpus, ruby: "2.7.8")
 
-    note = result.notes.find { |line| line.include?("companion for shoulda-matchers") }
-    refute_nil note, "no note was written: #{result.notes.inspect}"
-    assert_includes note, "spec/spec_helper.rb"
-    assert_includes note, "spec/rails_helper.rb"
-    assert_includes note, "stopped including its matchers"
+    assert_nil result.repairs.find { |repair| repair.subject == "bigdecimal" },
+      "a line was declared for a gem the application does not hold"
+    note = result.notes.find { |line| line.include?("bigdecimal") }
+    refute_nil note, "the skip is not in the record: #{result.notes.inspect}"
+    assert_includes note, "does not declare shoulda-matchers"
+    refute_includes read(dir, "Gemfile"), "bigdecimal"
   end
 end
