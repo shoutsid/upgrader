@@ -583,13 +583,15 @@ class StepTest < Minitest::Test
       "the resolve was not told about the line this step moved: #{pin.command}"
   end
 
-  # **A digest entry that renames the gem, and not only its requirement, is named by its new name at
-  # the pin.** Measured at the 7.2 rung: the preflight rewrote `gem 'factory_girl_rails', '~> 4.0'` into
-  # `gem 'factory_bot_rails', '~> 4.9'` and the companion renamed 93 call sites, and the pin then exited
-  # 7 with `Could not find gem 'factory_girl_rails'` — because the line the entry rewrote was the only
-  # thing that made the old name a dependency at all, and the pin's named set is "every gem this step
-  # has rewritten a line for". The name the Gemfile holds now is the one the resolve can be told about.
-  def test_a_digest_entry_that_renames_a_gem_is_named_by_its_new_name_at_the_pin
+  # **A digest entry that renames the gem, and not only its requirement, leaves the pin naming neither
+  # name.** Measured at the 7.2 rung: the routing rewrote `gem 'factory_girl_rails', '~> 4.0'` into the
+  # replacement's line and the companion renamed 93 call sites, and the pin then exited 7 with
+  # `Could not find gem 'factory_girl_rails'` — because the line the entry rewrote was the only thing
+  # that made the old name a dependency. Naming the *new* name fails the same way, and that was measured
+  # too: bundler resolves a `bundle update` name only when the Gemfile's own dependencies still reach it,
+  # and the new gem is not in the lock yet. So the rename is left out of the pin entirely — the
+  # replacement arrives the way any new dependency does.
+  def test_a_digest_entry_that_renames_a_gem_leaves_the_pin_naming_neither_name
     lockfile = <<~LOCK
       GEM
         remote: https://rubygems.org/
@@ -627,8 +629,8 @@ class StepTest < Minitest::Test
     pin = record.stages.find { |stage| stage.stage == "pin" }
     refute_includes pin.command, "factory_girl_rails",
       "the pin named a gem the Gemfile no longer declares: #{pin.command}"
-    assert_includes pin.command, "factory_bot_rails",
-      "the pin was not told about the line this step renamed: #{pin.command}"
+    refute_includes pin.command, "factory_bot_rails",
+      "the pin named a gem the lock does not hold, which bundler refuses: #{pin.command}"
   end
 
   # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is

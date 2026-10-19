@@ -758,23 +758,19 @@ module AgentsFyi
       # rake).
       def moved_gems
         subjects = @applied.map { |edit| edit.subject.to_s }.uniq
-        renamed = renamed_gems
-        # The lockfile filter is what admits a gem this step merely *moved*: the snapshot holds it, and
-        # naming it is what stops the resolve spending a round on a line that already moved. It cannot
-        # admit a renamed gem, because the lock still holds the *old* name — that one is admitted by the
-        # Gemfile declaring it, which is the line the entry wrote.
-        (subjects - renamed.keys).select { |name| @lockfile.specs.key?(name) } +
-          renamed.values.select { |name| declared_gems.include?(name) }
+        (subjects - renamed_gems.keys) & @lockfile.specs.keys
       end
 
-      # **A gem an entry renamed is named by the name the Gemfile now holds.** The pin's named set is
-      # "every gem this step has rewritten a line for", and it exists so the resolve does not spend its
-      # rounds on a line this step already changed. A `replaced` entry can change the gem's own *name* —
-      # `factory_girl_rails` becomes `factory_bot_rails` — and the old name is then not a dependency at
-      # all: measured at the 7.2 rung, `bundle update rails … factory_girl_rails --conservative` exits 7
-      # with `Could not find gem 'factory_girl_rails'`, because the line the entry rewrote was the only
-      # thing that made it one. The replacement is read off the entries the preflight held for this rung
-      # rather than off the digest, because those are the entries that actually moved a line here.
+      # **A gem an entry renamed is not a name the pin may use — neither the old one nor the new one.**
+      # The pin names every gem this step has rewritten a line for, so the resolve does not spend its
+      # rounds on a line that already moved. A `replaced` entry can change the gem's own *name*, and then
+      # the old name is no longer a dependency (its line is what made it one) while the new name is not in
+      # the lock yet. Measured with a scratch Gemfile: `bundle update rake colorize --conservative` answers
+      # `Could not find gem 'colorize'` both for a gem the Gemfile declares and the lock does not hold and
+      # for a gem the lock holds and the Gemfile no longer declares — while `bundle update rake` alone
+      # resolves the new one in. Measured at the 7.2 rung, the same both ways for `factory_girl_rails` and
+      # `factory_bot_rails`. So the rename is left out of the pin entirely, and the replacement arrives the
+      # way any new dependency does.
       def renamed_gems
         @deferred.to_a.each_with_object({}) do |entry, map|
           from = entry["gem"].to_s
