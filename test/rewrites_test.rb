@@ -200,6 +200,21 @@ class RewritesTest < Minitest::Test
     assert_equal ["  x = New.new"], result.edits.map { |edit| edit["after"] }
   end
 
+  # **And a change whose surveyed lines need no edit at all still owes a sentence.** Measured at the
+  # 6.1 rung: `ActiveModel::Error`'s survey names two lines in `spec/model/bid_spec.rb`, and the generic
+  # fallback — "no rule yet: either this shape is not one of the families here, or the change has no call
+  # site to match at all" — reads as an unanswered question when the rung's own suite has already
+  # answered it. The rung passed with both lines untouched, so the sentence has to say which of the two
+  # it is rather than leave a reader to work it out from a green suite.
+  def test_a_change_whose_surveyed_lines_need_no_edit_carries_its_own_sentence
+    sentence = Rewrites.gap_for("ActiveModel::Error")
+
+    refute_equal Rewrites::GENERIC_GAP, sentence,
+      "the subject falls back to the generic gap, which asks a question the suite has answered"
+    assert_includes sentence, "read"
+    assert_includes sentence, "no edit at all"
+  end
+
   # **Nothing is "never".** A change with no rule is a *gap*, and the gap says what would close it —
   # which is what makes the residue a queue with reasons rather than a list a person re-derives every
   # rung. A subject nobody has looked at says so in the generic sentence rather than reading as a

@@ -772,6 +772,20 @@ module AgentsFyi
         # A survey reports the call sites; it does not make the edit, so the change is still not
         # automated — but a sentence that says "a rule would need the callers" while a survey is already
         # naming them is a sentence that disagrees with the code beside it.
+        #
+        # **And a gap sentence is what the residue owes when the survey's lines need no edit at all.**
+        # Measured at the 6.1 rung: `ActiveModel::Error`'s survey names two lines in
+        # `spec/model/bid_spec.rb` and the generic fallback says "no rule yet: either this shape is not
+        # one of the families here, or the change has no call site to match at all" — which reads as an
+        # unanswered question when the rung's own suite has already answered it. The sentence below says
+        # which of the two it is.
+        "ActiveModel::Error" => "the two lines the survey names *read* the collection — " \
+                                "`bid.errors[:item].should include …` — and this change is to the object " \
+                                "the collection holds: `errors.where`, `errors.details`, and the " \
+                                "type/options a caller passes to `add`. A read of the messages is " \
+                                "unaffected, and the rung's own suite is what settles that rather than " \
+                                "this table: 6.1's post-move suite is green with both lines untouched, " \
+                                "so the edit a rule would make is no edit at all",
         "default_scope" => "the survey names the callers that chain a condition on the same column, and " \
                            "the edit is not a rule because the candidate patch (`unscope`, `rewhere`, " \
                            "`unscoped`) is a choice between three intentions",
