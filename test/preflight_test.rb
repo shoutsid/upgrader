@@ -736,4 +736,41 @@ class PreflightTest < Minitest::Test
     assert_includes note, "spec/rails_helper.rb"
     assert_includes note, "stopped including its matchers"
   end
+
+  # **A method the rung's interpreter removed, in a file the application loads before anything else.**
+  # Measured at the 7.2 rung, the first on the 3.2 era: every stage after the install died with
+  # `config/boot.rb:4:in '<top (required)>': undefined method 'exists?' for File:Class (NoMethodError)`,
+  # and `bin/rails` loads that file itself — so `app:update`, the command that would replace it, could
+  # not run either. The baseline, the database and the suite all read it, which is what makes it the
+  # preflight's business.
+  def test_a_method_the_interpreter_removed_is_repaired_before_the_baseline
+    dir = app(lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "boot.rb"),
+      "ENV['BUNDLE_GEMFILE'] ||= File.expand_path('../../Gemfile', __FILE__)\n" \
+      "require 'bundler/setup' if File.exists?(ENV['BUNDLE_GEMFILE'])\n")
+
+    result = preflight(dir, corpus: FakeCorpus.new)
+
+    repair = result.repairs.find { |each| each.subject == "File.exists?" }
+    refute_nil repair, "the boot file was not repaired: #{result.repairs.map(&:subject).inspect}"
+    assert_equal "config/boot.rb", repair.path
+    assert_equal 2, repair.line
+    assert_includes read(dir, "config/boot.rb"), "File.exist?(ENV['BUNDLE_GEMFILE'])"
+  end
+
+  # **`Model.exists?` is a different method on a different receiver.** A rewrite that dropped the
+  # receiver would break every ActiveRecord query in the tree, so only the three the interpreter removed
+  # are touched.
+  def test_a_relation_exists_is_not_the_removed_method
+    dir = app(lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "user.rb"), "class User\n  User.exists?(1)\nend\n")
+
+    result = preflight(dir, corpus: FakeCorpus.new)
+
+    assert_nil result.repairs.find { |each| each.subject.to_s.include?("exists?") },
+      "a relation's exists? was rewritten: #{result.repairs.map(&:subject).inspect}"
+    assert_includes read(dir, "app/models/user.rb"), "User.exists?(1)"
+  end
 end

@@ -156,7 +156,7 @@ module AgentsFyi
             "preflight — this tool moves Rails applications"
         end
 
-        repairs = protocol_repairs
+        repairs = protocol_repairs + ruby_removal_repairs
         decisions = []
         notes = []
         deferred = []
@@ -198,6 +198,63 @@ module AgentsFyi
       # pinned a fork carries it — literally, or through Bundler's `github:` shorthand. Both
       # spellings are repaired here, in both files: the lockfile's own `remote:` lines carry
       # the expanded URL, and the Gemfile carries whichever spelling the application wrote.
+      # **A method the rung's interpreter removed, in a file the application loads before anything
+      # else.** Measured at the 7.2 rung, the first on the 3.2 era: every stage after the install dies
+      # the same way — `config/boot.rb:4:in '<top (required)>': undefined method 'exists?' for
+      # File:Class (NoMethodError)` — and `config/boot.rb` is loaded by `bin/rails` itself, so
+      # `app:update` (the command that would replace that generated file) cannot run either. That makes
+      # it the preflight's business rather than a later stage's: the baseline, the database and the
+      # suite all read this file.
+      #
+      # **Only the receivers whose method was removed.** `File.exists?`, `Dir.exists?` and
+      # `FileTest.exists?` became `exist?` in Ruby 3.2 and mean exactly the same thing, so the rewrite
+      # is not a choice. `Model.exists?` is a different method on a different receiver and is left
+      # alone — a rewrite that dropped the receiver would break every ActiveRecord query in the tree.
+      REMOVED_RUBY_METHODS = {
+        "File.exists?" => "File.exist?",
+        "Dir.exists?" => "Dir.exist?",
+        "FileTest.exists?" => "FileTest.exist?"
+      }.freeze
+
+      # The application's own Ruby, which is what a rung can be blamed for. `vendor` and
+      # `node_modules` are somebody else's code and are not walked.
+      RUBY_SOURCE_GLOBS = %w[config/**/*.rb app/**/*.rb lib/**/*.rb spec/**/*.rb test/**/*.rb *.rb
+        Rakefile].freeze
+
+      def ruby_removal_repairs
+        repairs = []
+        RUBY_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            name = full.sub("#{@root}/", "")
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              after = line.dup
+              removed = nil
+              REMOVED_RUBY_METHODS.each do |from, to|
+                next unless after.include?(from)
+
+                removed = from
+                after = after.gsub(from, to)
+              end
+              next if removed.nil?
+
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+                subject: removed,
+                note: "#{removed} is `#{REMOVED_RUBY_METHODS.fetch(removed)}` in this interpreter and " \
+                      "means the same thing; the application's own file is loaded before any stage " \
+                      "that could repair it, so it is repaired here")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
+        end
+        repairs
+      end
+
       def protocol_repairs
         repairs = []
         SOURCES.each do |name|
