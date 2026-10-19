@@ -262,8 +262,10 @@ class DeployConfigTest < Minitest::Test
   # let this container start one.** The socket is the trust decision the compose file states
   # in its own comment; the runtime setting is what makes the machine explicit, because a
   # loop that fell back to "whatever Ruby this image has" would report healthy and complete
-  # no step of a 2013 application. Three facts, and each fails silently on its own: the
-  # setting, the mount, and the group that may use the socket.
+  # no step of a 2013 application. Four facts, and each fails silently on its own: the
+  # setting, the mount, the group that may use the socket, and the *client binary* — a
+  # mounted socket is useless to an image with no `docker` to speak through it, and
+  # `Machine::Container` shells out rather than speaking to the daemon itself.
   def test_the_walker_may_start_the_era_containers_it_executes_on
     block = config("upgrader")
 
@@ -274,6 +276,19 @@ class DeployConfigTest < Minitest::Test
       "the walker cannot start the containers it executes steps on"
     assert_match(/group_add:\s*\n\s+-\s*"\$\{UPGRADER_DOCKER_GID/, block,
       "the socket is mounted without the group that may use it")
+    # The fourth fact, and the one this test was written without: the deployment shipped a
+    # socket, a runtime and a group, and no `docker` for the image to reach any of them with.
+    # Neither half can supply the other — a mount is a fact about the deployment and a binary
+    # is a fact about the image — so both are asserted.
+    assert_includes block, "WITH_DOCKER_CLIENT: 1",
+      "the walker's image is built without a Docker client, so it starts no era container"
+    instructions = uncommented(dockerfile)
+    assert_includes instructions, "ARG WITH_DOCKER_CLIENT=0",
+      "the default build would carry a Docker client that only `step` needs"
+    assert_match(/if \[ "\$WITH_DOCKER_CLIENT" = "1" \]/, instructions,
+      "the argument is declared but nothing is installed when it is set")
+    assert_includes instructions, "docker-cli",
+      "the client is never installed — `docker.io` would bring the daemon this walker never starts"
     # The runtime is read from the environment (`Step::RUNTIME_ENV`), not passed as a flag: it
     # is a property of the deployment rather than of one invocation, and the entrypoint's flag
     # contract is checked by the test above. **The name is declared once**, on the machine layer

@@ -70,6 +70,25 @@ RUN if [ "$WITH_BUILD_TOOLS" = "1" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# The Docker *client*, behind an argument for the same reason the compiler is: whether this
+# image can start an era container is a fact about the *job*. `Machine::Container` shells out
+# to `docker` — one `docker run -d … sleep infinity` per step, then one `docker exec` per
+# command — so an image with the socket mounted and no client runs, reports healthy, and
+# completes no step of an application old enough to need an era container. That is the same
+# failure shape the compiler's own comment describes, one layer down, and `docker-compose.yml`
+# cannot close it: a mount and a runtime are facts about the deployment, and a binary is a
+# fact about the image. `test/deploy_config_test.rb` holds all four halves.
+#
+# `docker-cli` rather than `docker.io`: Debian ships the client alone (about 30 MB), where the
+# package that carries the daemon as well is about 95 MB of image for a process this walker
+# never starts — and the socket it talks to is the host's, which is the point of the mount.
+ARG WITH_DOCKER_CLIENT=0
+RUN if [ "$WITH_DOCKER_CLIENT" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends docker-cli \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # The repair agent, behind an argument for the same reason the compiler is: whether this
 # image may spend a model call is a fact about the *job*, and `plan`/`--help` on a machine
 # that will never repair should not carry a Node runtime and a model client.

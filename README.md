@@ -321,10 +321,18 @@ half-installed gemset for the next to trust), so a finished run's is dead weight
 every step mounts — 21 of them and 2.0 GB here, which took one `docker run` from twenty seconds
 to five minutes.
 
-A step executed this way needs Docker at runtime. A deployment that runs the loop in a
-container (see `docker-compose.yml`) mounts `/var/run/docker.sock` and sets
-`UPGRADER_DOCKER_GID` to the socket's group; a hand-run `step` on a host needs neither, and
-can instead run natively on an interpreter that suits the application.
+A step executed this way needs Docker at runtime, and that is **three facts in the deployment
+and one in the image**: the runtime (`UPGRADER_RUNTIME=docker`), the socket
+(`/var/run/docker.sock`) and the group that may use it (`UPGRADER_DOCKER_GID`) belong to the
+deployment, and the `docker` *binary* belongs to the image. `Machine::Container` shells out —
+one `docker run -d … sleep infinity` per step, then one `docker exec` per command — so an
+image with the socket mounted and no client starts no era container at all: it runs, reports
+healthy and completes no step of an old application, which is the same silent shape as a step
+image built without a compiler. `docker-compose.yml` therefore builds this service with
+`WITH_DOCKER_CLIENT=1`, which installs Debian's `docker-cli` — the client alone, where
+`docker.io` would carry a daemon this walker never starts — and `test/deploy_config_test.rb`
+asserts all four halves. A hand-run `step` on a host needs none of them, and can instead run
+natively on an interpreter that suits the application.
 
 **`UPGRADER_RUNTIME=rvm` is the third machine, and it is the fast one.** The application's
 commands run in this process's own namespace — no container to start, which was the slowest
