@@ -57,6 +57,14 @@ module AgentsFyi
       # How many times the pin may be re-run with the gems bundler named. Each round is a
       # resolve, and bundler names what it could not leave alone, so a real application needs
       # one or two; the cap is what keeps a pathological cascade from spending a walk.
+      # **A build failure is a chain, and each round names the next link.** Measured at the 7.2 rung: the
+      # first install died on `nio4r 2.3.1`, the update that named it resolved all three gems the output
+      # was building (`nio4r 2.7.5`, `msgpack 1.8.5`, `ruby-prof 2.0.5`), and the install that followed
+      # died on `bootsnap 1.4.5`, which the same output had announced. The bound is there because a lock
+      # can name a gem whose newest release still will not build, and a walk that never ended would be
+      # worse than one that stopped.
+      BUNDLE_REPAIR_ROUNDS = 4
+
       PIN_ROUNDS = 5
 
       # Whether this run goes into the shared corpus: the run record the queue and the
@@ -634,15 +642,31 @@ module AgentsFyi
         # So the named gem is updated on its own, without the flag, and the conservative update of the
         # gems this tool's own repairs moved still follows when there is no such gem — a build failure is
         # a fact about a version, and a repaired line is a fact about the application's Gemfile.
-        broken = broken_extensions(stage)
-        unless broken.empty?
+        # **A build failure is a chain, and each round names the next link.** Measured at the 7.2 rung:
+        # the first install died on `nio4r 2.3.1`, the update that named it (with `msgpack` and
+        # `ruby-prof`, which the output was also building) resolved all three — `nio4r 2.7.5`,
+        # `msgpack 1.8.5`, `ruby-prof 2.0.5` — and the install that followed died on `bootsnap 1.4.5`,
+        # which the *same* output had announced. Each round names the gems the last one was building, so
+        # the rounds converge; the bound is there because a lock can name a gem whose newest release
+        # still will not build, and a walk that never ended would be worse than one that stopped.
+        BUNDLE_REPAIR_ROUNDS.times do
+          broken = broken_extensions(stage)
+          break if broken.empty?
+
           attempt = command(Record::BUNDLE, ["bundle", "update", *broken], chdir: @worktree.root,
             env: @worktree.bundle_env(machine: machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
-          return attempt if attempt.ok?
+          break unless attempt.ok?
+
+          stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
+            env: @worktree.bundle_env(machine: machine), machine: machine,
+            excerpt_bytes: Shell::RESOLVER_BYTES)
+          stages << stage
+          break if stage.ok?
         end
 
+        return stage if stage.ok?
         return stage if moved_gems.empty?
 
         conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
