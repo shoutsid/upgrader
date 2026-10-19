@@ -609,9 +609,12 @@ class RewritesTest < Minitest::Test
   end
 
   # A setting whose *value* moved: the two booleans the release no longer accepts become the two
-  # symbols the note names. A line already naming one is left, which is what makes the rule
-  # idempotent across two walks.
-  def test_the_show_exceptions_booleans_map_to_the_symbols_and_a_mapped_line_is_left
+  # symbols the note names. **A line already naming one is the rule's own answer about the
+  # application**, not a line the rule refused, which is what stops a second walk reporting a fixed
+  # line as a decision owed. Measured at the 7.2 rung: the 7.1 step applied this rule to
+  # `config/environments/test.rb:24` and wrote `:none`, and the 7.2 residue still carried the change as
+  # "carried unfixed since", because `value_moved` had no `already` guard for `satisfied?` to read.
+  def test_the_show_exceptions_booleans_map_to_the_symbols_and_a_mapped_line_is_satisfied
     result = Rewrites.apply([
       entry(subject: "config.action_dispatch.show_exceptions",
         text: "  config.action_dispatch.show_exceptions = false"),
@@ -625,7 +628,9 @@ class RewritesTest < Minitest::Test
       "  config.action_dispatch.show_exceptions = :none",
       "  config.action_dispatch.show_exceptions = :all"
     ], result.edits.map { |edit| edit["after"] }
-    assert_equal ["config.action_dispatch.show_exceptions"], result.left
+    assert_equal ["config.action_dispatch.show_exceptions"], result.satisfied,
+      "the line that already reads the new way is the rule's answer, not a refusal"
+    assert_empty result.left, "a fixed line was reported as work the rule would not do"
   end
 
   # A statement whose whole text becomes another statement: the match is exact, so a line edited since

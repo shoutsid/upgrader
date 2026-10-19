@@ -1496,9 +1496,19 @@ module AgentsFyi
       # **A setting whose value moved**: the name stays and what it accepts does not. The pattern is
       # the setting and the value the old release took, so a line already naming the new one does not
       # match and is left rather than being rewritten twice.
+      #
+      # **The `already` guard is what makes the residue honest, and the family had none.** A line that
+      # already names the new value is the rule's own answer *about the application* rather than a line
+      # the rule refused, and `Rewrites.apply` reads that answer off `satisfied?`, which is `already`
+      # and nothing else. Without the guard the *edit* is idempotent anyway — the pattern asks for the
+      # old value, so a fixed line matches nothing — but the *residue* is not: measured at the 7.2
+      # rung, the 7.1 step applied this rule to `config/environments/test.rb:24` and wrote `:none`, and
+      # the 7.2 residue still carried the change as "carried unfixed since", asking a person to look at
+      # a line that already reads the new way.
       def self.value_moved(subject:, setting:, from:, to:)
         Rule.new(family: :value_moved, subject: subject,
           pattern: /(?<head>#{Regexp.escape(setting)}\s*=\s*)#{Regexp.escape(from)}\b/,
+          already: /#{Regexp.escape(setting)}\s*=\s*#{Regexp.escape(to)}\b/,
           replace: "\\k<head>#{to}")
       end
 
