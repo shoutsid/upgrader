@@ -256,9 +256,22 @@ module AgentsFyi
         "https://x-access-token:#{@token}@github.com/#{owner}/#{name}.git"
       end
 
+      # **A remote that could not be asked is not a branch that is absent.** The base chain is the
+      # previous rung's branch; a transient DNS failure on the `ls-remote` used to answer "no", the
+      # base fell back to the repository default, and the PR chain broke at that rung (measured on
+      # the 6.0 request: its base became `master` while every neighbour pointed at 5.2). Retried like
+      # the push; only a successful answer with no ref is a "no".
       def remote_has?(candidate)
-        out, status = git("ls-remote", "--heads", push_url, candidate)
-        status&.success? && !out.to_s.strip.empty?
+        PUSH_ATTEMPTS.times do |attempt|
+          out, status = git("ls-remote", "--heads", push_url, candidate)
+          return !out.to_s.strip.empty? if status&.success?
+
+          next if attempt == PUSH_ATTEMPTS - 1
+
+          @out&.puts("publish: the remote could not be asked about #{candidate} — retrying")
+          @pause.call(PUSH_BACKOFF_SECONDS * (attempt + 1))
+        end
+        false
       end
 
       def git(*argv)

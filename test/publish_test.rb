@@ -494,6 +494,41 @@ class PublishTest < Minitest::Test
     assert_includes body, "1 change(s) this rung documents that this application does not use"
     refute_includes body, "schema.rb column order", "a carried change was listed as work"
   end
+
+  # **A transient remote failure must not move a rung's base to the default branch.** The chain is
+  # the previous rung's branch; the `ls-remote` that finds it is the network too.
+  class FlakyHeadsGit < FakeGit
+    def initialize(heads:, failures: 1, **kwargs)
+      super(heads: heads, **kwargs)
+      @failures = failures
+    end
+
+    def call(root, *argv)
+      if argv.include?("--heads") && @failures.positive?
+        @failures -= 1
+        @calls << argv
+        return ["", instance_double_failure]
+      end
+
+      super
+    end
+  end
+
+  def test_a_transient_remote_failure_does_not_move_the_base_to_master
+    _bare, clone = origin_and_clone
+    git = FlakyHeadsGit.new(heads: "refs/heads/agents-fyi/upgrade-4.0.0\n")
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0", to_version: "4.1.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "4.0.0",
+        to: "4.1.0"),
+      token: "ghp_secret", git: git, api: api, pause: ->(_seconds) {}).call
+
+    call = api.calls.find { |entry| entry.first == :pull_request }
+    assert_equal "agents-fyi/upgrade-4.0.0", call[4],
+      "the base fell back to the default branch on a failed ls-remote"
+  end
 end
 
 # **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through
