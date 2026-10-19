@@ -1051,8 +1051,7 @@ class StepTest < Minitest::Test
     assert_equal ["git rev-parse --short HEAD", "bundle --version", "bundle install"], runner.calls
   end
 
-  # **A native extension that will not build is a fact about the version the lock holds, and the
-  # installer names it.** Measured at the 7.2 rung on the 3.2 era: `nio4r 2.3.1` is a *transitive* gem
+  # **A native extension that will not build needs the gem to move, and the installer names it.** Measured at the 7.2 rung on the 3.2 era: `nio4r 2.3.1` is a *transitive* gem
   # (actioncable depends on it), so nothing this tool edited names it and the conservative update had
   # nothing to widen — the install stage stopped with a bundle it could not build. The installer's own
   # sentence is the evidence, and the fix is the one the pin uses for a line it cannot resolve: name the
@@ -1063,7 +1062,7 @@ class StepTest < Minitest::Test
 
     step(dir, runner: runner).run
 
-    assert_includes runner.calls, "bundle update nio4r --conservative",
+    assert_includes runner.calls, "bundle update nio4r",
       "the gem the installer named was not moved: #{runner.calls.inspect}"
   end
 

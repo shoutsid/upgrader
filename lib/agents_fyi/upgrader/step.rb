@@ -621,17 +621,31 @@ module AgentsFyi
             env: @worktree.bundle_env(machine: machine), machine: machine)
           stages << stage
         end
-        return stage if stage.ok? || (moved_gems.empty? && broken_extension(stage).nil?)
+        return stage if stage.ok?
 
-        # **A native extension that will not build is a fact about the *version* the lock holds, and the
-        # installer names it.** Measured at the 7.2 rung on the 3.2 era: `An error occurred while
-        # installing nio4r (2.3.1), and Bundler cannot continue. In Gemfile: rails was resolved to
-        # 7.1.0, which depends on actioncable …` — a *transitive* gem, so nothing this tool edited
-        # names it and the conservative update above had nothing to widen. The installer's own sentence
-        # is the evidence, and the fix is the same one the pin uses for a line it cannot resolve: name
-        # the gem and let the resolver take the newest release that fits.
-        conservative_update(stages, (moved_gems + Array(broken_extension(stage))).uniq,
-          stage: Record::BUNDLE, machine: machine)
+        # **A native extension that will not build needs the gem to *move*, and `--conservative` is
+        # exactly what stops it.** Measured at the 7.2 rung on the 3.2 era: `bundle update rmagick
+        # nio4r --conservative` resolved `rmagick 4.3.0 (was 2.16.0)` and then *installed nio4r 2.3.1
+        # again* — the flag keeps every version the lock holds unless a dependency forces otherwise, and
+        # nothing forces a *transitive* gem. The installer names it (`An error occurred while installing
+        # nio4r (2.3.1), and Bundler cannot continue. In Gemfile: rails … depends on actioncable …`), and
+        # a plain update of that one gem is measured to work: `Using nio4r 2.7.5 (was 2.3.1)`.
+        #
+        # So the named gem is updated on its own, without the flag, and the conservative update of the
+        # gems this tool's own repairs moved still follows when there is no such gem — a build failure is
+        # a fact about a version, and a repaired line is a fact about the application's Gemfile.
+        broken = broken_extension(stage)
+        if broken
+          attempt = command(Record::BUNDLE, ["bundle", "update", broken], chdir: @worktree.root,
+            env: @worktree.bundle_env(machine: machine), machine: machine,
+            excerpt_bytes: Shell::RESOLVER_BYTES)
+          stages << attempt
+          return attempt if attempt.ok?
+        end
+
+        return stage if moved_gems.empty?
+
+        conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
       end
 
       # The gem whose own extension failed to build, from the installer's own sentence. A name that is
