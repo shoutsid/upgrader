@@ -413,4 +413,86 @@ class CompanionsTest < Minitest::Test
 
     assert_empty Companions.edits(Companions::FACTORY_BOT, root: root)
   end
+
+  # **The gem's own deprecation, which the rename does not reach.** Measured at the 7.2 rung: with the
+  # line and the 93 call sites already moved, `app:update` dies at `spec/factories/admin_factory.rb:5`
+  # with `private method `warn' called for ActiveSupport::Deprecation:Class` — factory_bot 4.11.1's
+  # `warn_static_attribute_deprecation` calls the class-level method Rails 7.2 made private, and a static
+  # attribute is what reaches it. The gem's own message is the edit: "Static attributes will be removed in
+  # FactoryBot 5.0. Please use dynamic attributes instead by wrapping the attribute value in a block."
+  def test_a_static_attribute_becomes_dynamic_where_the_gem_asks_for_it
+    root = tree("spec/factories/item_factory.rb" => <<~RUBY)
+      FactoryGirl.define do
+        factory :item do
+          name { generate(:item_name) }
+          description 'foo'
+          starting_price 100
+          closing_time Time.now + 1.day
+          closed false
+        end
+      end
+    RUBY
+
+    edits = Companions.edits(Companions::FACTORY_BOT, root: root)
+    statics = edits.reject { |edit| edit.after.include?("FactoryBot.define") }
+
+    assert_equal [
+      "    description { 'foo' }",
+      "    starting_price { 100 }",
+      "    closing_time { Time.now + 1.day }",
+      "    closed { false }"
+    ], statics.map(&:after)
+    assert(edits.any? { |edit| edit.after.include?("FactoryBot.define") },
+      "the rename did not happen beside it: #{edits.map(&:after).inspect}")
+  end
+
+  # **Everything else in a factory body is not a static attribute, and each exclusion is one of the
+  # gem's own branches.** factory_bot 4.11.1's `DefinitionProxy#method_missing` sends a name with an
+  # argument and no block to `add_attribute` — the static path — while its own methods and the three it
+  # delegates (`before`, `after`, `callback`) are the DSL, a bare name is an implicit attribute, and a
+  # value already wrapped in a block is dynamic. `factory:` is the gem's own association branch.
+  def test_a_factorys_own_dsl_and_bare_names_are_not_static_attributes
+    root = tree("spec/factories/user_factory.rb" => <<~RUBY)
+      FactoryGirl.define do
+        sequence(:email) { |n| "foo\#{n}@example.com" }
+
+        factory :user do
+          email { generate(:email) }
+          item
+          association :account, factory: :account
+          after(:create) { |user| user.touch }
+        end
+      end
+    RUBY
+
+    edits = Companions.edits(Companions::FACTORY_BOT, root: root)
+
+    assert_equal ["FactoryBot.define do"], edits.map(&:after),
+      "something that is not a static attribute was rewritten: #{edits.map(&:after).inspect}"
+  end
+
+  # **The shape is ordinary Ruby outside a factory, so the rule is scoped to the files that are
+  # factories.** `return false unless sold` and `raise "no time" if closed` are `name value` too, and a
+  # rule that rewrote every line of that shape would turn ordinary code into blocks. `Rewrites.apply`
+  # matches the *line*, so the file's own `FactoryBot.define` is the only thing that can tell them apart
+  # — which is what the rule's condition asks.
+  def test_the_static_attribute_rule_stays_out_of_ordinary_ruby
+    root = tree(
+      "app/models/item.rb" => <<~RUBY,
+        class Item < ActiveRecord::Base
+          def closing_time
+            return false unless sold
+            raise "no time" if closed
+            closing_time
+          end
+        end
+      RUBY
+      "spec/factories/item_factory.rb" => "FactoryGirl.define do\n  factory :item do\n    sold false\n  end\nend\n"
+    )
+
+    edits = Companions.edits(Companions::FACTORY_BOT, root: root)
+
+    assert_equal 2, edits.size, "ordinary Ruby was rewritten: #{edits.map { |edit| [edit.path, edit.after] }.inspect}"
+    assert_equal ["    sold { false }"], edits.reject { |edit| edit.after.include?("FactoryBot.define") }.map(&:after)
+  end
 end

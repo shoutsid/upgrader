@@ -322,25 +322,48 @@ module AgentsFyi
         ]
       )
 
+      # **The names a factory body's DSL answers to, so that everything else is an attribute.** Measured
+      # in factory_bot 4.11.1's `DefinitionProxy`: the methods it defines (`add_attribute`, `ignore`,
+      # `transient`, `sequence`, `association`, `to_create`, `skip_create`, `factory`, `trait`,
+      # `initialize_with`), the three it delegates to the definition (`before`, `after`, `callback`), and
+      # the handful it deliberately leaves unproxied so they reach the real object (`send`, `method`,
+      # `raise`, `extend`, `instance_eval`, `caller`, `object_id`). The proxy undefines every other
+      # inherited method, so a name that is not here goes to `method_missing` — and `method_missing` with
+      # an argument and no block is `add_attribute`, which is the static-attribute path.
+      FACTORY_PROXY_METHODS = %w[
+        add_attribute ignore transient sequence association to_create skip_create factory trait
+        initialize_with before after callback send method raise extend instance_eval caller object_id
+      ].freeze
+
       # **A gem the framework deprecated by name, whose successor is the same code under a new one — and
       # the code has to be renamed with it.** Measured at the 7.2 rung: `app:update` dies inside
       # `Bundler.require` with `factory_girl-4.9.0/lib/factory_girl.rb:158: private method `warn' called
-      # for ActiveSupport::Deprecation:Class`, which Rails 7.2 made private — and `factory_bot` 4.9.0,
-      # the same release renamed, has no `Deprecation.warn` call site at all (measured by fetching each
-      # release and grepping its own files). The application has **93** `FactoryGirl` call sites: the
-      # factories, the specs, and `spec_helper`'s `config.include FactoryGirl::Syntax::Methods`.
+      # for ActiveSupport::Deprecation:Class`, which Rails 7.2 made private. `factory_girl_rails`'s last
+      # release is 4.9.0 and `factory_bot_rails` is the same gem renamed; the application has **93**
+      # `FactoryGirl` call sites — the factories, the specs, and `spec_helper`'s
+      # `config.include FactoryGirl::Syntax::Methods` — so the line and the code move together.
       #
-      # **A whole-word rename, and nothing cleverer.** The two names are the same length of idea and
-      # differ by one word, so a rule that rewrote `FactoryGirl` wherever it appears as a constant is the
-      # whole change; `FactoryBot` inside a string or a symbol is not this gem's business and a
-      # word-boundary pattern leaves it alone.
+      # **A whole-word rename, and nothing cleverer.** The two names differ by one word, so a rule that
+      # rewrote `FactoryGirl` wherever it appears as a constant is the whole change; `FactoryBot` inside a
+      # string or a symbol is not this gem's business and a word-boundary pattern leaves it alone.
+      #
+      # **And the gem's own deprecation is the second half, which no rename reaches.** Measured: every
+      # *resolvable* 4.x release calls `ActiveSupport::Deprecation.warn` — 4.8.2, 4.10.0, 4.11.0 and 4.11.1
+      # have three call sites each, and 4.9.0, the only release with none, is yanked and cannot be resolved
+      # — and the one this application reaches is 4.11.1's `warn_static_attribute_deprecation`: `app:update`
+      # dies at `spec/factories/admin_factory.rb:5`, whose `password 'password'` is a static attribute. The
+      # gem's own message is the edit — "Static attributes will be removed in FactoryBot 5.0. Please use
+      # dynamic attributes instead by wrapping the attribute value in a block" — so this is not a workaround
+      # for the warning, it is the change the release asks for and the one 5.0 will otherwise break.
       FACTORY_BOT = Entry.new(
         gem: "factory_girl_rails",
         requirement: "~> 4.9",
         subject: "factory_bot",
-        note: "factory_girl was renamed factory_bot at 4.9.0 — the same release under a new name — and " \
-              "the application's 93 `FactoryGirl` call sites have to move with it; measured, factory_bot " \
-              "4.9.0 also stops calling the `ActiveSupport::Deprecation.warn` that Rails 7.2 made private",
+        note: "factory_girl was renamed factory_bot, and the application's 93 `FactoryGirl` call sites " \
+              "have to move with the line; measured at the 7.2 rung, the gem's own static-attribute " \
+              "deprecation then reaches Rails 7.2's private `ActiveSupport::Deprecation.warn` from " \
+              "`spec/factories/admin_factory.rb:5`, so the static attributes become dynamic ones — the " \
+              "change the deprecation asks for, and the one FactoryBot 5.0 requires",
         globs: %w[app/**/*.rb config/**/*.rb lib/**/*.rb spec/**/*.rb test/**/*.rb],
         inserts: [],
         rules: [
@@ -350,6 +373,23 @@ module AgentsFyi
             pattern: /\bFactoryGirl\b/,
             replace: "FactoryBot",
             all: true
+          ),
+          # **A static attribute becomes a dynamic one, which is the deprecation's own prescription.**
+          # The gem decides this from the *call*, not from the line: `method_missing` with an argument and
+          # no block is `add_attribute`, and `add_attribute` warns when it has a value and no block. So the
+          # rule is "a name that is not the DSL, given a complete single-line value, and not already
+          # wrapped in a block" — and every exclusion below is one of the gem's own branches rather than a
+          # guess about style.
+          Rewrites::Rule.new(
+            family: :block_value,
+            subject: "factory_bot",
+            pattern: /\A(?<indent>[ \t]*)(?<name>[a-z_]\w*)[ \t]+(?<value>\S.*?)[ \t]*\z/,
+            replace: ->(found) { "#{found[:indent]}#{found[:name]} { #{found[:value]} }" },
+            already: /\A[ \t]*[a-z_]\w*[ \t]+\{/,
+            context: ->(lines, found, _line, _tree) {
+              Companions.factory_file?(lines) &&
+                Companions.static_attribute?(found[:name], found[:value])
+            }
           )
         ]
       )
@@ -441,6 +481,30 @@ module AgentsFyi
           end
           keys = configured ? configured.scan(/:(\w+)/).flatten : ["email"]
           keys.include?(attribute.to_s)
+        end
+
+        # **A file whose body is a factory definition, because the shape this rule rewrites is ordinary
+        # Ruby everywhere else.** `name value` → `name { value }` is what a static attribute needs, and
+        # `return foo` and `raise "x"` are the same shape: the rule has to know it is inside a factory
+        # rather than guess from the line, and the file's own `FactoryBot.define` is the fact that says so.
+        def factory_file?(lines)
+          Array(lines).any? { |line| line.match?(/^\s*(?:FactoryGirl|FactoryBot)\.define\b/) }
+        end
+
+        # **Whether this line is an attribute the gem will call static, by the gem's own rule.** See
+        # `FACTORY_PROXY_METHODS` for the names that are the DSL rather than an attribute. The rest is the
+        # shape of a complete single-line value: a value that opens a block, a call or an array is not this
+        # shape, `factory:` is the gem's own association branch, and a value that ends in an operator, a
+        # comma or `do` is a continuation — `description "a" +` must not become `description { "a" + }`.
+        def static_attribute?(name, value)
+          return false if FACTORY_PROXY_METHODS.include?(name.to_s)
+
+          text = value.to_s.strip
+          return false if text.empty? || text.start_with?("{", "(", "[", "|")
+          return false if text.match?(/\bfactory:/) || text.match?(/\bdo\s*\z/)
+          return false if text.end_with?(",", "+", "-", "*", "/", "%", "|", "&", "=", ":", "\\", ".", "(")
+
+          true
         end
 
         private
