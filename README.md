@@ -384,6 +384,15 @@ A `refused` step files nothing: a refusal is a fact about the ladder's coverage,
 is the run's refusal list, and filing it would report this tool's own gap as somebody's
 breakage.
 
+**The command a report names is the application's, not the machine's.** A step executed on an
+era container runs `docker exec --interactive --user 10003:999 --workdir … -e BUNDLE_PATH=… <container>
+bundle update rails --conservative`, and the first report this deployment filed opened its `problem`
+with all of that — a uid, a container id and a bundle path standing between a reader and "the pin
+exited 7", which is the fact the report exists to carry. The record keeps **both**: `command` is what
+ran, which the run's own page and the API's `argv` read unchanged, and `display` is what it was asked
+to do, which is what a filed report quotes. Nothing is dropped — the wrapper is still the evidence a
+machine reads — and `filing_test.rb` holds both halves.
+
 ## The queue
 
 The **service** owns which repositories to walk and in what order, and `GET

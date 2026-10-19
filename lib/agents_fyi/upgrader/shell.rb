@@ -94,14 +94,15 @@ module AgentsFyi
       # its bound established nothing about the application, which is the same third answer a missing
       # program is — so it is reported the way `Tests` reports a killed suite rather than as a failure.
       def self.run(argv, stage:, chdir:, env: {}, stdin: File::NULL, timeout: nil,
-                   excerpt_bytes: TAIL_BYTES)
+                   excerpt_bytes: TAIL_BYTES, display: nil)
         started = clock
         status, text, timed_out = spawn_with_deadline(
           argv, chdir: chdir, env: env, stdin: stdin, timeout: timeout,
           excerpt: Excerpt.new(bytes: excerpt_bytes)
         )
         Record::Command.new(
-          stage: stage, command: argv.join(" "), ran: !timed_out,
+          stage: stage, command: argv.join(" "), display: (display || argv).join(" "),
+          ran: !timed_out,
           exit_code: status && status.exitstatus, seconds: elapsed(started),
           output_tail: timed_out ? killed_at_the_bound(argv, timeout, text) : text
         )
@@ -109,7 +110,8 @@ module AgentsFyi
         # The program itself is missing — no `bundle`, no `bin/rails`. Nothing was
         # established, which is not the same as the command failing.
         Record::Command.new(
-          stage: stage, command: argv.join(" "), ran: false, exit_code: nil,
+          stage: stage, command: argv.join(" "), display: (display || argv).join(" "),
+          ran: false, exit_code: nil,
           seconds: elapsed(started), output_tail: "#{e.class}: #{e.message}"
         )
       end

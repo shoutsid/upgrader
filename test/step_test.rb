@@ -389,13 +389,14 @@ class StepTest < Minitest::Test
     # it would let the pipeline stop bounding its commands without a red test, which is exactly the state a
     # real walk was found in. The same goes for what a command is given on stdin: the update task's answer
     # pipe is the difference between finishing and asking for ever, so it is *read* here rather than kept.
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       @calls << argv.join(" ")
       @envs << [argv.join(" "), env]
       @timeouts << [argv.join(" "), timeout]
       @stdins << [argv.join(" "), stdin.respond_to?(:read) ? stdin.read : stdin]
       failing = @fail_on && argv.join(" ").include?(@fail_on)
-      Command.new(stage: stage, command: argv.join(" "), ran: failing ? @ran : true,
+      Command.new(stage: stage, command: argv.join(" "), display: (display || argv).join(" "),
+        ran: failing ? @ran : true,
         exit_code: failing ? (@ran ? 1 : nil) : 0, seconds: 0.1,
         output_tail: failing ? "boom" : "")
     end
@@ -413,7 +414,7 @@ class StepTest < Minitest::Test
       @content = content
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       if argv.join(" ").match?(/app:update|rails:update/)
         full = File.join(@root, @path)
         FileUtils.mkdir_p(File.dirname(full))
@@ -427,13 +428,14 @@ class StepTest < Minitest::Test
   # not build — `An error occurred while installing nio4r (2.3.1)` — and that sentence is the only thing
   # that says which line to move, because a *transitive* gem is one nothing this tool edited names.
   class BrokenExtensionRunner < FakeRunner
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       if argv.join(" ") == "bundle install"
         @calls << argv.join(" ")
         @envs << [argv.join(" "), env]
         @timeouts << [argv.join(" "), timeout]
         @stdins << [argv.join(" "), nil]
-        return Command.new(stage: stage, command: argv.join(" "), ran: true, exit_code: 5, seconds: 0.1,
+        return Command.new(stage: stage, command: argv.join(" "), display: (display || argv).join(" "),
+          ran: true, exit_code: 5, seconds: 0.1,
           output_tail: "Installing nio4r 2.3.1 with native extensions\n" \
                        "An error occurred while installing nio4r (2.3.1), and Bundler cannot continue.\n")
       end

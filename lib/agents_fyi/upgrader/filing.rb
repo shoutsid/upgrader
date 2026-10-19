@@ -181,9 +181,9 @@ module AgentsFyi
         lines << if stage.nil?
           "No command in the step reported what failed."
         elsif stage.ran
-          "`#{stage.command}` exited #{stage.exit_code}."
+          "`#{stage.readable}` exited #{stage.exit_code}."
         else
-          "`#{stage.command}` did not run: #{Record.first_line(stage.output_tail)}."
+          "`#{stage.readable}` did not run: #{Record.first_line(stage.output_tail)}."
                  end
         lines << "Its output began: #{head}" unless head.empty?
         clip(lines.join(" "), MAX_FIELD)
@@ -224,9 +224,9 @@ module AgentsFyi
       end
 
       def self.describe(stage)
-        return "`#{stage.command}` did not run (#{Record.first_line(stage.output_tail)})" unless stage.ran
+        return "`#{stage.readable}` did not run (#{Record.first_line(stage.output_tail)})" unless stage.ran
 
-        "`#{stage.command}` exited #{stage.exit_code}"
+        "`#{stage.readable}` exited #{stage.exit_code}"
       end
 
       # The same failure met in two checkout directories has to read as the same failure, or

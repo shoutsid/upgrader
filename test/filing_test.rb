@@ -172,6 +172,38 @@ class FilingTest < Minitest::Test
     assert_equal record.stages.first, AgentsFyi::Upgrader::Filing.failing_stage(record: record)
   end
 
+  # **A report names the command the application was asked to run, not the machine that ran it.**
+  # Measured on the deployment's first filed report, whose `problem` opened with `docker exec
+  # --interactive --user 10003:999 --workdir /agents-fyi/targets/d474c93c65cbf4bb/tree -e
+  # BUNDLE_PATH=… <container> bundle update rails … --conservative` — a reader wading through a uid, a
+  # container id and a bundle path to reach "the pin exited 7", which is the fact the report exists to
+  # carry. The machine's own argv is *not* lost: it is the record's `command`, which the run's page and
+  # the API's `argv` still read, and this asserts that too.
+  def test_a_report_names_the_command_the_application_ran_rather_than_the_machine_that_ran_it
+    wrapper = "docker exec --interactive --user 10003:999 --workdir /agents-fyi/targets/deadbeef/tree " \
+              "-e BUNDLE_PATH=/agents-fyi/bundles/deadbeef/2.1 " \
+              "-e BUNDLE_GEMFILE=/agents-fyi/targets/deadbeef/tree/Gemfile " \
+              "9c0ffee bundle update rails --conservative"
+    record = record_for(
+      verdict: Failed,
+      stages: [AgentsFyi::Upgrader::Record::Command.new(
+        stage: "pin", command: wrapper, display: "bundle update rails --conservative",
+        ran: true, exit_code: 7, seconds: 1.0, output_tail: "Could not find gem 'cancan'."
+      )]
+    )
+
+    payload = AgentsFyi::Upgrader::Filing.report_for(record: record)
+
+    assert_includes payload["problem"], "`bundle update rails --conservative` exited 7"
+    refute_includes payload["problem"], "docker exec",
+      "the report named the machine's wrapper rather than the command: #{payload["problem"]}"
+    assert_includes payload["attempted"], "`bundle update rails --conservative` exited 7"
+    refute_includes payload["attempted"], "docker exec",
+      "the report's own account of what it did named the wrapper: #{payload["attempted"]}"
+    assert_equal wrapper, record.stages.first.command,
+      "the machine's own argv was dropped from the record, which is the half a machine reads"
+  end
+
   # The draft is derived from the submission rather than written a second time, so the two
   # cannot disagree about what happened — and it carries none of the fields the comparison
   # would refuse.

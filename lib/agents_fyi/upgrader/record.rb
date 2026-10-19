@@ -126,7 +126,7 @@ module AgentsFyi
       # One thing that ran, and what it said. `ran` and `passed` are separate because
       # a command that never started established nothing: not a failure, not a pass.
       Command = Struct.new(
-        :stage, :command, :ran, :exit_code, :seconds, :output_tail,
+        :stage, :command, :ran, :exit_code, :seconds, :output_tail, :display,
         keyword_init: true
       ) do
         # **No exit status is not a success.** A command killed at its deadline has
@@ -136,9 +136,20 @@ module AgentsFyi
           ran && !exit_code.nil? && exit_code.to_i.zero?
         end
 
+        # **`command` is what ran and `display` is what it was asked to do**, and the two are the
+        # same string for every stage this tool runs itself. They differ for a stage a *machine*
+        # ran: `docker exec --interactive --user 10003:999 --workdir /agents-fyi/targets/… -e
+        # BUNDLE_PATH=… <container> bundle update rails --conservative` is the evidence, and
+        # `bundle update rails --conservative` is the fact. The record keeps both — the run's own
+        # page and the API's `argv` read `command`, a filed report reads `display` — because a
+        # report that made a reader wade through a container id to reach "the pin exited 7" is a
+        # report whose reason is buried under its plumbing. `nil` rather than a copy: a stage with
+        # no machine has one answer, and `to_s` of a missing field is that answer.
+        def readable = display.to_s.empty? ? command.to_s : display.to_s
+
         def to_h
-          { "stage" => stage, "command" => command, "ran" => ran, "exit_code" => exit_code,
-            "seconds" => seconds, "output_tail" => output_tail }
+          { "stage" => stage, "command" => command, "display" => display, "ran" => ran,
+            "exit_code" => exit_code, "seconds" => seconds, "output_tail" => output_tail }
         end
       end
 

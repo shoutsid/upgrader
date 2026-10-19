@@ -260,13 +260,13 @@ class StepMachineTest < Minitest::Test
       @excerpts = []
     end
 
-    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       line = argv.join(" ")
       @calls << line
       @excerpts << [line, excerpt_bytes]
       exit_code, output = @answers.find { |needle, _| line.include?(needle) }&.last || [0, ""]
-      Command.new(stage: stage, command: line, ran: true, exit_code: exit_code, seconds: 0.0,
-        output_tail: output.to_s)
+      Command.new(stage: stage, command: line, display: (display || argv).join(" "),
+        ran: true, exit_code: exit_code, seconds: 0.0, output_tail: output.to_s)
     end
   end
 
@@ -279,19 +279,20 @@ class StepMachineTest < Minitest::Test
       @installs = 0
     end
 
-    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       line = argv.join(" ")
       @calls << line
       if line.include?("bundle install")
         @installs += 1
         if @installs == 1
-          return Command.new(stage: stage, command: line, ran: true, exit_code: 1, seconds: 0.0,
+          return Command.new(stage: stage, command: line, display: (display || argv).join(" "),
+            ran: true, exit_code: 1, seconds: 0.0,
             output_tail: "Could not find 'bundler' (1.17.3) required by your Gemfile.lock. " \
                          "To install the missing version, run `gem install bundler:1.17.3`")
         end
       end
-      Command.new(stage: stage, command: line, ran: true, exit_code: 0, seconds: 0.0,
-        output_tail: "Bundle complete!")
+      Command.new(stage: stage, command: line, display: (display || argv).join(" "),
+        ran: true, exit_code: 0, seconds: 0.0, output_tail: "Bundle complete!")
     end
   end
 
@@ -308,7 +309,7 @@ class StepMachineTest < Minitest::Test
       @resolves = 0
     end
 
-    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
       if argv.join(" ").include?("bundle update")
         @resolves += 1
         gemfile = File.read(File.join(chdir, "Gemfile"))

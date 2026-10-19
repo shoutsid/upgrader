@@ -2459,9 +2459,15 @@ module AgentsFyi
       def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL,
                   excerpt_bytes: Shell::TAIL_BYTES)
         runner_machine = machine || @machine
+        # **The application's own argv, kept before the machine wraps it.** The record carries both —
+        # `command` is what ran and `display` is what it was asked to do — and a filed report reads
+        # `display` (`Record::Command#readable`), because a reader wading through `--user 10003:999`
+        # and a container id to reach "the pin exited 7" has been told the plumbing rather than the
+        # fact. Nothing is dropped: the run's own page and the API's `argv` still read `command`.
+        display = argv
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
         @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
-          timeout: command_timeout, excerpt_bytes: excerpt_bytes)
+          timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
       end
 
       # How many overwrite questions one update task may ask. Generous rather than counted: an application
