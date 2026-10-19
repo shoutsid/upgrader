@@ -141,6 +141,7 @@ RUN useradd --system --uid 10003 --create-home upgrader \
     && mkdir -p /home/upgrader/.cache/agents-fyi-upgrader \
         /home/upgrader/.cache/agents-fyi-upgrader/tmp \
         /home/upgrader/.cache/agents-fyi-upgrader/bundle \
+        /home/upgrader/.cache/agents-fyi-upgrader/state \
         /home/upgrader/.gem \
     && chmod +x /app/bin/agents-fyi-upgrader /app/entrypoint.sh \
     && chown -R upgrader:upgrader /app /home/upgrader

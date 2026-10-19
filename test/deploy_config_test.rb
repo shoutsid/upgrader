@@ -248,6 +248,13 @@ class DeployConfigTest < Minitest::Test
       "the console is pointed somewhere other than where the volume is mounted"
     assert_includes compose, "\n  upgrader_state:",
       "the volume the two halves share is not declared"
+    # **And the image must create the directory the volume is mounted over.** A named volume takes
+    # its ownership from the image's directory at that path: one the image never made arrives
+    # `root:root`, and the walker — uid 10003 — cannot write it. Measured: the loop logged
+    # `progress: not written: Errno::EACCES … /state/progress.json.1.tmp` on every stage while the
+    # console's panel stayed empty, which is the same trap this Dockerfile's own note describes.
+    assert_includes uncommented(dockerfile), "/home/upgrader/.cache/agents-fyi-upgrader/state",
+      "the image does not create the directory the live view's volume is mounted over"
   end
 
   def test_the_service_that_executes_steps_is_built_with_a_compiler
