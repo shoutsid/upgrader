@@ -424,6 +424,76 @@ class PublishTest < Minitest::Test
     assert_includes body, "move the list to the controller"
     assert_includes body, "is not the line the scan read"
   end
+
+  # **The body is a summary, not a diff pasted into prose.** A rung a gem's own upgrade touched a
+  # hundred times produced a hundred bullets; the diff is the record, and the body groups the edits
+  # by origin instead of listing each one.
+  def test_the_body_summarises_applied_edits_instead_of_listing_every_one
+    _bare, clone = origin_and_clone
+    applied = [
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/x.rb", line: 1,
+        text: "old", after: "new", origin: "decision:d1"),
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/y.rb", line: 2,
+        text: "old", after: "new", origin: "companion"),
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/z.rb", line: 3,
+        text: "old", after: "new", origin: "companion")
+    ]
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "5.2.0", to_version: "6.0.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "5.2.0",
+        to: "6.0.0", applied: applied),
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "The tool wrote 3 edit(s): 1 from an accepted decision, 2 from gems' own upgrades"
+    refute_includes body, "- `app/models/y.rb`:2", "the body listed an edit the diff already carries"
+  end
+
+  # **A public body must not carry the application's secret.** The recorded command is the docker
+  # wrapper with `-e RAILS_SECRET_TOKEN=…`; the body prints what the step was asked to do.
+  def test_the_body_prints_the_logical_command_not_the_secret_in_the_wrapper
+    _bare, clone = origin_and_clone
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    stage = record.stages.find { |item| item.stage == "suite" }
+    stage.command = "docker exec -e RAILS_SECRET_TOKEN=super-secret bundle exec rspec"
+    stage.display = "bundle exec rspec"
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "suite: `bundle exec rspec`"
+    refute_includes body, "super-secret"
+  end
+
+  # **The carried guide entries are not work.** The body lists the call site this application has and
+  # names the count of changes the rung carries that it does not use; a page of guide entries is a
+  # page a reviewer learns to skip.
+  def test_the_body_splits_located_manual_changes_from_carried_ones
+    _bare, clone = origin_and_clone
+    located = Record::Decision.new(path: "app/views/x.html.erb", line: 4, subject: "button_to",
+      reason: "the call site this application has")
+    carried = Record::Decision.new(subject: "schema.rb column order",
+      reason: "the guide carries this, the application does not use it")
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "5.2.0", to_version: "6.0.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "5.2.0",
+        to: "6.0.0", decisions: [located, carried]),
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "## Manual changes found in this application"
+    assert_includes body, "app/views/x.html.erb:4"
+    assert_includes body, "## Manual changes the rung carries"
+    assert_includes body, "1 change(s) this rung documents that this application does not use"
+    refute_includes body, "schema.rb column order", "a carried change was listed as work"
+  end
 end
 
 # **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through

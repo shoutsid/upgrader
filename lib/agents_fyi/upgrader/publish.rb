@@ -343,30 +343,63 @@ module AgentsFyi
 
         if @record && !@record.refused.empty?
           lines << ""
-          lines << "## Refused edits — the line did not match, so nothing was written"
+          lines << "## Edits the tool could not write"
           lines << ""
-          @record.refused.each do |refusal|
+          lines << "The line did not match what the scan read, so nothing was written:"
+          lines << ""
+          @record.refused.first(12).each do |refusal|
             lines << "- `#{refusal.path}`:#{refusal.line} — #{refusal.reason}"
+          end
+          if @record.refused.length > 12
+            lines << "- …and #{@record.refused.length - 12} more on the run's page"
           end
         end
 
+        # **The body is a summary; the diff and the run page are the record.** A rung that a gem's
+        # own upgrade touched a hundred times produced a hundred bullets here, which is a diff pasted
+        # into prose. The manual changes are split the way the console splits them: a call site this
+        # application has is work, and a change the rung carries that it does not use is not.
         if @record && !@record.decisions.empty?
-          lines << ""
-          lines << "## Needs a decision before this is complete"
-          lines << ""
-          @record.decisions.each do |decision|
-            located = [decision.path, decision.line].compact.join(":")
-            lines << "- #{located.empty? ? "" : "`#{located}` — "}#{decision.subject}: #{decision.reason}"
+          located = @record.decisions.reject { |decision| decision.path.to_s.empty? }
+          carried = @record.decisions.length - located.length
+          unless located.empty?
+            lines << ""
+            lines << "## Manual changes found in this application"
+            lines << ""
+            located.first(20).each do |decision|
+              where = [decision.path, decision.line].compact.join(":")
+              lines << "- `#{where}` — #{decision.subject}: #{decision.reason}"
+            end
+            if located.length > 20
+              lines << "- …and #{located.length - 20} more on the run's page"
+            end
+          end
+          if carried.positive?
+            lines << ""
+            lines << "## Manual changes the rung carries"
+            lines << ""
+            lines << "#{carried} change(s) this rung documents that this application does not use. " \
+                     "They need no edit; the run's page lists them."
           end
         end
 
         if @record && !@record.applied.empty?
+          counts = Hash.new(0)
+          @record.applied.each do |edit|
+            origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
+            counts[origin] += 1
+          end
+          decided = counts.select { |origin, _| origin.start_with?("decision:") }.values.sum
+          parts = []
+          parts << "#{decided} from an accepted decision" if decided.positive?
+          parts << "#{counts['rule']} from this tool's own rules" if counts["rule"].positive?
+          parts << "#{counts['companion']} from gems' own upgrades" if counts["companion"].positive?
+          parts << "#{counts['']} from the service's scan" if counts[""].positive?
           lines << ""
           lines << "## What the tool wrote"
           lines << ""
-          @record.applied.each do |edit|
-            lines << "- `#{edit.path}`:#{edit.line} `#{edit.text.to_s.strip}` → `#{edit.after.to_s.strip}`"
-          end
+          lines << "The tool wrote #{@record.applied.length} edit(s): #{parts.join(", ")}. The diff " \
+                   "is the complete record; every edit and its reason is on the run's page."
         end
 
         lines << ""
@@ -376,7 +409,7 @@ module AgentsFyi
         lines << "and its exit code are in the run's record, and the test suite ran green both"
         lines << "before and after the step (or the record says why it did not). Review the diff"
         lines << "the way you would review a colleague's: the mechanical half is applied, and the"
-        lines << "list above is what a machine would not decide."
+        lines << "decisions and manual changes above are what a machine would not decide."
         lines.join("\n")
       end
 
@@ -390,7 +423,10 @@ module AgentsFyi
         @record.stages.each do |stage|
           next unless %w[baseline suite boot].include?(stage.stage)
 
-          found << "#{stage.stage}: `#{stage.command}` — " +
+          # **The logical command, not the machine's wrapper.** `display` is the application's own
+          # argv; `command` carries the container, the environment and — for the suite — the
+          # application's secret. A pull request is public, so the body reads `readable`.
+          found << "#{stage.stage}: `#{stage.readable}` — " +
             (stage.ran ? "exit #{stage.exit_code} in #{stage.seconds.round(1)}s" : "did not run")
         end
         found.empty? ? ["no stage evidence was recorded"] : found
