@@ -156,7 +156,7 @@ module AgentsFyi
             "preflight — this tool moves Rails applications"
         end
 
-        repairs = protocol_repairs + ruby_removal_repairs
+        repairs = protocol_repairs + ruby_removal_repairs + framework_removal_repairs
         decisions = []
         notes = []
         deferred = []
@@ -223,12 +223,56 @@ module AgentsFyi
         "FileTest.exists?" => "FileTest.exist?"
       }.freeze
 
+      # **A method the *framework* removed, which the release itself names the successor of.** The
+      # interpreter's removals above are unconditional because the interpreter is the era's; a
+      # framework's are the *rung's*, because the successor may not exist below it — so each entry
+      # carries the same `when` clauses a digest entry does, and `holds?` reads them.
+      #
+      # Measured at the 7.2 rung: activerecord 7.1 has both `check_pending!` and `check_all_pending!`
+      # and 7.2 has only the second, so the application's own `spec/spec_helper.rb:20` and
+      # `test/test_helper.rb:6` die with `undefined method `check_pending!'` — and the *baseline*
+      # cannot see it, because the baseline runs on the release the application is leaving. The
+      # rewrite is the framework's own prescription rather than a guess: 7.1's body reads "This is
+      # deprecated in favor of +check_all_pending!+".
+      FRAMEWORK_REMOVALS = [
+        {
+          "from" => "ActiveRecord::Migration.check_pending!",
+          "to" => "ActiveRecord::Migration.check_all_pending!",
+          "when" => { "rails_at_least" => "7.2" }
+        }
+      ].freeze
+
       # The application's own Ruby, which is what a rung can be blamed for. `vendor` and
       # `node_modules` are somebody else's code and are not walked.
       RUBY_SOURCE_GLOBS = %w[config/**/*.rb app/**/*.rb lib/**/*.rb spec/**/*.rb test/**/*.rb *.rb
         Rakefile].freeze
 
       def ruby_removal_repairs
+        removal_repairs(REMOVED_RUBY_METHODS) do |from, to|
+          "#{from} is `#{to}` in this interpreter and means the same thing; the application's own " \
+            "file is loaded before any stage that could repair it, so it is repaired here"
+        end
+      end
+
+      # The framework's removals, scoped by the rung: an entry whose clause this move does not meet is
+      # not a repair at all, which is why the table is filtered before the walk rather than inside it.
+      def framework_removal_repairs
+        table = FRAMEWORK_REMOVALS.select { |each| holds?(each) }
+          .to_h { |each| [each["from"], each["to"]] }
+        return [] if table.empty?
+
+        removal_repairs(table) do |from, to|
+          "#{from} is `#{to}` in the release this rung moves to — the successor that release names — " \
+            "and the baseline cannot see it, because the baseline runs on the release the application " \
+            "is leaving"
+        end
+      end
+
+      # **The line-rewriting half, shared, because two kinds of fact move a name the same way.** The
+      # `from` is a whole method path rather than a bare word on purpose: `Model.exists?` is a
+      # different method on a different receiver, and a rewrite that dropped it would change every
+      # query in the tree.
+      def removal_repairs(table)
         repairs = []
         RUBY_SOURCE_GLOBS.each do |glob|
           Dir.glob(File.join(@root, glob)).sort.each do |full|
@@ -240,7 +284,7 @@ module AgentsFyi
             lines.each_with_index do |line, index|
               after = line.dup
               removed = nil
-              REMOVED_RUBY_METHODS.each do |from, to|
+              table.each do |from, to|
                 next unless after.include?(from)
 
                 removed = from
@@ -251,10 +295,7 @@ module AgentsFyi
               lines[index] = after
               changed = true
               repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
-                subject: removed,
-                note: "#{removed} is `#{REMOVED_RUBY_METHODS.fetch(removed)}` in this interpreter and " \
-                      "means the same thing; the application's own file is loaded before any stage " \
-                      "that could repair it, so it is repaired here")
+                subject: removed, note: yield(removed, table.fetch(removed)))
             end
             File.binwrite(full, lines.join("\n")) if changed
           end

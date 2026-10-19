@@ -799,4 +799,37 @@ class PreflightTest < Minitest::Test
     assert(result.repairs.any? { |each| each.subject == "factory_bot" },
       "the companion was not applied with its line: #{result.repairs.map(&:subject).inspect}")
   end
+
+  # **A method the *framework* removed is the rung's fact, not the interpreter's, so its repair is
+  # scoped by the rung.** Measured: activerecord 7.1 has both `check_pending!` and `check_all_pending!`
+  # and 7.2 has only the second, so the application's own `spec/spec_helper.rb:20` and
+  # `test/test_helper.rb:6` die with `undefined method `check_pending!'` — and the *baseline* cannot see
+  # it, because the baseline runs on the release the application is leaving. The rewrite is the
+  # framework's own prescription rather than a guess: 7.1's body reads "This is deprecated in favor of
+  # +check_all_pending!+".
+  def test_a_method_the_framework_removed_is_repaired_for_the_rung_that_removed_it
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.2.0"\n), lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "spec"))
+    FileUtils.mkdir_p(File.join(dir, "test"))
+    pending_line = "ActiveRecord::Migration.check_pending! if defined?(ActiveRecord::Migration)\n"
+    File.write(File.join(dir, "spec", "spec_helper.rb"), pending_line)
+    File.write(File.join(dir, "test", "test_helper.rb"),
+      "class T\n  ActiveRecord::Migration.check_pending!\nend\n")
+
+    at_the_rung = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "7.2.0")
+      .send(:framework_removal_repairs)
+
+    assert_equal %w[spec/spec_helper.rb test/test_helper.rb], at_the_rung.map(&:path),
+      "the rung's own removal was not repaired: #{at_the_rung.map(&:path).inspect}"
+    assert_includes read(dir, "spec/spec_helper.rb"), "check_all_pending!"
+
+    # And the same tree one rung lower owes nothing: `check_all_pending!` is not there to move to, and
+    # a repair for a removal this move does not meet is not a repair at all.
+    File.write(File.join(dir, "spec", "spec_helper.rb"), pending_line)
+    below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "7.1.0")
+      .send(:framework_removal_repairs)
+
+    assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
+    assert_includes read(dir, "spec/spec_helper.rb"), "check_pending!"
+  end
 end
