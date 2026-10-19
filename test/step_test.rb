@@ -1004,7 +1004,7 @@ class StepTest < Minitest::Test
     record = step(dir, runner: runner, tests: tests).run
 
     assert record.passed?, record.why
-    assert_equal ["git rev-parse --short HEAD", "bundle install"], tests.calls_when_it_ran.first,
+    assert_equal ["git rev-parse --short HEAD", "bundle --version", "bundle install"], tests.calls_when_it_ran.first,
       "the baseline ran before the application's bundle was installed"
     # And the pin is not what installed it: resolving a new Rails is a later stage, and a
     # baseline taken after it would be a baseline of the wrong tree.
@@ -1030,7 +1030,7 @@ class StepTest < Minitest::Test
     assert_includes record.why, "boom"
     # And nothing after it ran — no pin, no `app:update`, no boot. Carrying on would report
     # on a tree whose gems are missing.
-    assert_equal ["git rev-parse --short HEAD", "bundle install"], runner.calls
+    assert_equal ["git rev-parse --short HEAD", "bundle --version", "bundle install"], runner.calls
   end
 
   # A kept tree — one the loop owns across cycles — is put back to its base commit before

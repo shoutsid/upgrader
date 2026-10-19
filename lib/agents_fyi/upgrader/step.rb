@@ -607,6 +607,7 @@ module AgentsFyi
       # the interpreter probe (`choose_machine`), which is why it takes the machine rather
       # than defaulting to the one the step settled on.
       def install_bundle(stages, machine = @machine)
+        drop_unrunnable_bundler(machine, stages)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
           env: @worktree.bundle_env(machine: machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
@@ -623,6 +624,42 @@ module AgentsFyi
         return stage if stage.ok? || moved_gems.empty?
 
         conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
+      end
+
+      # **A lock whose `BUNDLED WITH` names a bundler the era cannot run has to lose that trailer, and
+      # the era is what says so.** `BundlerTrailer` carries the measurement; this is the question and
+      # the edit. The question is `bundle --version` in the era's own container — one cheap command,
+      # and the only honest way to ask whether a bundler runs on an interpreter — and the edit is the
+      # lock, which this tool already moves (`rewrite_pin`, `drop_leaked_dependencies`). The era's
+      # bundler then reads the lock and writes its own version back on the install that follows.
+      #
+      # **The probe's own output is kept when it refuses.** A stage that asked a question and got "no"
+      # is the evidence for the edit beside it, and a record that dropped the trailer without it would
+      # read as a lock nobody explained.
+      def drop_unrunnable_bundler(machine, stages)
+        path = File.join(@worktree.root, "Gemfile.lock")
+        return unless File.file?(path)
+
+        before = File.binread(path)
+        after = BundlerTrailer.drop(before)
+        return if after.nil?
+
+        probe = command(Record::BUNDLE, %w[bundle --version], chdir: @worktree.root,
+          env: @worktree.bundle_env(machine: machine), machine: machine)
+        return if probe.ok?
+
+        stages << probe
+        File.binwrite(path, after)
+        @applied << Applier::Applied.new(path: "Gemfile.lock", line: nil,
+          text: "BUNDLED WITH\n   #{BundlerTrailer.version(before)}",
+          after: "the era's own bundler, which writes its version back on the install",
+          subject: "BUNDLED WITH", origin: nil,
+          note: "the lock names bundler #{BundlerTrailer.version(before)}, and RubyGems activates the " \
+                "version a lock names — so on an interpreter that cannot run it, no install happens " \
+                "at all: measured at the 7.2 rung, `bundle install` exits 1 with " \
+                "`undefined method `untaint' for an instance of Pathname` from the 1.17.3 the era had " \
+                "just installed. The trailer is dropped so the era's own bundler reads the lock, and " \
+                "the install writes its version back")
       end
 
       # **The bundler the lock names, which an era may not ship.** RubyGems activates the version in
