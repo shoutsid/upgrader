@@ -52,10 +52,19 @@ module AgentsFyi
       REFUSED = "refused"
 
       # Which verdicts are final on arrival. `failed` is deliberately absent: it is
-      # settled by the attempt ceiling instead, which `settled?` folds in. A word this
-      # version does not know is treated as not settled, which is the safe direction —
-      # the work is redone rather than assumed done.
-      SETTLED_VERDICTS = [PASSED, UNVERIFIED, REFUSED].freeze
+      # settled by the attempt ceiling instead, which `settled?` folds in. **`unverified` is
+      # deliberately absent too, and it is not merely retried — it never counts toward the ceiling
+      # either.** It means *nothing was established*: the suite could not run, or there was no suite,
+      # which is a fact about the environment rather than about the move (the first real walk's
+      # 4.0.0 -> 4.1.0 came out `unverified` on every attempt because a fresh clone cannot boot its
+      # suite without `RAILS_SECRET_TOKEN`, and the deployment had not supplied it). So re-deriving it
+      # is not the wasted work this ceiling exists to prevent, and a run of it must not spend the
+      # move's attempts: three environment failures would otherwise settle a move for ever, which is
+      # what happened here — the corpus published "`unverified` rather than passed, so the target stays
+      # queued and will be attempted again" while the ledger refused to try. A word this version does
+      # not know is treated as not settled, which is the safe direction — the work is redone rather
+      # than assumed done.
+      SETTLED_VERDICTS = [PASSED, REFUSED].freeze
 
       Entry = Struct.new(
         :repo, :commit, :from_version, :to_version,
@@ -155,9 +164,20 @@ module AgentsFyi
         entry = find(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
         return false if entry.nil?
         return false unless same_machine?(entry.machine, machine.nil? ? @machine : machine)
+        # **Nothing established is not work done**, so an `unverified` move is re-opened whatever the
+        # ceiling says — including an entry written by the version that counted these attempts, which
+        # is why this is checked rather than left to `SETTLED_VERDICTS` alone.
+        return false if entry.verdict.to_s == UNVERIFIED
 
         SETTLED_VERDICTS.include?(entry.verdict) || entry.attempts.to_i >= MAX_ATTEMPTS
       end
+
+      # **A run that established nothing does not spend one of the move's attempts.** `passed`,
+      # `failed` and `refused` all established something about the move — the last two are why the
+      # ceiling exists — while `unverified` established that the *environment* could not measure it,
+      # which is not evidence that re-deriving the move is wasted. Counting it is what settled the
+      # first real walk's first rung for ever.
+      def spends_an_attempt?(verdict) = verdict.to_s != UNVERIFIED
 
       def attempts(repo:, commit:, from_version:, to_version:)
         entry = find(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
@@ -182,7 +202,7 @@ module AgentsFyi
           image: image,
           machine: machine.to_s.empty? ? @machine : machine,
           era: era,
-          attempts: (previous.nil? ? 0 : previous.attempts.to_i) + 1,
+          attempts: (previous.nil? ? 0 : previous.attempts.to_i) + (spends_an_attempt?(verdict) ? 1 : 0),
           note: note.to_s,
           recorded_at: Time.now.utc.iso8601
         )

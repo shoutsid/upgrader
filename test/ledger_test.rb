@@ -59,17 +59,16 @@ class LedgerTest < Minitest::Test
   # is asked, so it settles on the first attempt. A failure is not: the usual reason is
   # a release that was briefly unavailable, and settling it would abandon work that
   # would have succeeded.
-  def test_the_final_verdicts_settle_on_arrival_and_a_failure_does_not
-    final = [
+  def test_a_pass_and_a_refusal_settle_on_arrival_and_the_other_two_do_not
+    settled_on_arrival = [
       AgentsFyi::Upgrader::Ledger::PASSED,
-      AgentsFyi::Upgrader::Ledger::UNVERIFIED,
       AgentsFyi::Upgrader::Ledger::REFUSED
     ]
 
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
       ledger = ledger_at(path)
-      final.each_with_index do |verdict, index|
+      settled_on_arrival.each_with_index do |verdict, index|
         record(ledger, verdict: verdict, to: "6.#{index}.0")
 
         assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.#{index}.0"),
@@ -81,6 +80,40 @@ class LedgerTest < Minitest::Test
       refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.9.0"),
         "a failure is retried rather than believed"
       assert_equal 1, ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.9.0")
+
+      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::UNVERIFIED, to: "6.8.0")
+
+      refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.8.0"),
+        "a run that established nothing was believed"
+      assert_equal 0, ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.8.0"),
+        "a run that established nothing spent one of the move's attempts"
+    end
+  end
+
+  # **The trap this rule was written for.** `unverified` means the suite could not run — a fact about
+  # the environment rather than about the move — so an environment that is fixed has to be able to
+  # measure the move again. Measured on the live walk: 4.0.0 -> 4.1.0 was recorded `unverified` three
+  # times because the deployment had not supplied `RAILS_SECRET_TOKEN`, the ceiling then settled the
+  # move for ever, and the loop slept while the queue still asked for it — the corpus publishing
+  # "will be attempted again" and the ledger refusing to.
+  def test_an_unverified_step_is_retried_however_many_times_it_has_run
+    Dir.mktmpdir do |dir|
+      ledger = ledger_at(File.join(dir, "ledger.json"))
+      ceiling = AgentsFyi::Upgrader::Ledger::MAX_ATTEMPTS
+
+      (ceiling + 2).times do |attempt|
+        record(ledger, verdict: AgentsFyi::Upgrader::Ledger::UNVERIFIED)
+
+        refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
+          "attempt #{attempt + 1} left the move settled although nothing was established"
+        assert_equal 0, ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
+          "an unverified run counted toward the ceiling"
+      end
+
+      # And the ceiling still bounds a move that *fails*, which is the case it exists for.
+      ceiling.times { record(ledger, verdict: AgentsFyi::Upgrader::Ledger::FAILED) }
+      assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
+        "a move that failed at the ceiling is still retried for ever"
     end
   end
 
@@ -114,7 +147,7 @@ class LedgerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
       other = ledger_at(path, machine: OTHER_MACHINE)
-      record(other, verdict: AgentsFyi::Upgrader::Ledger::UNVERIFIED, note: "ruby 3.3 cannot install it")
+      record(other, verdict: AgentsFyi::Upgrader::Ledger::PASSED, note: "the suite was green there")
 
       assert other.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
         "the machine that produced it believes it"
@@ -123,7 +156,7 @@ class LedgerTest < Minitest::Test
 
       refute read.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
         "another interpreter's verdict does not settle this one"
-      assert_equal AgentsFyi::Upgrader::Ledger::UNVERIFIED,
+      assert_equal AgentsFyi::Upgrader::Ledger::PASSED,
         read.find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO).verdict,
         "re-opened, not deleted: the reason is the thing worth reading"
     end
