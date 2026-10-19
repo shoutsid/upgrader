@@ -31,7 +31,7 @@ class MachineTest < Minitest::Test
 
     def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
       line = argv.join(" ")
-      @calls << { argv: argv, stage: stage, chdir: chdir, env: env, stdin: stdin }
+      @calls << { argv: argv, stage: stage, chdir: chdir, env: env, stdin: stdin, timeout: timeout }
       exit_code, output = @answers.find { |needle, _| line.include?(needle) }&.last || [0, ""]
       Command.new(stage: stage, command: line, ran: true, exit_code: exit_code,
         seconds: 0.0, output_tail: output.to_s)
@@ -234,6 +234,26 @@ class MachineTest < Minitest::Test
 
   def test_stopping_a_container_that_never_started_is_not_an_error
     assert_nil container.stop!
+  end
+
+  # **The teardown is bounded, because it is the one call that can hold a step that has already
+  # finished.** `docker rm` talks to the daemon, and a daemon that is restarting held one walk for three
+  # minutes at exactly this line: the suite had passed, the run was recorded, and the publish behind the
+  # `ensure` had not run — from outside, a walk that stopped for no reason. Measured on the deployment's
+  # 4.0.0 -> 4.1.0 rung, whose `PASSED` line is followed by three minutes of nothing until the hung
+  # `docker rm` was killed by hand. `Shell.run` bounds it and kills its process group; the container is
+  # `--rm`, so leaving it is safe and `reap!` sweeps what a dead owner leaves.
+  def test_the_step_container_is_torn_down_through_the_bounded_runner
+    runner = FakeShell.new(answers: { "docker run" => [0, "f00dfeed\n"], "ruby -v" => [0, "ruby 2.2.10\n"] })
+    started = container(runner: runner)
+    started.start!(stage: "interpreter", stages: [])
+
+    started.stop!
+
+    removal = runner.calls.find { |call| call[:argv].first(2) == ["docker", "rm"] }
+    refute_nil removal, "the container was not removed at all"
+    assert_equal AgentsFyi::Upgrader::Machine::Container::TEARDOWN_SECONDS, removal[:timeout],
+      "the teardown has no deadline, so a wedged daemon holds a step that already passed"
   end
 
   # A pid that is certainly gone: this process's own child, waited for.

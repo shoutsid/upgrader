@@ -190,16 +190,29 @@ module AgentsFyi
         # Why the last `start!` failed, in one sentence.
         attr_reader :unavailable
 
+        # **How long the teardown may take before the container is left to `reap!`.** `docker rm` talks
+        # to the daemon, and a daemon that is restarting or wedged held a *finished* step for three
+        # minutes at exactly this line: the suite had passed, the run was recorded, and the publish
+        # behind the `ensure` had not run — from outside, a walk that stopped for no reason. The
+        # container is started with `--rm` and its keepalive is killed here, so it removes itself;
+        # this call is the belt to that braces, which is what makes abandoning it safe — `reap!`
+        # sweeps whatever a dead owner left before the next step starts one.
+        TEARDOWN_SECONDS = 15
+
         # **This runs from an `ensure`, so it never raises.** A cleanup that failed loudly
         # would replace the step's own outcome with its own, and the leak it would be
         # reporting is exactly what `reap!` removes on the next start.
         def stop!
           return if @container_id.to_s.empty?
 
-          @inspector.capture3("docker", "rm", "--force", @container_id)
+          # Through the runner rather than the inspector: `Shell.run` is the one place that bounds a
+          # child and kills its process group, and this is the call where an unbounded wait is fatal to
+          # the *step*, not merely slow.
+          @runner.run(["docker", "rm", "--force", @container_id], stage: "teardown",
+            chdir: @home, timeout: TEARDOWN_SECONDS)
           @container_id = nil
         rescue StandardError
-          nil
+          @container_id = nil
         end
 
         # The name this class gives a container, and the pid inside it: `run_id` is
