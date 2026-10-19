@@ -148,6 +148,9 @@ module AgentsFyi
         @applied = []
         @refused = []
         @decisions = []
+        # The digest entries the preflight held for this rung, filled in when it runs and empty before
+        # it: `moved_gems` reads them to name a gem an entry renamed by the name the Gemfile now holds.
+        @deferred = []
         @out.puts("step: #{@repository} -> #{@to}") if @out
 
         # What finished runs left behind, reclaimed before this one adds to it: the home is the
@@ -754,7 +757,30 @@ module AgentsFyi
       # that does not rebuild the snapshot from scratch (the unconstrained resolve that moved
       # rake).
       def moved_gems
-        @applied.map { |edit| edit.subject.to_s }.uniq & @lockfile.specs.keys
+        subjects = @applied.map { |edit| edit.subject.to_s }.uniq
+        renamed = renamed_gems
+        # The lockfile filter is what admits a gem this step merely *moved*: the snapshot holds it, and
+        # naming it is what stops the resolve spending a round on a line that already moved. It cannot
+        # admit a renamed gem, because the lock still holds the *old* name — that one is admitted by the
+        # Gemfile declaring it, which is the line the entry wrote.
+        (subjects - renamed.keys).select { |name| @lockfile.specs.key?(name) } +
+          renamed.values.select { |name| declared_gems.include?(name) }
+      end
+
+      # **A gem an entry renamed is named by the name the Gemfile now holds.** The pin's named set is
+      # "every gem this step has rewritten a line for", and it exists so the resolve does not spend its
+      # rounds on a line this step already changed. A `replaced` entry can change the gem's own *name* —
+      # `factory_girl_rails` becomes `factory_bot_rails` — and the old name is then not a dependency at
+      # all: measured at the 7.2 rung, `bundle update rails … factory_girl_rails --conservative` exits 7
+      # with `Could not find gem 'factory_girl_rails'`, because the line the entry rewrote was the only
+      # thing that made it one. The replacement is read off the entries the preflight held for this rung
+      # rather than off the digest, because those are the entries that actually moved a line here.
+      def renamed_gems
+        @deferred.to_a.each_with_object({}) do |entry, map|
+          from = entry["gem"].to_s
+          to = entry["replacement"].to_s
+          map[from] = to if !to.empty? && to != from
+        end
       end
 
       # A conservative update of `gems`, widened by what bundler names as stuck, and bounded.

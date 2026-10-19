@@ -583,6 +583,54 @@ class StepTest < Minitest::Test
       "the resolve was not told about the line this step moved: #{pin.command}"
   end
 
+  # **A digest entry that renames the gem, and not only its requirement, is named by its new name at
+  # the pin.** Measured at the 7.2 rung: the preflight rewrote `gem 'factory_girl_rails', '~> 4.0'` into
+  # `gem 'factory_bot_rails', '~> 4.9'` and the companion renamed 93 call sites, and the pin then exited
+  # 7 with `Could not find gem 'factory_girl_rails'` — because the line the entry rewrote was the only
+  # thing that made the old name a dependency at all, and the pin's named set is "every gem this step
+  # has rewritten a line for". The name the Gemfile holds now is the one the resolve can be told about.
+  def test_a_digest_entry_that_renames_a_gem_is_named_by_its_new_name_at_the_pin
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          factory_girl (4.9.0)
+          factory_girl_rails (4.9.0)
+          rails (7.1.0)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        factory_girl_rails (~> 4.0)
+        rails (= 7.1.0)
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    dir = track(app(lockfile: lockfile, gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "7.1.0"
+      gem "factory_girl_rails", "~> 4.0"
+    GEM
+    corpus = FakeCorpus.new(payload: plan(to: "7.2.0", from: "7.1.0"), migrations: [
+      { "gem" => "factory_girl_rails", "kind" => "replaced", "replacement" => "factory_bot_rails",
+        "requirement" => "~> 4.9", "mechanical" => true,
+        "when" => { "rails_at_least" => "7.2" },
+        "note" => "the gem was renamed at 4.9.0; the same release under a new name",
+        "source" => "the rung's own app:update output" }
+    ])
+
+    record = step(dir, corpus: corpus, tests: CapturingTests.new).run
+
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "factory_bot_rails", "~> 4.9")
+    pin = record.stages.find { |stage| stage.stage == "pin" }
+    refute_includes pin.command, "factory_girl_rails",
+      "the pin named a gem the Gemfile no longer declares: #{pin.command}"
+    assert_includes pin.command, "factory_bot_rails",
+      "the pin was not told about the line this step renamed: #{pin.command}"
+  end
+
   # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is
   # the pin's own mechanism.** `bundle install` is right for everything a preflight move does
   # to a *source* — it adds what the Gemfile gained and leaves the rest where the move found it
