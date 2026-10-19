@@ -1263,6 +1263,7 @@ module AgentsFyi
         @unapplied_rules = rules.left
         result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
         created = write_scaffolds(rules.scaffolds)
+        created += write_scaffolds(Zeitwerk.spellings(root: @worktree.root))
         # **The changes whose fix is a gem**, applied to the call sites the scan located: the call
         # sites need no edit, so what handles them is a declaration in the application's Gemfile.
         declared, bridged = declare_bridges(
@@ -1369,6 +1370,10 @@ module AgentsFyi
       # `new_framework_defaults` file it then steps through. The path is this tool's own constant
       # rather than the application's or the service's, and a file that is already there is left alone:
       # an application that has already made this move has its own, with whatever it has added to it.
+      # **Rails 7.0 deleted classic mode, so Zeitwerk owns the application's autoload paths and an
+      # acronym is a spelling it cannot guess.** The scan is `Zeitwerk.spellings`, whose own file carries
+      # the measurement; this is where its result is written, beside the rule scaffolds, because both are
+      # files a change depends on rather than lines of one.
       def write_scaffolds(scaffolds)
         root = @worktree.root
         Array(scaffolds).filter_map do |scaffold|
