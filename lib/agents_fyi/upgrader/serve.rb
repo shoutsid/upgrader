@@ -108,6 +108,9 @@ module AgentsFyi
         # The host facts the service cannot query: the era matrix, the images the daemon has, and the
         # volume's room. `nil` disables the feed (the suite's loop has no daemon).
         @environment = environment&.new(home: @home, out: @out)
+        # The effective project catalogue, for the console's Projects page: the built-ins live in
+        # this image and the console cannot read them.
+        @projects_feed = ProjectsFeed.new(home: @home, out: @out)
         # The deployment's own values for the applications it walks, passed to every step this
         # loop makes (see `Step#read_env_file` for the shape and the reason).
         @suite_env = suite_env
@@ -160,6 +163,7 @@ module AgentsFyi
         # One reading before the first cycle, so an operator who opens the page while the loop is
         # planning sees the environment rather than an empty panel, and one after each cycle.
         @environment&.write
+        @projects_feed.write
 
         cycle = 0
         pause = 0
@@ -167,6 +171,7 @@ module AgentsFyi
           cycle += 1
           outcome = walk
           @environment&.write
+          @projects_feed.write
           touch
           break if @cycles && cycle >= @cycles
 
