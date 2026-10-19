@@ -2753,7 +2753,15 @@ module AgentsFyi
           "refusals" => refusal_payloads(record),
           # What the rung knew before it decided. Absent for a record that never got as far as
           # recall (a refusal), which the service stores as no brief rather than as an empty one.
-          "brief" => record.brief&.to_h
+          "brief" => record.brief&.to_h,
+          # **Which decisions were in force.** Read off the applied edits' origins rather than passed
+          # in: the edit already says who made it (`origin: decision:<id>`), so a second list would be
+          # a second copy. The service links a *passed* run to those answers, which is what verifies a
+          # decision — accepted is the operator's word, verified is the suite's.
+          "decisions" => record.applied.filter_map { |edit|
+            origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
+            origin.split(":", 2).last if origin.start_with?("decision:")
+          }.uniq
         }
       end
 

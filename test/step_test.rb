@@ -1015,6 +1015,9 @@ class StepTest < Minitest::Test
     assert_equal "app/views/layouts/application.html.erb", edit.path
     assert_includes File.read(File.join(record.worktree, "app/views/layouts/application.html.erb")),
       "<% if @category %>"
+    # The run body names the decisions it had in force, read off the edits' origins: the service links
+    # a *passed* run to them, which is what verifies an answer.
+    assert_equal ["layout-category-link"], AgentsFyi::Upgrader::Step.run_payload(record)["decisions"]
   end
 
   def test_a_red_suite_after_a_green_baseline_is_repaired_and_the_suite_decides
