@@ -645,21 +645,18 @@ module AgentsFyi
         # **A build failure is a chain, and each round names the next link.** Measured at the 7.2 rung:
         # the first install died on `nio4r 2.3.1`, the update that named it (with `msgpack` and
         # `ruby-prof`, which the output was also building) resolved all three — `nio4r 2.7.5`,
-        # `msgpack 1.8.5`, `ruby-prof 2.0.5` — and the install that followed died on `bootsnap 1.4.5`,
-        # which the *same* output had announced. Each round names the gems the last one was building, so
-        # the rounds converge; the bound is there because a lock can name a gem whose newest release
-        # still will not build, and a walk that never ended would be worse than one that stopped.
+        # `msgpack 1.8.5`, `ruby-prof 2.0.5` — and then died on `bootsnap 1.4.5`, which the *same*
+        # output had announced. **The update is itself an install**, so a round that fails still names
+        # the next link; the loop continues while it names a gem it has not tried, and the bound is
+        # there because a lock can name a gem whose newest release still will not build — a walk that
+        # never ended would be worse than one that stopped.
+        tried = []
         BUNDLE_REPAIR_ROUNDS.times do
-          broken = broken_extensions(stage)
+          broken = broken_extensions(stage) - tried
           break if broken.empty?
 
-          attempt = command(Record::BUNDLE, ["bundle", "update", *broken], chdir: @worktree.root,
-            env: @worktree.bundle_env(machine: machine), machine: machine,
-            excerpt_bytes: Shell::RESOLVER_BYTES)
-          stages << attempt
-          break unless attempt.ok?
-
-          stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
+          tried += broken
+          stage = command(Record::BUNDLE, ["bundle", "update", *broken], chdir: @worktree.root,
             env: @worktree.bundle_env(machine: machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << stage
