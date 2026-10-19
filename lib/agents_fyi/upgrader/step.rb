@@ -149,7 +149,8 @@ module AgentsFyi
         @refused = []
         @decisions = []
         # The digest entries the preflight held for this rung, filled in when it runs and empty before
-        # it: `moved_gems` reads them to name a gem an entry renamed by the name the Gemfile now holds.
+        # it. The pin's naming rule reads the Gemfile (`declared_gems`) rather than this list, so which
+        # stage moved a line does not change the answer.
         @deferred = []
         @out.puts("step: #{@repository} -> #{@to}") if @out
 
@@ -765,26 +766,22 @@ module AgentsFyi
       # rake).
       def moved_gems
         subjects = @applied.map { |edit| edit.subject.to_s }.uniq
-        (subjects - renamed_gems.keys) & @lockfile.specs.keys
+        subjects & @lockfile.specs.keys & declared_gems
       end
 
-      # **A gem an entry renamed is not a name the pin may use — neither the old one nor the new one.**
-      # The pin names every gem this step has rewritten a line for, so the resolve does not spend its
-      # rounds on a line that already moved. A `replaced` entry can change the gem's own *name*, and then
-      # the old name is no longer a dependency (its line is what made it one) while the new name is not in
-      # the lock yet. Measured with a scratch Gemfile: `bundle update rake colorize --conservative` answers
-      # `Could not find gem 'colorize'` both for a gem the Gemfile declares and the lock does not hold and
-      # for a gem the lock holds and the Gemfile no longer declares — while `bundle update rake` alone
-      # resolves the new one in. Measured at the 7.2 rung, the same both ways for `factory_girl_rails` and
-      # `factory_bot_rails`. So the rename is left out of the pin entirely, and the replacement arrives the
-      # way any new dependency does.
-      def renamed_gems
-        @deferred.to_a.each_with_object({}) do |entry, map|
-          from = entry["gem"].to_s
-          to = entry["replacement"].to_s
-          map[from] = to if !to.empty? && to != from
-        end
-      end
+      # **A name the Gemfile no longer declares is not a name the pin may use.** The pin names every gem
+      # this step rewrote a line for, so the resolve does not spend its rounds on a line that already
+      # moved — but an entry can leave a name behind: a `replaced` entry rewrites the line to the
+      # replacement's name, a `removed` entry deletes it, and the lock this step started from still holds
+      # the old name, so intersecting with the lock is not enough. Measured on the lighthouse's
+      # 4.0 -> 4.1 rung, where the digest replaces `cancan` with `cancancan` *and* removes
+      # `therubyracer` and the pin named both: `bundle update rails … cancan … --conservative` exited 7
+      # with `Could not find gem 'cancan'`. The *new* name fails the same way and was measured too —
+      # bundler resolves a name only when the Gemfile's own dependencies still reach it, and the
+      # replacement is not in the lock yet — so a rename is left out of the pin entirely and the
+      # replacement arrives the way any new dependency does. `declared_gems` (below, and shared with the
+      # bridge question) is the one rule that covers both shapes, read off the file rather than off the
+      # entries, because a `removed` entry and a `replaced` one are one fact here.
 
       # A conservative update of `gems`, widened by what bundler names as stuck, and bounded.
       # The resolver knows this application's requirement graph, so the next round is read out

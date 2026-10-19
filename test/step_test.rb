@@ -633,6 +633,65 @@ class StepTest < Minitest::Test
       "the pin named a gem the lock does not hold, which bundler refuses: #{pin.command}"
   end
 
+  # **And for the two cases a rung-scoped entry never covers: an entry with no clause, and an entry
+  # that removes the line.** Measured on the lighthouse's 4.0 -> 4.1 rung: the digest's `cancan` ->
+  # `cancancan` carries no `when`, so the preflight applies it there and then rather than holding it
+  # for the pin, and `therubyracer` is a *removal* — and the pin named both, because the lock the step
+  # started from still holds them. `bundle update rails … cancan … --conservative` exited 7 with
+  # `Could not find gem 'cancan'`, and a rung this tool cannot cross is a rung nobody can walk.
+  #
+  # The rule is read off the Gemfile rather than from the entries, because a `removed` entry and a
+  # `replaced` one are one fact here: the name is no longer declared, so the resolver cannot be asked
+  # to move it.
+  def test_the_pin_names_no_gem_the_gemfile_no_longer_declares
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          cancan (1.6.9)
+          rails (4.2.11)
+          therubyracer (0.12.3)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        cancan!
+        rails (= 4.2.11)
+        therubyracer
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    dir = track(app(lockfile: lockfile, gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "cancan", github: "moriz/cancan"
+      gem "therubyracer"
+    GEM
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11"), migrations: [
+      { "gem" => "cancan", "kind" => "replaced", "replacement" => "cancancan",
+        "requirement" => "~> 1.9", "mechanical" => true,
+        "note" => "cancan's last release was 2013-05-07 and the fork it pinned is gone",
+        "source" => "rubygems.org's release history for cancan and cancancan" },
+      { "gem" => "therubyracer", "kind" => "removed", "replacement" => nil,
+        "requirement" => nil, "mechanical" => true,
+        "note" => "a bespoke V8 build that does not compile with a modern toolchain",
+        "source" => "the rung's own app:update output" }
+    ])
+
+    record = step(dir, corpus: corpus, tests: CapturingTests.new).run
+
+    gemfile = File.read(File.join(dir, "Gemfile"))
+    assert_includes gemfile, %(gem "cancancan", "~> 1.9")
+    refute_includes gemfile, "therubyracer", "a removal left the line behind"
+    pin = record.stages.find { |stage| stage.stage == "pin" }
+    refute_match(/\bcancan\b/, pin.command,
+      "the pin named a gem the Gemfile no longer declares: #{pin.command}")
+    refute_match(/\btherubyracer\b/, pin.command,
+      "the pin named a gem this step removed: #{pin.command}")
+  end
+
   # **A digest move that changes a *requirement* has to re-resolve the lock, and the retry is
   # the pin's own mechanism.** `bundle install` is right for everything a preflight move does
   # to a *source* — it adds what the Gemfile gained and leaves the rest where the move found it
