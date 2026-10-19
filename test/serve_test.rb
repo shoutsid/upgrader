@@ -249,7 +249,7 @@ class ServeTest < Minitest::Test
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
       walk: walk, publish: publish, rungs: rungs, publish_class: publish_class, force: force,
-      record: record, project: project)
+      record: record, project: project, environment: nil)
   end
 
   # **A finished target is not work.** The loop used to knock on the queue's `done` row every ten

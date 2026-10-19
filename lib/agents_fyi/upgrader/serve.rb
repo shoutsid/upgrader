@@ -63,6 +63,7 @@ module AgentsFyi
                      corpus: nil, step_class: Step, queue_limit: DEFAULT_QUEUE_LIMIT,
                      contribute: true, walk: false, publish: false, rungs: nil,
                      publish_class: Publish, suite_env: nil, services: nil, env: ENV,
+                     environment: Environment,
                      force: false, record: nil, project: nil)
         @api = api
         @home = home
@@ -104,6 +105,9 @@ module AgentsFyi
         # The read-only projection the console's walk view joins: delivery facts beside the progress
         # file, because the ledger itself is deliberately not mounted into the service.
         @deliveries = Deliveries.new(home: @home, out: @out)
+        # The host facts the service cannot query: the era matrix, the images the daemon has, and the
+        # volume's room. `nil` disables the feed (the suite's loop has no daemon).
+        @environment = environment&.new(home: @home, out: @out)
         # The deployment's own values for the applications it walks, passed to every step this
         # loop makes (see `Step#read_env_file` for the shape and the reason).
         @suite_env = suite_env
@@ -153,11 +157,16 @@ module AgentsFyi
                     "to the top of the service's ladder")
         end
 
+        # One reading before the first cycle, so an operator who opens the page while the loop is
+        # planning sees the environment rather than an empty panel, and one after each cycle.
+        @environment&.write
+
         cycle = 0
         pause = 0
         until @stop
           cycle += 1
           outcome = walk
+          @environment&.write
           touch
           break if @cycles && cycle >= @cycles
 
