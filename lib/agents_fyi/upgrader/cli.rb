@@ -162,7 +162,9 @@ module AgentsFyi
       def apply_project(options)
         return if @project.nil?
 
-        options[:repo] = @project.repo if options[:repo].to_s.empty?
+        # The normalized URL, so a declaration's `owner/name` and the queue's URL are one repository
+        # to `plan`, `step` and `serve` alike.
+        options[:repo] = @project.repository if options[:repo].to_s.empty?
         options[:ref] = @project.base_ref if options[:ref].to_s.empty? && !@project.base_ref.to_s.empty?
         options[:to] = @project.to if options[:to].to_s.empty?
       end

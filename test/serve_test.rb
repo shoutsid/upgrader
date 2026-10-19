@@ -681,6 +681,31 @@ class ServeTest < Minitest::Test
     assert_equal "9f2c1ab8", entry["commit"]
   end
 
+  # **A queue row finds its own declaration.** The loop is not told which project a repository is;
+  # the declaration names the repository, and the join is what lets one walker serve several
+  # applications. The fake step records the declaration it was handed, so the wiring is visible.
+  def test_a_queue_row_carries_the_declaration_whose_repository_it_names
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+    dir = Dir.mktmpdir
+    saved = ENV["UPGRADER_PROJECTS_DIR"]
+    ENV["UPGRADER_PROJECTS_DIR"] = dir
+    File.write(File.join(dir, "console-project.json"), JSON.generate(
+      "slug" => "console-project", "repo" => "https://github.com/acme/storefront.git",
+      "from" => "4.2.11", "to" => "5.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    ))
+
+    serve(corpus: corpus, cycles: 1, to: "5.0.0", walk: true, rungs: 1).run
+
+    project = FakeStep.calls.first[:project]
+    refute_nil project, "the queue target did not pick up its declaration"
+    assert_equal "console-project", project.slug
+  ensure
+    ENV["UPGRADER_PROJECTS_DIR"] = saved
+    FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+  end
+
   def test_publishing_is_off_unless_asked_for
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
     FakePublish.reset!

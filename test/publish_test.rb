@@ -425,3 +425,63 @@ class PublishTest < Minitest::Test
     assert_includes body, "is not the line the scan read"
   end
 end
+
+# **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through
+# its injectable HTTP so the two calls are visible: a GET that finds the open request by head branch,
+# then a PATCH that replaces its title, body and base. Only a rung with no open request creates one.
+class PublishExistingPrTest < Minitest::Test
+  Publish = AgentsFyi::Upgrader::Publish
+
+  Response = Struct.new(:code, :body, keyword_init: true)
+
+  # A transport that answers a scripted sequence and records what it was asked.
+  class ScriptedHttp
+    attr_reader :requests
+
+    def initialize(responses)
+      @responses = responses
+      @requests = []
+    end
+
+    def start(_host, _port, use_ssl:)
+      yield self
+    end
+
+    def request(request)
+      @requests << [request.method, request.path, request.body]
+      @responses.shift || Response.new(code: "500", body: "{}")
+    end
+  end
+
+  def test_an_existing_open_request_is_updated_rather_than_opened_again
+    http = ScriptedHttp.new([
+      Response.new(code: "200", body: JSON.generate([{ "number" => 7 }])),
+      Response.new(code: "200", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/7" }))
+    ])
+    api = Publish::GitHub.new(token: "ghp_test", http: http)
+
+    url = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.1.0",
+      base: "main", title: "Upgrade Rails to 4.1.0 (agents-fyi)", body: "the rung")
+
+    assert_equal "https://github.com/acme/storefront/pull/7", url
+    assert_equal %w[GET PATCH], http.requests.map(&:first)
+    assert_includes http.requests.first[1], "/repos/acme/storefront/pulls"
+    assert_includes http.requests.first[1], "head=acme%3Aagents-fyi%2Fupgrade-4.1.0"
+    assert_equal "/repos/acme/storefront/pulls/7", http.requests.last[1]
+    assert_includes http.requests.last[2], "the rung"
+  end
+
+  def test_a_rung_with_no_open_request_opens_one
+    http = ScriptedHttp.new([
+      Response.new(code: "200", body: "[]"),
+      Response.new(code: "201", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/8" }))
+    ])
+    api = Publish::GitHub.new(token: "ghp_test", http: http)
+
+    url = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.2.0",
+      base: "agents-fyi/upgrade-4.1.0", title: "Upgrade Rails to 4.2.0 (agents-fyi)", body: "the rung")
+
+    assert_equal "https://github.com/acme/storefront/pull/8", url
+    assert_equal %w[GET POST], http.requests.map(&:first)
+  end
+end

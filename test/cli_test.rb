@@ -413,7 +413,8 @@ class CliTest < Minitest::Test
     options = { repo: nil, ref: nil, to: nil }
     cli.send(:apply_project, options)
 
-    assert_equal "shoutsid/biddingapp", options[:repo]
+    assert_equal "https://github.com/shoutsid/biddingapp.git", options[:repo],
+      "a declaration's owner/name is the clone URL every command uses"
     assert_equal "agents-fyi/baseline", options[:ref]
     assert_equal "8.1.0", options[:to]
   end

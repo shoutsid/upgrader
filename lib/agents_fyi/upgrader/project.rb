@@ -86,8 +86,7 @@ module AgentsFyi
       # walker validates it here, so a declaration the console got wrong is refused by name at
       # startup rather than walked halfway.
       def self.find(slug, dir: nil)
-        candidates = [dir, ENV["UPGRADER_PROJECTS_DIR"], PROJECTS].compact.map(&:to_s)
-          .reject(&:empty?).uniq
+        candidates = directories(dir)
         candidates.each do |candidate|
           path = File.join(candidate, "#{slug}.json")
           return load(path) if File.file?(path)
@@ -95,6 +94,44 @@ module AgentsFyi
 
         raise Invalid, "no project named #{slug.inspect} in #{candidates.join(", ")}"
       end
+
+      # **The declaration for a repository, which is how a queue row finds its own application.**
+      # A target says *which* repository; a declaration says *how* to walk it. Matching them is what
+      # lets one walker serve several applications without being told which declaration goes with
+      # which queue row — the order is the service's, the facts are the declaration's.
+      def self.find_by_repository(reference, dir: nil)
+        wanted = Repository.name(reference)
+        all(dir: dir).find { |project| Repository.name(project.repository) == wanted }
+      end
+
+      # Every declaration this process can see, keyed by slug with the console's copy winning. An
+      # unreadable declaration is skipped here rather than raised: `find` is where a named project
+      # says why it cannot be read, and one bad file must not hide the others.
+      def self.all(dir: nil)
+        by_slug = {}
+        directories(dir).each do |candidate|
+          Dir[File.join(candidate, "*.json")].sort.each do |path|
+            slug = File.basename(path, ".json")
+            next if by_slug.key?(slug)
+
+            begin
+              by_slug[slug] = load(path)
+            rescue Invalid
+              next
+            end
+          end
+        end
+        by_slug.values
+      end
+
+      def self.directories(dir = nil)
+        [dir, ENV["UPGRADER_PROJECTS_DIR"], PROJECTS].compact.map(&:to_s).reject(&:empty?).uniq
+      end
+
+      # The clone URL this declaration means. A declaration may carry `owner/name` (what a person
+      # types) or a URL; every command clones the normalized one, so a plan and a walk of the same
+      # project cannot disagree about the repository.
+      def repository = Repository.normalize(@repo)
 
       def self.load(path)
         text = File.read(path, encoding: "utf-8")

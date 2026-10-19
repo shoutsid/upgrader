@@ -66,6 +66,33 @@ class ProjectTest < Minitest::Test
     end
   end
 
+  # **A repository is one identity however it is spelled.** The declaration may say `owner/name`; the
+  # queue carries the URL; and the join must not depend on which the caller happened to use.
+  def test_a_repository_is_one_identity_and_a_declaration_finds_its_row
+    project = lighthouse
+
+    assert_equal "https://github.com/shoutsid/biddingapp.git", project.repository
+    found = PROJECT.find_by_repository("shoutsid/biddingapp")
+    refute_nil found
+    assert_equal "lighthouse", found.slug
+    assert_nil PROJECT.find_by_repository("https://github.com/example/absent")
+  end
+
+  # The console's copy of a slug shadows the built-in one, in the repository join too: an operator
+  # who edits the declaration means the edited file, not the image's.
+  def test_the_console_s_copy_is_the_one_the_repository_join_finds
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "lighthouse.json"), JSON.generate(
+        "slug" => "lighthouse", "repo" => "https://github.com/shoutsid/biddingapp",
+        "from" => "7.0.0", "to" => "7.1.0",
+        "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+      ))
+
+      found = PROJECT.find_by_repository("shoutsid/biddingapp", dir: dir)
+      assert_equal "7.0.0", found.from, "the console's declaration did not shadow the built-in"
+    end
+  end
+
   def test_the_delivery_branch_names_the_release
     assert_equal "agents-fyi/upgrade-7.1.0", lighthouse.delivery.branch_for("7.1.0")
   end
@@ -81,12 +108,11 @@ class ProjectTest < Minitest::Test
     assert_equal "operator:9f2c1ab8", project.decisions.first["accepted_by"]
     assert_equal "patch", project.decisions.first["effects"].first["kind"]
     assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
-    # The lighthouse declares the two 6.0 view facts its walk met, each with the effects an operator
-    # accepted; a decision is data here, which is what makes the walk apply it without knowing the
-    # application (`docs/refactor/adr/0008`, decision 3).
-    assert_equal 2, lighthouse.decisions.length
-    assert(lighthouse.decisions.all? { |decision| decision["accepted_by"].start_with?("operator:") })
-    assert_operator lighthouse.decisions.sum { |decision| decision["effects"].length }, :>=, 3
+    # **The built-in walk no longer carries the 6.0 proof's decisions.** The baseline branch it
+    # starts from already contains those view facts, so the effects would be patches looking for
+    # lines that are no longer there — and the corpus's decision rows were reset with the upgrade
+    # evidence. The capability is what this test drives above, with a declaration written here.
+    assert_empty lighthouse.decisions
   end
 
   def test_an_unknown_field_in_a_decision_is_refused

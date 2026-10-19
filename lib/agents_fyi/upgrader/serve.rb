@@ -214,12 +214,28 @@ module AgentsFyi
 
       def walk_spec(spec)
         repository, ref = self.class.split(spec)
-        return walk_repository(repository, ref) if @walk
+        # **The queue names the repository; the declaration says how to walk it.** A loop can serve
+        # several applications without being told which file belongs to which row, because the
+        # declaration's own repository is the join.
+        project = project_for(repository)
+        return walk_repository(repository, ref, project: project) if @walk
 
-        record = run_one(repository, ref)
+        record = run_one(repository, ref, project: project)
         return :idle if record.nil?
 
         record.passed? ? :worked : :blocked
+      end
+
+      # The declaration for a repository: the one this loop was started with when it matches, and
+      # otherwise the one whose repository does. No declaration is not an error — a queue row can
+      # name a repository nobody has declared, and the engine then uses the stack's defaults, which
+      # is the shape this tool had before declarations existed.
+      def project_for(repository)
+        if @project && Repository.name(@project.repository) == Repository.name(repository)
+          return @project
+        end
+
+        Project.find_by_repository(repository)
       end
 
       # The target every step in this cycle moves towards: the one the operator named, or —
@@ -248,14 +264,14 @@ module AgentsFyi
       # `:blocked` is a rung that ran and did not pass (retry soon, not instantly), `:idle` is a
       # move the ledger had already settled (nothing ran at all), and `:worked` is a passed rung,
       # where the next one is ready now.
-      def walk_repository(repository, ref)
+      def walk_repository(repository, ref, project:)
         @rungs.times do
-          record = run_one(repository, ref)
+          record = run_one(repository, ref, project: project)
           return :idle if record.nil?
 
           return :blocked unless record.passed?
 
-          publish(record) if @publish
+          publish(record, project: project) if @publish
         end
         :worked
       end
@@ -263,9 +279,9 @@ module AgentsFyi
       # A passed rung's branch and pull request, from the record the step produced. A publish
       # that did not happen is a line rather than a raised exception: the rung *passed*, and
       # a branch that could not be pushed does not un-pass it.
-      def publish(record)
+      def publish(record, project: nil)
         root = record.worktree.to_s.empty? ? @home : record.worktree
-        pattern = @project&.delivery&.branch
+        pattern = project&.delivery&.branch
         result = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
@@ -376,7 +392,7 @@ module AgentsFyi
         return nil if @project.repo.to_s.empty?
 
         ref = @project.base_ref.to_s
-        ref.empty? ? @project.repo : "#{@project.repo}@#{ref}"
+        ref.empty? ? @project.repository : "#{@project.repository}@#{ref}"
       end
 
       # The queue as shorthand specs, or nothing at all when the service could not be
@@ -439,13 +455,13 @@ module AgentsFyi
       # One repository, one step. `nil` means the move it resolved to was already
       # settled, which is not an error: it is the ledger doing its job, and it is worth a
       # line because it is also what a lost volume would look like from the other side.
-      def run_one(repository, ref)
+      def run_one(repository, ref, project: nil)
         record = @step_class.new(
           repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
-          record: @record, project: @project
+          record: @record, project: project
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
@@ -494,43 +510,11 @@ module AgentsFyi
       # public, and the one after them is not.
       public
 
-      # `owner/name@ref` is a person's shorthand, and the ref is optional. A URL is left
-      # alone, because somebody who typed one meant it, and so is a **path**.
-      #
-      # An ssh URL is decided *before* the split, because it has an `@` of its own:
-      # `git@github.com:acme/storefront.git` split on `@` would name a repository called
-      # `git` and a ref of `github.com:acme/storefront.git`, which is a clone of nothing
-      # and a ledger entry under a URL nobody can look up.
-      #
-      # A path is the other half of that rule, and it was missing: the service's
-      # `identity()` deliberately lets an operator name a directory on a machine that has
-      # it — a target whose `repo_url` is a path is a legitimate row — and this method
-      # turned every bare spec into `https://github.com/<spec>.git`, so a queue the
-      # service had accepted became a clone of nothing. The tell was the shorthand's own
-      # form: `work/app` is not `owner/name`.
-      def self.split(spec)
-        return [spec, nil] if spec.start_with?("git@")
+      # `owner/name@ref` is a person's shorthand, and the ref is optional. `Repository` is the one
+      # place that decides what a reference means, so `plan`, `step`, `serve` and a declaration
+      # cannot disagree about which repository they mean.
+      def self.split(spec) = Repository.split(spec)
 
-        # Split first, then decide what the left half is: a path may carry a ref of its
-        # own (`./storefront@main`), and deciding on the whole spec would read that as one
-        # path with an `@` in its name.
-        repository, ref = spec.split("@", 2)
-        return [repository, ref] if repository.include?("://") || path?(repository)
-
-        ["https://github.com/#{repository}.git", ref]
-      end
-
-      # Whether a spec names something on this machine — by *spelling*, never by asking the
-      # filesystem. Absolute, explicitly relative and `~`-rooted only: a bare `storefront`
-      # is a shorthand for a GitHub repository, and a spec that happened to be a directory
-      # of the current working directory would be ambiguous, which is the shape a person
-      # reads as a repository name.
-      def self.path?(spec)
-        spec.start_with?("/", "./", "../", "~")
-      end
-
-      # Its only caller is `split`, above, so it is the one helper here that can be tight.
-      private_class_method :path?
 
       private
 
