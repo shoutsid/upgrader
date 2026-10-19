@@ -136,6 +136,24 @@ class PublishTest < Minitest::Test
     end
   end
 
+  # **An API that is briefly unreachable, which is what the network does.** It refuses the way the real
+  # class does — `Refused` — and then answers with the same URL.
+  class FlakyApi < FakeApi
+    def initialize(failures:, **kwargs)
+      super(**kwargs)
+      @failures = failures
+    end
+
+    def pull_request(**arguments)
+      if @failures.positive?
+        @failures -= 1
+        raise Publish::GitHub::Refused, "could not reach https://api.github.com: SocketError"
+      end
+
+      super
+    end
+  end
+
   # **A plain git remote is delivered to without a token.** The token exists for the API;
   # requiring it to push to an operator's own mirror would make publishing impossible for
   # the deployments that need no API at all.
@@ -243,6 +261,42 @@ class PublishTest < Minitest::Test
     assert_equal 2, git.calls.count { |call| call.first == "push" },
       "the push was not attempted a second time"
     assert_equal [AgentsFyi::Upgrader::Publish::PUSH_BACKOFF_SECONDS], waits
+  end
+
+  # **The request is the network too.** Measured on the clean re-run: `api.github.com` answered
+  # `getaddrinfo: No address associated with hostname` once, the rung had already been pushed and was
+  # settled, and 7.0.0 kept a branch with no pull request for the rest of the walk — a permanent hole,
+  # because a settled rung is never revisited. The push beside it retried; this did not.
+  def test_a_pull_request_that_meets_a_transient_failure_is_retried
+    _bare, clone = origin_and_clone
+    api = FlakyApi.new(failures: 2)
+    waits = []
+
+    result = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0",
+      record: passed_record(repository: "https://github.com/acme/storefront"),
+      token: "ghp_token", git: FakeGit.new, api: api,
+      pause: ->(seconds) { waits << seconds }).call
+
+    assert result.pushed, "a request that failed twice lost the rung's pull request: #{result.reason}"
+    assert_equal "https://github.com/acme/storefront/pull/7", result.pull_request
+    assert_equal [5, 10], waits, "the retries did not back off"
+  end
+
+  # And what a caller reads when it never succeeds is one sentence, not a resolver's backtrace.
+  def test_a_pull_request_that_keeps_failing_is_a_sentence_rather_than_a_raise
+    _bare, clone = origin_and_clone
+    api = FlakyApi.new(failures: AgentsFyi::Upgrader::Publish::PUSH_ATTEMPTS)
+
+    result = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0",
+      record: passed_record(repository: "https://github.com/acme/storefront"),
+      token: "ghp_token", git: FakeGit.new, api: api,
+      pause: ->(_seconds) {}).call
+
+    refute result.pushed
+    assert_includes result.reason, "api.github.com"
+    refute_includes result.reason, "\n", "the reason is a backtrace, not a sentence"
   end
 
   def test_a_github_repository_with_no_token_is_not_pushed_at_all

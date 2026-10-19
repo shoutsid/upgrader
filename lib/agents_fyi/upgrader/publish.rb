@@ -121,7 +121,7 @@ module AgentsFyi
         return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
         base = base_branch
-        request = api.pull_request(
+        request = request_pull_request(
           owner: owner, name: name, head: branch, base: base,
           title: title, body: body
         )
@@ -132,6 +132,22 @@ module AgentsFyi
       end
 
       private
+
+      # **The request is the network too, and a push that retries while the request beside it does not
+      # leaves the same hole.** Measured on the clean re-run: `api.github.com` answered `getaddrinfo: No
+      # address associated with hostname` once at 18:22:28, the rung had already been pushed and settled,
+      # and 7.0.0 kept a branch with no pull request for the rest of the walk — and a settled rung is
+      # never revisited, so the hole was permanent. Same attempts and backoff as the push, for the same
+      # reason; what the caller finally reads is one sentence rather than a resolver's backtrace.
+      def request_pull_request(attempt: 1, **arguments)
+        api.pull_request(**arguments)
+      rescue GitHub::Refused => e
+        raise if attempt >= PUSH_ATTEMPTS
+
+        @out&.puts("publish: the pull request could not be opened (#{redact(e.message)}) — retrying")
+        @pause.call(PUSH_BACKOFF_SECONDS * (2**(attempt - 1)))
+        request_pull_request(attempt: attempt + 1, **arguments)
+      end
 
       def branch = self.class.branch_for(@to_version)
 
@@ -395,7 +411,7 @@ module AgentsFyi
           return body if code >= 200 && code < 300
 
           raise Refused, sentence(body, code, path)
-        rescue SystemCallError => e
+        rescue SocketError, SystemCallError, Timeout::Error => e
           raise Refused, "could not reach #{@api}: #{e.class}: #{e.message}"
         end
 
