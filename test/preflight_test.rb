@@ -832,4 +832,57 @@ class PreflightTest < Minitest::Test
     assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
     assert_includes read(dir, "spec/spec_helper.rb"), "check_pending!"
   end
+
+  # **A predicate the release removed, whose matcher the application's specs spell the old way.** The
+  # ladder carries no change for it at all — measured, `success` appears zero times in
+  # `data/rails_ladder.json` — so this is a fact about the *release* rather than about a rung's
+  # documented change, which is what the framework table is for. Measured at the 6.0 rung: every failing
+  # example there is a controller spec asserting `expect(response).to be_success`, because RSpec's
+  # `be_success` is a dynamic predicate matcher and `ActionDispatch::TestResponse#success?` was
+  # deprecated in 5.2 and removed in 6.0, where `successful?` comes from `Rack::Response::Helpers`.
+  def test_a_predicate_the_release_removed_moves_the_matcher_that_spells_it
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "6.0.0"\n), lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "spec"))
+    File.write(File.join(dir, "spec", "bids_controller_spec.rb"),
+      "it { expect(response).to be_success }\n")
+
+    at_the_rung = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "6.0.0")
+      .send(:framework_removal_repairs)
+
+    assert_equal 1, at_the_rung.size, "the rung's own removal was not repaired"
+    assert_includes read(dir, "spec/bids_controller_spec.rb"), "be_successful"
+
+    # And the rung below owes nothing: `success?` is still there at 5.2.
+    File.write(File.join(dir, "spec", "bids_controller_spec.rb"),
+      "it { expect(response).to be_success }\n")
+    below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "5.2.0")
+      .send(:framework_removal_repairs)
+
+    assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
+  end
+
+  # **A removal name is rewritten only where it *ends*, because one of these names is a prefix of
+  # another.** `be_success` is a prefix of `be_successful`, so a plain `gsub` turns a line the
+  # application had already migrated into `be_successfulful` — and a rewrite that has to run before
+  # another one to be safe is an ordering rather than a rule. The guard also has to keep `File.exists?`
+  # matching: `?` is not a word character, so the lookahead asks about the character after it.
+  def test_a_removal_name_is_rewritten_only_where_it_ends
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "6.0.0"\n), lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "spec"))
+    File.write(File.join(dir, "spec", "a_spec.rb"),
+      "it { expect(response).to be_success }\n" \
+        "it { expect(response).to be_successful }\n" \
+        "it { expect(x).to be_successful_now }\n")
+
+    repairs = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "6.0.0")
+      .send(:framework_removal_repairs)
+
+    assert_equal 1, repairs.size, "a name that is a prefix of another was rewritten twice"
+    assert_equal [
+      "it { expect(response).to be_successful }",
+      "it { expect(response).to be_successful }",
+      "it { expect(x).to be_successful_now }"
+    ], read(dir, "spec/a_spec.rb").lines.map(&:chomp),
+      "a line the application had already migrated was rewritten again"
+  end
 end

@@ -239,6 +239,19 @@ module AgentsFyi
           "from" => "ActiveRecord::Migration.check_pending!",
           "to" => "ActiveRecord::Migration.check_all_pending!",
           "when" => { "rails_at_least" => "7.2" }
+        },
+        # **A predicate the release removed, whose matcher the application's specs spell the old way.**
+        # Measured at the 6.0 rung: every failing example there is a controller spec asserting
+        # `expect(response).to be_success` — RSpec's `be_success` is a dynamic predicate matcher, so it
+        # asks the object for `success?`, and `ActionDispatch::TestResponse#success?` was deprecated in
+        # 5.2 and removed in 6.0 (`successful?` comes from `Rack::Response::Helpers`). The ladder carries
+        # no change for it at all, so this is a fact about the release rather than about a rung's
+        # documented change — and the rewrite is the release's own: the matcher for the new predicate is
+        # `be_successful`.
+        {
+          "from" => "be_success",
+          "to" => "be_successful",
+          "when" => { "rails_at_least" => "6.0" }
         }
       ].freeze
 
@@ -272,7 +285,15 @@ module AgentsFyi
       # `from` is a whole method path rather than a bare word on purpose: `Model.exists?` is a
       # different method on a different receiver, and a rewrite that dropped it would change every
       # query in the tree.
+      #
+      # **And a name is rewritten only where it *ends*, because one of these names is a prefix of
+      # another.** `be_success` is a prefix of `be_successful`, so a plain `gsub` would turn a line the
+      # application had already migrated into `be_successfulful` — and a rewrite that has to be applied
+      # before another one to be safe is not a rewrite but an ordering. The lookahead says "this name
+      # and no more name after it", which is also what keeps `File.exists?` matching: `?` is not a word
+      # character, so the guard asks about the character after it and `File.exists?(x)` passes.
       def removal_repairs(table)
+        patterns = table.map { |from, to| [/#{Regexp.escape(from)}(?![A-Za-z0-9_])/, from, to] }
         repairs = []
         RUBY_SOURCE_GLOBS.each do |glob|
           Dir.glob(File.join(@root, glob)).sort.each do |full|
@@ -284,11 +305,11 @@ module AgentsFyi
             lines.each_with_index do |line, index|
               after = line.dup
               removed = nil
-              table.each do |from, to|
-                next unless after.include?(from)
+              patterns.each do |pattern, from, to|
+                next unless after.match?(pattern)
 
                 removed = from
-                after = after.gsub(from, to)
+                after = after.gsub(pattern, to)
               end
               next if removed.nil?
 
