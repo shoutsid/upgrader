@@ -22,5 +22,99 @@
     "branch": "agents-fyi/upgrade-<release>",
     "chain": true
   },
-  "decisions": []
+  "decisions": [
+    {
+      "id": "6b1f0a52-0000-4000-8000-000000000001",
+      "question": "A bid exists only under its category and item (`resources :bids` lives inside a concern, so no top-level `bid_path` exists). The 6.0 rung's suite fails where the views render: the list's `link_to 'Show', bid`, the bid page's `link_to 'Edit', edit_bid_path(@bid)` and its `link_to 'Back', bids_path`. What should the views do?",
+      "answer": "pass the parents the nested routes define, and drop the list's Show link",
+      "accepted_by": "operator:5b0b6165-4d69-46cb-bdc1-587d10f43ac5",
+      "effects": [
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "        <td><%= link_to 'Show', bid %></td>\n",
+            "path": "app/views/bids/index.html.erb",
+            "replace": ""
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        },
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "      <th></th>\n      <th></th>\n      <th></th>\n",
+            "path": "app/views/bids/index.html.erb",
+            "replace": "      <th></th>\n      <th></th>\n"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        },
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "edit_bid_path(@bid)",
+            "path": "app/views/bids/show.html.erb",
+            "replace": "edit_category_item_bid_path(@category, @item, @bid)"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        },
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "bids_path",
+            "path": "app/views/bids/show.html.erb",
+            "replace": "category_item_bids_path(@category, @item)"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        },
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "<%= link_to 'Show', @bid %>",
+            "path": "app/views/bids/edit.html.erb",
+            "replace": "<%= link_to 'Show', category_item_bid_path(@category, @item, @bid) %>"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        },
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "bids_path",
+            "path": "app/views/bids/edit.html.erb",
+            "replace": "category_item_bids_path(@category, @item)"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "6b1f0a52-0000-4000-8000-000000000002",
+      "question": "The navigation renders `link_to 'Auction Item', new_category_item_path(@category)` on every page that uses the layout, and most of them have no `@category`. Should the link be conditional, or always point somewhere that exists?",
+      "answer": "guard the link on @category",
+      "accepted_by": "operator:5b0b6165-4d69-46cb-bdc1-587d10f43ac5",
+      "effects": [
+        {
+          "kind": "patch",
+          "payload": {
+            "find": "          <%= link_to 'Auction Item', new_category_item_path(@category), class: 'btn btn-info', style: 'margin-left: 10px;' %>\n",
+            "path": "app/views/layouts/_navigation.html.erb",
+            "replace": "          <% if @category %>\n            <%=  link_to 'Auction Item', new_category_item_path(@category), class: 'btn btn-info', style: 'margin-left: 10px;' %>\n          <% end %>\n"
+          },
+          "applies_when": {
+            "rung_gte": "6.0.0"
+          }
+        }
+      ]
+    }
+  ]
 }
