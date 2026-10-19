@@ -41,6 +41,31 @@ class ProjectTest < Minitest::Test
 
   # The branch a rung is published on is the declaration's, with the release substituted: one branch
   # per rung is a property of the project rather than a string in the publisher.
+  # **The console's directory is read first, and the built-in is the fallback.** The console writes
+  # what the operator edits into a volume this client mounts; an empty volume must still walk the
+  # project this image ships, and a written declaration of the same slug must shadow it.
+  def test_the_console_directory_is_read_before_the_built_in_declaration
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "console.json"), JSON.generate(
+        "slug" => "console", "repo" => "acme/console", "from" => "7.0.0", "to" => "7.1.0",
+        "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+      ))
+      written = PROJECT.find("console", dir: dir)
+      assert_equal "acme/console", written.repo
+      assert_equal dir, File.dirname(written.path)
+
+      # Nothing written under the built-in slug in this directory: the image's own copy answers.
+      assert_equal "shoutsid/biddingapp", PROJECT.find("lighthouse", dir: dir).repo
+
+      # With the same slug written, the console's copy is the one used.
+      File.write(File.join(dir, "lighthouse.json"), JSON.generate(
+        "slug" => "lighthouse", "repo" => "owner/edited", "from" => "7.0.0", "to" => "7.1.0",
+        "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+      ))
+      assert_equal "owner/edited", PROJECT.find("lighthouse", dir: dir).repo
+    end
+  end
+
   def test_the_delivery_branch_names_the_release
     assert_equal "agents-fyi/upgrade-7.1.0", lighthouse.delivery.branch_for("7.1.0")
   end

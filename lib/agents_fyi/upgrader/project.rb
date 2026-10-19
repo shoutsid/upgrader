@@ -77,11 +77,23 @@ module AgentsFyi
         :eras, :delivery, :decisions, :path
 
       # The declaration named by a slug, from the projects directory.
-      def self.find(slug, dir: PROJECTS)
-        path = File.join(dir, "#{slug}.json")
-        raise Invalid, "no project named #{slug.inspect} in #{dir}" unless File.file?(path)
+      #
+      # **The console's directory is read first, and the built-in declarations are the fallback.**
+      # The operator edits the declaration on the console, which writes it into a volume this client
+      # mounts read-only; a project the console has not written still walks from the copy this image
+      # ships, so an empty volume is the built-in behaviour rather than no behavior. A written
+      # declaration shadows the built-in of the same slug — that is what editing means — and the
+      # walker validates it here, so a declaration the console got wrong is refused by name at
+      # startup rather than walked halfway.
+      def self.find(slug, dir: nil)
+        candidates = [dir, ENV["UPGRADER_PROJECTS_DIR"], PROJECTS].compact.map(&:to_s)
+          .reject(&:empty?).uniq
+        candidates.each do |candidate|
+          path = File.join(candidate, "#{slug}.json")
+          return load(path) if File.file?(path)
+        end
 
-        load(path)
+        raise Invalid, "no project named #{slug.inspect} in #{candidates.join(", ")}"
       end
 
       def self.load(path)
