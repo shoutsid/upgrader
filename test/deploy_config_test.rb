@@ -232,6 +232,21 @@ class DeployConfigTest < Minitest::Test
       "the entrypoint does not hand the CLI the path it just wrote"
   end
 
+  # **A step's decisions exist only in its record file.** The corpus keeps a run's commands, their exit
+  # codes and its refusals — not the changes the step handed a person, each with the reason it did.
+  # So a deployment that keeps no records leaves the walk's *residue* unauditable, which is exactly the
+  # half of "every change is automated or a named gap" that no corpus read can check. Measured: the
+  # first deployment kept none, and the residue could only be audited because the same rungs had been
+  # walked by hand on a host that passed `--record`.
+  def test_the_step_records_are_kept_where_the_residue_can_be_audited
+    assert_match(/UPGRADER_RECORD:\s*\$\{UPGRADER_RECORD:-/, config("upgrader"),
+      "the record directory is not settable from the deployment")
+    assert_includes File.read(ENTRYPOINT_PATH, encoding: "utf-8"), '"${UPGRADER_RECORD}"',
+      "the entrypoint never passes the record directory to `serve`"
+    assert_includes env_example, "UPGRADER_RECORD=",
+      "the setting is not in .env.example, so an operator cannot find it"
+  end
+
   # **The operator's live view is mounted where the console reads it.** The walker writes what it is
   # doing into a volume of its own (`Progress`) and the console reads it read-only; without the mount
   # the panel says "not mounted" — honest, but "is it working?" then has no answer again. Measured:

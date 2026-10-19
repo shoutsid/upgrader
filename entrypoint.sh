@@ -87,6 +87,11 @@ if [ -n "${UPGRADER_SUITE_ENV}" ]; then
     UPGRADER_SUITE_ENV_FILE="${UPGRADER_HOME}/suite.env"
 fi
 : "${UPGRADER_SUITE_ENV_FILE:=}"
+# **Where each step writes its record.** The corpus keeps the run — its commands, their exit codes
+# and its refusals — but a step's *decisions* (the changes it hands a person) are in the record file
+# and nowhere else, so a deployment that wants the walk's residue auditable keeps them. The file is
+# named for the move, so a walk of several rungs writes one each rather than overwriting the last.
+: "${UPGRADER_RECORD:=}"
 # There is deliberately no log level, and this is a bug fixed rather than a preference.
 #
 # `--log-level "${UPGRADER_LOG_LEVEL}"` used to be passed from here to a CLI that accepts
@@ -179,6 +184,9 @@ if [ -n "${UPGRADER_PUBLISH}" ]; then
 fi
 if [ -n "${UPGRADER_SUITE_ENV_FILE}" ]; then
     set -- "$@" --suite-env "${UPGRADER_SUITE_ENV_FILE}"
+fi
+if [ -n "${UPGRADER_RECORD}" ]; then
+    set -- "$@" --record "${UPGRADER_RECORD}"
 fi
 
 exec /app/bin/agents-fyi-upgrader serve \
