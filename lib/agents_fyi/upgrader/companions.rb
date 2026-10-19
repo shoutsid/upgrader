@@ -374,6 +374,26 @@ module AgentsFyi
             replace: "FactoryBot",
             all: true
           ),
+          # **And the gem's *name* moves too, which the constant rule cannot see.** Measured at the 7.2
+          # rung, once the suite got past its first failure: `Failure/Error: require 'factory_girl_rails'`
+          # → `LoadError: cannot load such file -- factory_girl_rails` from `spec/spec_helper.rb:12`. The
+          # rename is a fact about the gem, so the application's own `require` has to move with the line —
+          # and the *load path* is what makes it a real failure rather than a stale one: the baseline runs
+          # with the lock that still holds the old gem, and the suite runs with the lock the pin wrote.
+          #
+          # **A string's contents are not visible to a pattern, so the pattern asks the shape and the
+          # callable asks the name.** The mask blanks what is inside the quotes and keeps the quotes, so
+          # the pattern can match a `require "…"` line but cannot tell which gem it names; the callable
+          # receives the *raw* region (that is what makes a respelling rule possible at all), and a
+          # replacement that changes nothing leaves the line alone rather than writing it back. The
+          # condition is the third reader: it sees the raw line, which is the only place the old name is.
+          Rewrites::Rule.new(
+            family: :name_moved,
+            subject: "factory_bot",
+            pattern: /\A(?<indent>[ \t]*)(?<call>require\s+(?<quote>["'])[^"']*\k<quote>)/,
+            replace: ->(found) { "#{found[:indent]}#{found[:call].sub("factory_girl", "factory_bot")}" },
+            context: ->(_lines, _found, line, _tree) { line.to_s.match?(/require\s+["']factory_girl/) }
+          ),
           # **A static attribute becomes a dynamic one, which is the deprecation's own prescription.**
           # The gem decides this from the *call*, not from the line: `method_missing` with an argument and
           # no block is `add_attribute`, and `add_attribute` warns when it has a value and no block. So the

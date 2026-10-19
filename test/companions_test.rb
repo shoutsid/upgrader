@@ -414,6 +414,25 @@ class CompanionsTest < Minitest::Test
     assert_empty Companions.edits(Companions::FACTORY_BOT, root: root)
   end
 
+  # **The gem's *name* moves too, and a pattern cannot see it.** Measured at the 7.2 rung, once the
+  # suite got past its first failure: `Failure/Error: require 'factory_girl_rails'` →
+  # `LoadError: cannot load such file -- factory_girl_rails` from `spec/spec_helper.rb:12`. The mask
+  # blanks what is inside the quotes and keeps the quotes, so the pattern asks the *shape* of a require,
+  # the callable receives the raw region and rewrites the name, and the condition reads the raw line —
+  # the only place the old name is. A line that already names the new gem is left, which is what makes a
+  # second walk a no-op.
+  def test_the_gems_own_name_moves_in_a_require
+    root = tree(
+      "spec/spec_helper.rb" => "require 'rspec/rails'\nrequire 'factory_girl_rails'\n",
+      "spec/rails_helper.rb" => %(require "factory_bot_rails"\n)
+    )
+
+    edits = Companions.edits(Companions::FACTORY_BOT, root: root)
+
+    assert_equal ["require 'factory_bot_rails'"], edits.map(&:after),
+      "the require did not move, or a line that did not need to did: #{edits.map(&:after).inspect}"
+  end
+
   # **The gem's own deprecation, which the rename does not reach.** Measured at the 7.2 rung: with the
   # line and the 93 call sites already moved, `app:update` dies at `spec/factories/admin_factory.rb:5`
   # with `private method `warn' called for ActiveSupport::Deprecation:Class` — factory_bot 4.11.1's
