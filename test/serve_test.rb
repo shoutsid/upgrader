@@ -191,6 +191,23 @@ class ServeTest < Minitest::Test
     @home ||= track(Dir.mktmpdir)
   end
 
+  # **A stopped loop has nothing in flight, and says so.** The Now panel reads this file; a step
+  # clears it when it finishes, and a loop that stops *between* steps — the end of a walk, or an
+  # operator's SIGTERM — used to leave the last one behind, so the panel said "running this" until
+  # `STALLED_SECONDS` (twenty minutes) caught up. Measured on the deployment: the walk finished at
+  # 17:45 and the file still named a step at 17:52 with nothing running.
+  def test_a_stopped_loop_leaves_nothing_in_flight
+    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress.stage(repo: "https://example.test/app", from: "5.2.0", to: "6.0.0",
+      stage: "pin", detail: "bundle update rails")
+    assert File.exist?(AgentsFyi::Upgrader::Progress.path(home)), "the fixture wrote no progress"
+
+    serve(cycles: 1).run
+
+    refute File.exist?(AgentsFyi::Upgrader::Progress.path(home)),
+      "the loop stopped and left a step looking in flight"
+  end
+
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
             ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),

@@ -159,6 +159,13 @@ module AgentsFyi
         end
 
         @ledger.save!
+        # **A stopped loop has nothing in flight, and says so.** The file is what the console's Now
+        # panel reads, a step clears it when it finishes, and a *loop* that stops between steps — the
+        # end of a walk, or an operator's SIGTERM — left its last one behind, so the panel went on
+        # saying "running this" until `STALLED_SECONDS` (twenty minutes) caught up. Measured on this
+        # deployment: the walk finished at 17:45 and the file still read a step at 17:52 with nothing
+        # running. A stopped loop is not a stalled one, and the honest answer is the empty file.
+        @progress.clear
         @out.puts("serve: stopped after #{cycle} cycle(s) with #{@ledger.size} move(s) settled")
         0
       end
