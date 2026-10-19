@@ -193,7 +193,14 @@ module AgentsFyi
         @applied.concat(preflight.repairs)
         @decisions.concat(preflight.decisions)
 
-        choice = choose_machine(stages, step, preferred: entry&.era)
+        # **The era is the oldest the rung's floor allows, and the ledger is not a starting point.** The
+        # ledger is keyed per *repository*, so a walk that climbs keeps a hint that is always at or below
+        # the next rung's floor and therefore never changes the answer — and a walk *re-entered from below*
+        # inherits the era of the rungs above it, which is how the 6.0 rung came to run on 2.7 for a floor
+        # of 2.5 and to be `unverified` on a red baseline. What the module's own docstring calls a starting
+        # point is what the *application* states (a `ruby` line, a `RUBY VERSION`), and `Interpreters`
+        # already reads those.
+        choice = choose_machine(stages, step)
         return finish(choice) if choice.is_a?(Record)
 
         @machine, install = choice
@@ -340,13 +347,14 @@ module AgentsFyi
       # The machine a step would run on, as the stamp the ledger compares. Deliberately the
       # *first candidate* rather than the one that would be probed into: the stamp's job here
       # is to answer "is what is already recorded still the machine this step would get", and
-      # after a probe the ledger records the era that worked, which the next cycle prefers and
-      # therefore computes first again (`Interpreters.candidates`).
+      # first candidate is now the oldest era the rung's floor allows, the same rule
+      # `choose_machine` applies — so an entry recorded on an era this rung would no longer get
+      # is re-opened, which is what the stamp exists to say.
       def expected_machine(step, entry)
         return @machine.stamp if @machine
         return native_stamp unless docker_mode?
 
-        candidates = candidates_for(step, entry&.era)
+        candidates = candidates_for(step)
         return native_stamp if candidates.empty?
 
         build_machine(candidates.first).stamp
@@ -505,7 +513,7 @@ module AgentsFyi
       #   it was rejected — travels in the record. When none works, the record is
       #   `unverified`, because a machine that could not make the measurement established
       #   nothing about the move (`AGENTS.md`'s probe rule).
-      def choose_machine(stages, step, preferred:)
+      def choose_machine(stages, step)
         return [@machine, install_bundle(stages, @machine)] if @machine
 
         native = Machine::Native.new
@@ -523,7 +531,7 @@ module AgentsFyi
           return [native, install_bundle(stages, native)]
         end
 
-        candidates = candidates_for(step, preferred)
+        candidates = candidates_for(step)
         if candidates.empty?
           return Record.unverified(
             repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
@@ -570,12 +578,11 @@ module AgentsFyi
         "no interpreter: requires ruby #{floor} (#{Interpreters.matrix.size} era(s) known)"
       end
 
-      def candidates_for(step, preferred)
+      def candidates_for(step)
         Interpreters.candidates(
           requires_ruby: step["requires_ruby"],
           declared: @lockfile.declared_ruby,
-          locked: @lockfile.locked_ruby,
-          preferred: preferred
+          locked: @lockfile.locked_ruby
         )
       end
 

@@ -1261,6 +1261,27 @@ class StepMachineTest < Minitest::Test
   # A move settled under one machine is settled when that same machine would run it now, and
   # re-opened when the machine changed — the digest is the difference a rebuilt era image
   # makes, which is the case the ledger's stamp exists for.
+  # **A move settled on an era this rung would no longer get is re-opened, because the era is the
+  # oldest the floor allows and the ledger is not a starting point.** The ledger is keyed per
+  # repository, so a walk re-entered from below inherits the era of the rungs above it — measured, the
+  # 6.0 rung (floor 2.5) came to run on 2.7 and was `unverified` on a red baseline, because the
+  # entries scoped `ruby_at_least 2.7` are read against the rung's floor and so did not apply. This is
+  # the assertion that separates the two rules: with the ledger's era preferred, the stamp matches and
+  # the move stays settled; with the floor's era, it does not and the move is walked again.
+  def test_a_settled_move_on_an_era_the_rung_would_not_get_is_re_opened
+    dir = app
+    ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
+    ledger.record(repo: "acme/old", commit: "abc12345", from_version: "4.0.0.rc1",
+      to_version: "4.1.0", verdict: "passed",
+      machine: "ruby 2.2 (era-2.2@sha256:#{"f" * 64})", era: "2.2")
+
+    fleet = machines
+    record = step(dir, machines: fleet, ledger: ledger).run
+
+    assert_equal "passed", record.verdict,
+      "a move settled on 2.2 was not walked again on the era its floor actually allows"
+  end
+
   def test_a_settled_move_is_re_opened_when_the_machine_changes
     dir = app
     ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
