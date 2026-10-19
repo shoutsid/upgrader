@@ -199,4 +199,58 @@ class CompanionsTest < Minitest::Test
       "the move cannot be a preflight repair: rspec-rails 3 stops providing assigns, and the gem " \
       "that restores it requires actionpack ~> 5.x"
   end
+
+  # **A block is several lines, and its evidence is one of them.** The insert has to land after the
+  # require that loads the test framework — `Shoulda::Matchers.configure` resolves `:rspec` through
+  # the gem's own registry, so the framework has to be loaded before the block runs — and a second
+  # pass over a tree the first pass fixed must not insert it again. That is what `marker` is for: a
+  # check that looked for the whole block among the file's lines would never find it.
+  def test_a_block_insert_lands_whole_and_is_recognised_by_its_marker
+    shoulda = Companions::SHOULDA_MATCHERS
+    helper = "ENV['RAILS_ENV'] ||= 'test'\nrequire 'rspec/rails'\n\nRSpec.configure do |config|\nend\n"
+    root = tree("spec/spec_helper.rb" => helper)
+
+    edits = Companions.edits(shoulda, root: root)
+
+    assert_equal 1, edits.size, "the companion's edits are #{edits.map(&:path).inspect}"
+    insert = edits.first
+    assert_equal 2, insert.line, "the anchor is the `require 'rspec/rails'` line"
+    assert_equal "require 'rspec/rails'\n#{Companions::SHOULDA_CONFIGURATION}", insert.after
+    assert_includes insert.after, "with.test_framework :rspec"
+    assert_includes insert.after, "with.library :rails"
+
+    Applier.new(root).apply(edits.map(&:to_h))
+    assert_empty Companions.edits(shoulda, root: root),
+      "a second pass over a configured helper is not a second insert"
+    assert(Companions.placed?(shoulda, root: root), "the marker is what says the block is there")
+  end
+
+  # **An application that spells the require another way gets no edit, and the caller has to be able
+  # to say so.** `edits` returns an empty list both when the block is already there and when nothing
+  # carries the anchor; `placed?` is the difference, and at the 7.0 rung it is the difference between
+  # a green baseline and a rung that stops with nothing in the record saying why.
+  def test_a_helper_without_the_anchor_is_not_placed_rather_than_configured
+    root = tree("spec/spec_helper.rb" => "ENV['RAILS_ENV'] ||= 'test'\n")
+
+    assert_empty Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+    refute Companions.placed?(Companions::SHOULDA_MATCHERS, root: root),
+      "no file carries the marker, so the companion is not placed"
+  end
+
+  # **The digest and the companion have to agree about the line here too, and this one is
+  # interpreter-scoped.** The entry that moves shoulda-matchers off 2.8.0 is scoped by `ruby_at_least
+  # 2.7` — the interpreter that removed `BigDecimal.new`, which 2.8.0 calls in a class body at boot —
+  # and the companion's edits are keyed to that same requirement.
+  def test_the_shoulda_companion_is_the_line_the_digest_declares
+    digest = JSON.parse(File.read(DIGEST)).fetch("migrations")
+    rung = digest.select { |migration| migration["gem"] == "shoulda-matchers" }
+      .find { |migration| migration.dig("when", "ruby_at_least") == "2.7" }
+
+    refute_nil rung, "the digest has no shoulda-matchers rule for the 2.7 era"
+    assert_equal Companions::SHOULDA_MATCHERS.requirement, rung["requirement"],
+      "the digest moves shoulda-matchers to #{rung["requirement"].inspect} and the companion's " \
+      "edits are keyed to #{Companions::SHOULDA_MATCHERS.requirement.inspect}"
+    assert_equal true, rung["mechanical"],
+      "the line move is a preflight repair, which is what lets its companion be applied there"
+  end
 end

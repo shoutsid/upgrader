@@ -320,6 +320,16 @@ module AgentsFyi
           return declare(entry, declaration(name), repairs, decisions, notes)
         end
 
+        # **A gem's own upgrade can need an edit to the application's code, and which stage it belongs
+        # to is the entry's clause.** A companion is that rule (see `Companions`), and the two
+        # timings are the same two the digest's own entries have: an entry scoped by the *interpreter*
+        # is a fact about the machine, so its gem has already moved by the time the baseline runs and
+        # the suite the baseline measures is the one that needs the edits; an entry scoped by the
+        # *rung* moves at the pin, so its edits belong at the gems stage, after the baseline and
+        # before the pin's resolve — `Step#apply_companions`, keyed to the route's own move, which is
+        # why nothing is done for one here.
+        apply_companion(entry, repairs, notes) unless rung_scoped?(entry)
+
         found = declaration(name)
         if found.nil?
           return unless locked_gems.include?(name)
@@ -354,6 +364,44 @@ module AgentsFyi
         end
 
         rewrite_declared(entry, found, repairs, notes)
+      end
+
+      # **The rule of a gem's own upgrade, applied where the entry's clause says it belongs.** The
+      # digest moves a line and `Companions` holds the edits a gem's own release forces on the
+      # application's files; both are the same fact seen twice, and the companion is keyed to the
+      # digest's own requirement so the two cannot drift.
+      #
+      # Only an entry a machine may act on has a companion applied: `mechanical` is the digest's
+      # statement that the line moves, and a companion is the code edits *of that move* — applied
+      # beside a line nobody moved, they would be edits for a gem state the application is not in.
+      # The edits go through the applier, so they are line-checked and recorded exactly as every other
+      # edit this tool makes, and a refusal is a note rather than a silent nothing.
+      def apply_companion(entry, repairs, notes)
+        return unless entry["mechanical"] == true
+
+        companion = Companions.for(entry["gem"], entry["requirement"])
+        return if companion.nil?
+
+        edits = Companions.edits(companion, root: @root)
+        if edits.empty?
+          # **An empty list is two facts and the record has to tell them apart.** The file already
+          # carries the insert (a move a person finished, and no note is owed) or no file here carries
+          # its anchor — and that second one is a suite that will stay red with nothing in the record
+          # saying why, which is the failure this whole stage exists to prevent.
+          unless Companions.placed?(companion, root: @root)
+            notes << "the companion for #{entry["gem"]} had nothing to apply: none of " \
+                     "#{Array(companion.inserts).map(&:path).join(", ")} carries the anchor its edits " \
+                     "go beside, so #{companion.note}"
+          end
+          return
+        end
+
+        result = Applier.new(@root).apply(edits.map(&:to_h))
+        repairs.concat(result.applied)
+        result.refused.each do |refusal|
+          notes << "the companion for #{entry["gem"]} refused an edit at #{refusal.path}:" \
+                   "#{refusal.line} — #{refusal.reason}"
+        end
       end
 
       # **One mechanical rewrite of a line the application already declares.** The digest names the
