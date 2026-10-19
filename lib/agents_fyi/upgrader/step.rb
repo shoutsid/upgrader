@@ -609,15 +609,15 @@ module AgentsFyi
       def install_bundle(stages, machine = @machine)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-          env: @worktree.bundle_env, machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
+          env: @worktree.bundle_env(machine: machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
         stages << stage
         if (version = missing_bundler(stage))
           stages << command(Record::BUNDLE,
             ["gem", "install", "--user-install", "bundler", "-v", version, "--no-document"],
-            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine,
+            chdir: @worktree.root, env: @worktree.bundle_env(machine: machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-            env: @worktree.bundle_env, machine: machine)
+            env: @worktree.bundle_env(machine: machine), machine: machine)
           stages << stage
         end
         return stage if stage.ok? || moved_gems.empty?
@@ -669,7 +669,7 @@ module AgentsFyi
         gems = gems.dup
         PIN_ROUNDS.times do
           attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
-            chdir: @worktree.root, env: @worktree.bundle_env, machine: machine,
+            chdir: @worktree.root, env: @worktree.bundle_env(machine: machine || @machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
           return attempt if attempt.ok?
@@ -1079,7 +1079,7 @@ module AgentsFyi
       # suite expects, the bundle this run installed, and the deployment's own values for the
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
-        @tests.machine_test_env.merge(@worktree.bundle_env).merge(@suite_env)
+        @tests.machine_test_env.merge(@worktree.bundle_env(machine: @machine)).merge(@suite_env)
       end
 
       # `KEY=VALUE` lines, `#` comments and blank lines ignored, and a missing file is an

@@ -113,7 +113,7 @@ class StepMachineTest < Minitest::Test
     attr_reader :root, :commit
 
     def description = "fixture"
-    def bundle_env = { "BUNDLE_PATH" => File.join(@home, "bundles", "fixture") }
+    def bundle_env(machine:) = { "BUNDLE_PATH" => File.join(@home, "bundles", "fixture", machine.era.to_s) }
 
     def worktree(_reference, ref:, home:, run:, reuse: false)
       self

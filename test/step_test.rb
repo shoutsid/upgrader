@@ -126,7 +126,14 @@ class StepTest < Minitest::Test
 
     # The bundle goes outside the working copy, as the real one does: a gemset inside a
     # tree the loop commits is a gemset that gets committed.
-    def bundle_env = { "BUNDLE_PATH" => File.join(@home, "bundles", "fixture") }
+    # **A call site that forgot the machine is the bug `Source#bundle_env` exists to prevent**, so
+    # this double refuses one rather than defaulting: the per-era path itself is asserted in
+    # `source_test.rb`, where the real class is the subject.
+    def bundle_env(machine:)
+      raise "no machine: a bundle path shared across eras is the bug this prevents" if machine.nil?
+
+      { "BUNDLE_PATH" => File.join(@home, "bundles", "fixture") }
+    end
 
     def worktree(_reference, ref:, home:, run:, reuse: false)
       @asked << { ref: ref, home: home, run: run, reuse: reuse }
@@ -1077,10 +1084,10 @@ class StepTest < Minitest::Test
     tests = CapturingTests.new(runner: runner)
 
     record = step(dir, runner: runner, tests: tests).run
-    expected = @source.bundle_env["BUNDLE_PATH"]
+    expected = @source.bundle_env(machine: :any)["BUNDLE_PATH"]
 
     assert record.passed?, record.why
-    expected = @source.bundle_env["BUNDLE_PATH"]
+    expected = @source.bundle_env(machine: :any)["BUNDLE_PATH"]
     assert_equal [expected, expected], tests.envs.map { |env| env["BUNDLE_PATH"] },
       "the baseline and the post-step suite did not run under this run's bundle"
     rails_commands = runner.envs.select { |call, _env| call.match?(/bundle|rails/) }

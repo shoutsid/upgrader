@@ -158,11 +158,36 @@ module AgentsFyi
       # a plain `chmod` of the same tree into the same share all succeed — it is `install -c` of a
       # large file that does not. The image ships libxml2-dev 2.9.1 and libxslt1-dev 1.1.28, so the
       # flag skips the vendored build entirely and the gem installs.
-      def bundle_env
-        { "BUNDLE_PATH" => File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16]),
+      # **`BUNDLE_PATH` is per interpreter, because a gemset is evidence rather than an artifact.**
+      # The same rule the miner's environments are held to, one layer down, and measured the hard way
+      # at the 7.0 rung. The path was keyed by the working copy alone, so the extensions the 2.5 era
+      # had built were still in place when the 2.7 era asked for the same tree:
+      #
+      #     LoadError: libruby.so.2.5: cannot open shared object file: No such file or directory
+      #       /agents-fyi/bundles/<key>/gems/strscan-3.1.8/lib/strscan.so
+      #
+      # — a `.so` built against one libruby, loaded by another — and every era after the first one
+      # then fails the machine probe with it, because the probe *is* a `bundle install` and the failure
+      # reads as "no interpreter installed the application's bundle". A *gem cache* may be shared: a
+      # `.gem` is an artifact the index published a hash for. What may not is the tree the gem is
+      # unpacked into and executed from. So the path carries the era, and two eras never share one.
+      # `machine:` is required rather than defaulted: a call site that forgot it would silently share
+      # again, which is the bug this exists to prevent.
+      def bundle_env(machine:)
+        { "BUNDLE_PATH" => File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16],
+          era_of(machine)),
          "BUNDLE_GEMFILE" => File.join(root, "Gemfile"),
          "BUNDLE_WITHOUT" => "development",
          "BUNDLE_BUILD__NOKOGIRI" => "--use-system-libraries" }
+      end
+
+      # The interpreter's own name for the bundle directory. An era is the image a step runs in, which
+      # is one ruby, so it is the unit — and a machine that has no era (the host, in `rvm` mode) is
+      # named by its interpreter instead. Sanitised because an interpreter string carries spaces
+      # (`ruby 2.5.9`) and a path segment may not.
+      def era_of(machine)
+        named = machine.respond_to?(:era) && !machine.era.to_s.empty? ? machine.era : machine.interpreter
+        named.to_s.strip.gsub(/[^A-Za-z0-9._-]/, "-")
       end
 
       # **The bundles of runs that are over.** A gemset is per-run on purpose — a killed step
