@@ -166,6 +166,18 @@ class StepTest < Minitest::Test
     # The routing answer, as the service writes it: no moves unless the test says otherwise,
     # which is what keeps every existing step test about its own subject. `routes:` is a
     # *sequence*, for the one test about what a second ask looks like after research.
+    # The recall reads. Empty on purpose — the brief has its own suite (`brief_test.rb`) — but a
+    # double that omitted them would fail on a read the real step makes, which is the shape of a
+    # double that lies about the interface.
+    attr_reader :upgrade_calls
+
+    def reports_upgrade(library:, **)
+      (@upgrade_calls ||= []) << [library]
+      { "changes" => [] }
+    end
+
+    def search(**) = { "items" => [], "total" => 0 }
+
     def route(ruby:, rails:, lockfile:)
       raise @route_error if @route_error
 
@@ -1484,6 +1496,30 @@ class StepTest < Minitest::Test
 
   # The run body is the whole of what this tool tells the service, so it is asserted
   # rather than implied by the call above.
+  # **Recall happens before the pin, and the record carries it.** The brief is asked where the rung's
+  # gems are known and nothing that can change has happened yet; what comes back travels in the record
+  # and in the run body, so a reader of the pull request or the console sees what the walk knew before
+  # it decided. A brief that lived only in the log is the failure `docs/refactor/adr/0008` names.
+  def test_the_rung_is_briefed_before_it_acts_and_the_brief_travels_with_the_record
+    corpus = FakeCorpus.new(payload: plan(changes: [change]),
+      route: { "ruby" => "2.2.2", "rails" => "5.0.0", "gems_read" => 1,
+               "counts" => { "keep" => 0, "move" => 1, "replace" => 0, "remove" => 0, "blocked" => 0,
+                             "unknown" => 0 },
+               "gems" => [{ "name" => "factory_girl", "version" => "2.6.0", "to" => "4.0.0",
+                            "verdict" => "replace" }] })
+
+    record = step(track(app), corpus: corpus).run
+
+    refute_nil record.brief, "the rung was walked without a brief"
+    gem_section = record.brief.sections.find { |section| section.key == "gem:factory_girl" }
+    refute_nil gem_section, "the brief did not ask about the gem the routing moves"
+    assert_equal %w[rails factory_girl], corpus.upgrade_calls.map(&:first)
+
+    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+    assert_equal record.brief.asked, payload.dig("brief", "asked")
+    assert_equal gem_section.key, payload.dig("brief", "sections").map { |s| s["key"] }.find { |k| k == gem_section.key }
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])

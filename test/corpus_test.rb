@@ -85,6 +85,61 @@ class CorpusTest < Minitest::Test
     end
   end
 
+  # **The move as this corpus observed it, not as the ladder documents it.** Two things are asserted
+  # because both were wrong in the shape the route has: the ecosystem has to be named (`python` is
+  # the service's default, and a Rails walk leaving it out is told no report names the library by a
+  # corpus holding a dozen), and `record: false` has to be sent, because `search_events` measures
+  # what callers looked for and a walker's own questions are not demand.
+  def test_the_corpus_is_read_for_a_move_with_the_ecosystem_named
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "changes" => [] })))
+    corpus.reports_upgrade(library: "rails", from_version: "5.0.0", to_version: "5.1.0")
+
+    uri, request = corpus.requests.last
+    params = URI.decode_www_form(uri.query).to_h
+
+    assert_equal "/reports/upgrade", uri.path
+    assert_equal "ruby", params["ecosystem"]
+    assert_equal "rails", params["library"]
+    assert_equal "5.0.0", params["from_version"]
+    assert_equal "5.1.0", params["to_version"]
+    assert_equal "GET", request.method
+  end
+
+  def test_a_search_is_not_recorded_as_demand
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "items" => [] })))
+    corpus.search(query: "render update")
+
+    uri, = corpus.requests.last
+    params = URI.decode_www_form(uri.query).to_h
+
+    assert_equal "/reports/search", uri.path
+    assert_equal "render update", params["q"]
+    assert_equal "false", params["record"],
+      "a walk's recall went into search_events, which measures callers rather than the tool"
+    assert_equal AgentsFyi::Upgrader::Corpus::DEFAULT_SEARCH_LIMIT.to_s, params["limit"]
+  end
+
+  def test_a_search_that_asks_to_be_recorded_says_so_rather_than_omitting_the_flag
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "items" => [] })))
+    corpus.search(query: "x", record: true)
+
+    uri, = corpus.requests.last
+    refute_includes uri.query.to_s, "record"
+  end
+
+  def test_the_answer_read_also_stays_out_of_the_demand_table
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "answer" => nil })))
+    corpus.answer(query: "ActiveRecord::StatementInvalid", library: "rails", version: "5.1.0")
+
+    uri, = corpus.requests.last
+    params = URI.decode_www_form(uri.query).to_h
+
+    assert_equal "/reports/answer", uri.path
+    assert_equal "false", params["record"]
+    assert_equal "rails", params["library"]
+    assert_equal "5.1.0", params["version"]
+  end
+
   # **A write answers 201, and reading that as an outage cost a whole research pass.** The
   # first real walk's facts writes all succeeded and all were reported as failures
   # ("answered HTTP 201 instead of a plan"), so the routing's `unknown` pins stayed unknown

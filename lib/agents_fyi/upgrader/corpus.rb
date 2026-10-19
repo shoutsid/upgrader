@@ -60,6 +60,11 @@ module AgentsFyi
       # service has no queue" — so a short page here is a short page.
       DEFAULT_TARGET_LIMIT = 100
 
+      # How many reports one question in a brief asks for. A rung asks dozens of questions — one per
+      # change and per gem the routing moves — so the page is small on purpose: the top few are what
+      # a reader acts on, and the brief says how many more there were.
+      DEFAULT_SEARCH_LIMIT = 5
+
       def initialize(base:, timeout: DEFAULT_TIMEOUT, key: nil)
         @base = base.to_s.chomp("/")
         @timeout = timeout
@@ -71,6 +76,47 @@ module AgentsFyi
       # The steps from one Rails release to another, as the service writes them.
       def upgrade(from:, to:)
         call(:get, "/rails/upgrade", params: { from_version: from, to_version: to })
+      end
+
+      # **What this corpus has *observed* about a move.** `/rails/upgrade` (above) is the ladder's
+      # documented half: what a release changed. This is the other half — the reports filed against
+      # that move, with the fixes that resolved them and how they were verified — and it is what a
+      # rung is briefed with before the walk acts (`docs/refactor/adr/0008`, recall).
+      #
+      # `ecosystem` is named rather than defaulted: the service's own default is `python`, and a
+      # Rails walk that left it out would be answered "no report names this library" by a corpus
+      # holding a dozen about it.
+      def reports_upgrade(library:, from_version:, to_version:, symbols: nil, ecosystem: "ruby",
+        include_test: false)
+        params = { library: library, from_version: from_version, to_version: to_version,
+                  ecosystem: ecosystem }
+        params[:symbols] = Array(symbols).join(",") if Array(symbols).any?
+        params[:include_test] = true if include_test
+        call(:get, "/reports/upgrade", params: params)
+      end
+
+      # Search the corpus, **without recording the search as demand**. `record: false` is not a
+      # nicety: `search_events` is this service's only measure of what *callers* looked for and
+      # could not find, and a walker sweeping its own questions through it would describe the tool
+      # rather than the corpus — measured once already, at 10,334 of 10,343 events.
+      def search(query:, limit: DEFAULT_SEARCH_LIMIT, offset: 0, record: false, signatures: [])
+        params = { q: query, limit: limit, offset: offset }
+        params[:signature] = Array(signatures) if Array(signatures).any?
+        params[:record] = false unless record
+        call(:get, "/reports/search", params: params)
+      end
+
+      # The corpus's own answer to a question, with the reports it used and why — the read a brief is
+      # built from when a change's subject is better asked than searched. `record: false` for the
+      # same reason `search` has it.
+      def answer(query: nil, library: nil, version: nil, record: false, max_candidates: nil)
+        params = {}
+        params[:q] = query unless query.to_s.empty?
+        params[:library] = library unless library.to_s.empty?
+        params[:version] = version unless version.to_s.empty?
+        params[:max_candidates] = max_candidates unless max_candidates.nil?
+        params[:record] = false unless record
+        call(:get, "/reports/answer", params: params)
       end
 
       # The ladder itself: where it starts, where it tops out, and one row per step.

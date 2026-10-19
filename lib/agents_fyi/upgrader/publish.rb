@@ -277,6 +277,13 @@ module AgentsFyi
       def body
         lines = ["## What moved", ""]
         lines << "`agents-fyi` walked one rung of the Rails ladder: **#{@from_version} → #{@to_version}**."
+        if @record&.brief
+          lines << ""
+          lines << "## What the corpus already knew"
+          lines << ""
+          lines << @record.brief.to_markdown
+        end
+
         if @record
           lines << ""
           lines << "The step's own verdict: `#{@record.verdict}` — #{@record.why}"

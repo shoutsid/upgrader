@@ -965,6 +965,13 @@ module AgentsFyi
         route = research(corpus, route, ruby: ruby, rails: rails, stages: stages) if
           route.dig("counts", "unknown").to_i.positive?
 
+        # **Recall, before the pin and the suite.** The rung's gems are known here and nothing that
+        # can change has happened yet: this is the point where the corpus is asked what it already
+        # knows about the framework move, each gem the routing moves, and each change the plan names
+        # (`Brief`). It is recorded either way — a walk that asked and was answered with nothing is a
+        # different fact from a walk that did not ask.
+        @brief = recall(step, route)
+
         applied = []
         companions = []
         route.fetch("gems", []).each do |gem|
@@ -1050,6 +1057,26 @@ module AgentsFyi
       # why — in one place rather than in two that disagree about the tense.
       def withdraw_decision(gem)
         @decisions.reject! { |decision| decision.subject.to_s == gem["name"].to_s }
+      end
+
+      # The corpus's memory for this rung, bounded and non-fatal: `Brief` records a question it could
+      # not ask as a section rather than raising, because recall is not permission.
+      def recall(step, route)
+        return nil if @corpus.nil? && @api.to_s.empty?
+
+        brief = Brief.new(corpus: @corpus || Corpus.new(base: @api))
+        result = brief.call(from: step["from_version"], to: step["to_version"],
+          gems: route.fetch("gems", []),
+          subjects: (step["changes"] || []).map { |change|
+            { "subject" => change["subject"], "change_kind" => change["kind"] }
+          })
+        @out.puts("  recall: #{result.sections.length} question(s), " \
+                  "#{result.sections.sum { |section| section.items.length }} report(s)" \
+                  "#{result.truncated ? ", truncated" : ""}") if @out
+        result
+      rescue Corpus::Refused, Corpus::Unreachable => e
+        @out.puts("  recall: unavailable (#{e.message})") if @out
+        nil
       end
 
       def routing_decision(gem, reason: nil)
@@ -2443,7 +2470,7 @@ module AgentsFyi
           era: @machine.respond_to?(:era) ? @machine.era : nil,
           stages: stages, applied: @applied, refused: @refused, decisions: @decisions,
           patch: capture_patch, baseline: @baseline, suite: @suite,
-          verdict: verdict, why: why
+          verdict: verdict, why: why, brief: @brief
         )
       end
 
@@ -2667,7 +2694,10 @@ module AgentsFyi
           "started_at" => nil,
           "finished_at" => record.recorded_at,
           "commands" => record.stages.map { |stage| command_payload(stage) },
-          "refusals" => refusal_payloads(record)
+          "refusals" => refusal_payloads(record),
+          # What the rung knew before it decided. Absent for a record that never got as far as
+          # recall (a refusal), which the service stores as no brief rather than as an empty one.
+          "brief" => record.brief&.to_h
         }
       end
 

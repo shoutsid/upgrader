@@ -132,6 +132,12 @@ class StepMachineTest < Minitest::Test
         "next_step" => "one step" }
     end
 
+    # The recall reads: empty, because these tests are about the machine and the brief has its own
+    # suite. Present so the double is the interface rather than the part of it these tests use.
+    def reports_upgrade(**) = { "changes" => [] }
+
+    def search(**) = { "items" => [], "total" => 0 }
+
     def route(ruby:, rails:, lockfile:)
       { "ruby" => ruby, "rails" => rails, "gems_read" => 0,
         "counts" => { "keep" => 0, "move" => 0, "replace" => 0, "remove" => 0, "blocked" => 0,
