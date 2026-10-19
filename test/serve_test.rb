@@ -35,7 +35,7 @@ class ServeTest < Minitest::Test
   # one of two states (committed when it passed, reset when it did not). A record's patch
   # and command list are still none of this loop's business, which is why this is a Struct
   # rather than the real thing.
-  Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version,
+  Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version, :commit,
     keyword_init: true) do
     def passed? = verdict == AgentsFyi::Upgrader::Record::PASSED
   end
@@ -58,14 +58,16 @@ class ServeTest < Minitest::Test
     # the next one's assertions.
     @calls = []
     @results = []
+    @walked = 0
 
     class << self
-      attr_reader :calls, :results
+      attr_reader :calls, :results, :walked
     end
 
     def self.reset!(results: [])
       @results = results
       @calls = []
+      @walked = 0
     end
 
     def self.next_result
@@ -85,6 +87,8 @@ class ServeTest < Minitest::Test
       raise result if result.is_a?(Exception) || (result.is_a?(Class) && result <= Exception)
       return result if result.nil?
 
+      self.class.instance_variable_set(:@walked, self.class.walked + 1)
+
       # What a real step leaves behind: a pin it rewrote and a file it added. The loop's
       # own work on the tree is decided from exactly these, so a double that handed back a
       # *clean* path would leave both halves untested while looking tested.
@@ -93,7 +97,7 @@ class ServeTest < Minitest::Test
       settle(result)
 
       Result.new(verdict: result.verdict, to_version: result.to_version, worktree: @worktree,
-        repository: @kwargs[:repository], from_version: "4.2.11")
+        repository: @kwargs[:repository], from_version: "4.2.11", commit: "9f2c1ab8")
     end
 
     # A real git tree, because what the loop does with it — commit a passing step, reset
@@ -125,6 +129,32 @@ class ServeTest < Minitest::Test
 
       ledger.record(repo: @kwargs[:repository], commit: "9f2c1ab8", from_version: "4.2.11",
         to_version: result.to_version, verdict: result.verdict)
+    end
+  end
+
+  # A publisher that fails the first attempt and succeeds on the retry. The first answer is a
+  # branch that never reached the remote; the second is the same commit with a pull request.
+  class RetryPublish
+    @calls = []
+    class << self
+      attr_reader :calls
+    end
+    def self.reset! = (@calls = [])
+
+    def initialize(**kwargs)
+      @kwargs = kwargs
+      self.class.calls << kwargs
+    end
+
+    def call
+      if self.class.calls.size == 1
+        AgentsFyi::Upgrader::Publish::Result.new(pushed: false, branch: "agents-fyi/upgrade-5.0.0",
+          commit: "c0ffee01", reason: "the branch could not be pushed: no route to host")
+      else
+        AgentsFyi::Upgrader::Publish::Result.new(pushed: true, branch: "agents-fyi/upgrade-5.0.0",
+          base: "main", commit: "c0ffee01",
+          pull_request: "https://github.com/acme/storefront/pull/2", reason: "")
+      end
     end
   end
 
@@ -214,11 +244,11 @@ class ServeTest < Minitest::Test
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
             ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil,
-            project: nil)
+            project: nil, publish_class: FakePublish)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
-      walk: walk, publish: publish, rungs: rungs, publish_class: FakePublish, force: force,
+      walk: walk, publish: publish, rungs: rungs, publish_class: publish_class, force: force,
       record: record, project: project)
   end
 
@@ -609,6 +639,26 @@ class ServeTest < Minitest::Test
     assert_equal %w[5.0.0 5.1.0], FakePublish.published.map(&:to_version)
     assert_includes out.string, "agents-fyi/upgrade-5.0.0"
     assert_includes out.string, "agents-fyi/upgrade-5.1.0"
+  end
+
+  # **A passed rung whose branch never arrived is retried as a delivery, not as a walk.** The first
+  # attempt fails; the next cycle publishes the rung's recorded commit and walks nothing, because the
+  # suite that passed is the evidence and re-running the step would spend it again.
+  def test_an_undelivered_passed_rung_is_retried_without_walking_it_again
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
+    RetryPublish.reset!
+    out = StringIO.new
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+
+    serve(corpus: corpus, cycles: 2, to: "5.0.0", walk: true, publish: true, rungs: 1,
+      publish_class: RetryPublish, out: out).run
+
+    assert_equal 1, FakeStep.walked, "the rung was walked again instead of delivered"
+    assert_equal 2, RetryPublish.calls.size
+    assert_includes out.string, "delivery retry"
+    assert_includes out.string, "pull/2"
+    assert_equal "c0ffee01", RetryPublish.calls.last[:commit],
+      "the retry did not carry the commit the first attempt produced"
   end
 
   def test_publishing_is_off_unless_asked_for

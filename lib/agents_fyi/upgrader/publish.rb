@@ -71,8 +71,15 @@ module AgentsFyi
         pattern.to_s.gsub("<release>", version.to_s)
       end
 
+      # **Whether a repository has a pull request to open at all.** A plain git remote is a delivered
+      # branch with no request, and that is a complete delivery rather than a failure — the caller
+      # needs to tell the two apart to know whether to retry.
+      def self.github?(repository)
+        repository.to_s.match?(%r{\A(https://|http://|git://|git@)github\.com[:/]})
+      end
+
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
-                     out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil)
+                     out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -93,6 +100,10 @@ module AgentsFyi
         # The project's branch pattern, or this tool's own namespace: the one place a branch name is
         # built, so a chain's base and its branch can never be spelled by two rules.
         @branch_pattern = branch_pattern.to_s.empty? ? DEFAULT_BRANCH : branch_pattern.to_s
+        # **The commit to publish, when the step is not the one publishing it.** A delivery retry
+        # carries the commit the first attempt produced: the tree has moved on, and re-committing a
+        # clean tree would publish a different fact than the one the suite established.
+        @commit = commit.to_s
       end
 
       def call
@@ -107,7 +118,7 @@ module AgentsFyi
         # token an obligation of the wrong thing. The token is required exactly where there
         # is an API to call.
         unless github?
-          commit = commit_step
+          commit = publish_commit
           pushed, pushed_why = push(commit)
           return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
@@ -123,7 +134,7 @@ module AgentsFyi
             "keep working from the patch this step left behind")
         end
 
-        commit = commit_step
+        commit = publish_commit
         pushed, pushed_why = push(commit)
         return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
@@ -190,10 +201,13 @@ module AgentsFyi
         nil
       end
 
-      # The step's changes as one commit, with a message that names the move. `Checkpoint`'s
+      # The commit a delivery publishes: the retry's recorded one when it has it, and otherwise
+      # the step's changes as one commit, with a message that names the move. `Checkpoint`'s
       # message is reused rather than written again: a branch and a kept tree are two copies
       # of the same rung, and `git log` on either should read the same.
-      def commit_step
+      def publish_commit
+        return @commit unless @commit.empty?
+
         Checkpoint.commit(@root, from: @from_version, to: @to_version, out: @out)
       end
 
@@ -253,9 +267,7 @@ module AgentsFyi
         @api ||= GitHub.new(token: @token)
       end
 
-      def github?
-        @repository.match?(%r{\A(https://|http://|git://|git@)github\.com[:/]})
-      end
+      def github? = self.class.github?(@repository)
 
       # `owner` and `name` out of every spelling GitHub is cloned by:
       # `https://github.com/owner/name(.git)` and `git@github.com:owner/name(.git)`.
@@ -277,6 +289,11 @@ module AgentsFyi
       def body
         lines = ["## What moved", ""]
         lines << "`agents-fyi` walked one rung of the Rails ladder: **#{@from_version} → #{@to_version}**."
+        unless @commit.empty?
+          lines << ""
+          lines << "This branch is the rung's recorded commit `#{@commit[0, 8]}`: the first delivery " \
+                   "attempt could not reach the remote, and the rung was not re-walked."
+        end
         if @record&.brief
           lines << ""
           lines << "## What the corpus already knew"

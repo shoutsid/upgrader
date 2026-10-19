@@ -45,6 +45,28 @@ class LedgerTest < Minitest::Test
     end
   end
 
+  # **Delivery survives the file too, and a new record clears it.** The loop reads it in a later
+  # process to retry a rung it must not re-walk; a new attempt at the move is a different commit, so
+  # the old delivery would be evidence about another tree.
+  def test_delivery_round_trips_and_a_new_record_clears_it
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "ledger.json")
+      ledger = ledger_at(path)
+      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      ledger.deliver(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO,
+        state: { "attempted" => true, "delivered" => false, "commit" => "c0ffee01" })
+
+      read = ledger_at(path).find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
+      assert_equal "c0ffee01", read.delivery["commit"]
+      assert_equal false, read.delivery["delivered"]
+      refute_empty read.delivery["attempted_at"]
+
+      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      cleared = ledger_at(path).find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
+      assert_nil cleared.delivery, "a new record kept a delivery about another attempt"
+    end
+  end
+
   def test_a_missing_file_is_an_empty_ledger_rather_than_an_error
     Dir.mktmpdir do |dir|
       ledger = ledger_at(File.join(dir, "ledger.json"))

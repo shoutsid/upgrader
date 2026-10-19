@@ -177,6 +177,32 @@ class PublishTest < Minitest::Test
     assert_includes shown, %(gem "rails", "4.1.0")
   end
 
+  # **A retry publishes the commit the rung produced, and commits nothing.** The tree has moved on
+  # since the rung passed; committing it again would publish a different fact than the one the suite
+  # established, so the recorded commit is what reaches the branch.
+  def test_a_delivery_retry_pushes_the_recorded_commit_without_committing_again
+    bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.0"\n))
+    first = Publish.new(root: clone, repository: bare, from_version: "4.0.0.rc1",
+      to_version: "4.1.0", record: passed_record(repository: bare), token: "").call
+    assert first.pushed, first.reason
+
+    # The walk moved on: the tree is at the next rung, and the retry must not use it.
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
+    commit(clone, "the next rung")
+    head, = capture("git", "-C", clone, "rev-parse", "HEAD")
+
+    retried = Publish.new(root: clone, repository: bare, from_version: "4.0.0.rc1",
+      to_version: "4.1.0", record: nil, token: "", commit: first.commit).call
+
+    assert retried.pushed, retried.reason
+    assert_equal first.commit, retried.commit
+    branch, = capture("git", "-C", bare, "rev-parse", "refs/heads/agents-fyi/upgrade-4.1.0")
+    assert_equal first.commit, branch.strip, "the branch is not the rung's recorded commit"
+    now, = capture("git", "-C", clone, "rev-parse", "HEAD")
+    assert_equal head.strip, now.strip, "a delivery retry made a commit"
+  end
+
   # The chain: the second rung's request targets the first rung's branch, which is what
   # makes GitHub show one rung's worth of diff instead of the whole walk.
   def test_the_previous_rung_s_branch_is_the_base_when_the_remote_has_it

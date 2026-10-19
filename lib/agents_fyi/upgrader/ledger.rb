@@ -66,10 +66,18 @@ module AgentsFyi
       # than assumed done.
       SETTLED_VERDICTS = [PASSED, REFUSED].freeze
 
+      # **Delivery is a fact about a passed rung, and it is not the verdict.** A rung can pass and
+      # its branch never reach the remote; the next cycle must retry the *delivery* from the commit
+      # the step produced, not re-walk the rung. `delivery` is nil for a step nobody asked to publish
+      # (or one that has not been attempted), and a hash written by `deliver` otherwise:
+      # `attempted`, `delivered`, `branch`, `commit` (the produced commit), `pull_request`, `reason`,
+      # `root` (the tree the commit lives in) and `branch_pattern`. An entry written by a version
+      # without this field reads as "not attempted", which is the safe direction: a passed rung is
+      # never re-published by guessing.
       Entry = Struct.new(
         :repo, :commit, :from_version, :to_version,
         :verdict, :baseline, :image, :machine, :era, :attempts, :note, :recorded_at,
-        keyword_init: true
+        :delivery, keyword_init: true
       )
 
       # The ledger at `path`, with an unreadable file set aside rather than raising.
@@ -204,9 +212,27 @@ module AgentsFyi
           era: era,
           attempts: (previous.nil? ? 0 : previous.attempts.to_i) + (spends_an_attempt?(verdict) ? 1 : 0),
           note: note.to_s,
-          recorded_at: Time.now.utc.iso8601
+          recorded_at: Time.now.utc.iso8601,
+          # A new attempt at the move invalidates any delivery of the old one: the commit and the
+          # outcome are different facts, and carrying the old branch state forward would mark a rung
+          # delivered on evidence about another tree.
+          delivery: nil
         )
         @entries[identifier] = entry
+        save!
+        entry
+      end
+
+      # **What happened when this passed rung was published**, stored on its own key so the loop can
+      # find an undelivered rung without re-running the step. `state` is the publisher's result plus
+      # the two facts a retry needs and the result does not carry: the produced commit and the tree
+      # it lives in. The entry must already exist — a delivery with no verdict is not a fact this
+      # ledger can place.
+      def deliver(repo:, commit:, from_version:, to_version:, state:)
+        entry = find(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
+        return nil if entry.nil?
+
+        entry.delivery = state.merge("attempted_at" => Time.now.utc.iso8601)
         save!
         entry
       end
@@ -273,7 +299,8 @@ module AgentsFyi
           era: entry["era"].to_s,
           attempts: entry["attempts"].to_i,
           note: entry["note"].to_s,
-          recorded_at: entry["recorded_at"].to_s
+          recorded_at: entry["recorded_at"].to_s,
+          delivery: entry["delivery"].is_a?(Hash) ? entry["delivery"] : nil
         )
         @entries[
           key(
@@ -328,7 +355,8 @@ module AgentsFyi
           "era" => entry.era,
           "attempts" => entry.attempts,
           "note" => entry.note,
-          "recorded_at" => entry.recorded_at
+          "recorded_at" => entry.recorded_at,
+          "delivery" => entry.delivery
         }
       end
     end

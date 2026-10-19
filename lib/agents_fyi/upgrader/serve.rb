@@ -186,6 +186,12 @@ module AgentsFyi
       end
 
       def walk
+        # **A settled rung is not a delivered one.** Delivery is retried before this cycle asks for
+        # work, because a passed rung whose branch or pull request never arrived is already paid for
+        # — re-walking it would spend the rung again — and a delivery that failed in a previous cycle
+        # is exactly what the ledger now remembers. This runs even when there is nothing to walk: the
+        # debt is about a rung that already passed.
+        retry_delivery if @publish
         return :idle if target.nil?
 
         outcomes = work.map { |spec| walk_spec(spec) }
@@ -246,14 +252,88 @@ module AgentsFyi
       # that did not happen is a line rather than a raised exception: the rung *passed*, and
       # a branch that could not be pushed does not un-pass it.
       def publish(record)
+        root = record.worktree.to_s.empty? ? @home : record.worktree
+        pattern = @project&.delivery&.branch
         result = @publish_class.new(
-          root: record.worktree.to_s.empty? ? @home : record.worktree,
-          repository: record.repository, from_version: record.from_version,
+          root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
-          token: ENV[Publish::ENV_TOKEN],
-          branch_pattern: @project&.delivery&.branch
+          token: ENV[Publish::ENV_TOKEN], branch_pattern: pattern
         ).call
         @out.puts("serve: #{record.repository} — #{result}")
+        remember_delivery(record, result, root: root, pattern: pattern)
+      end
+
+      # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
+      # of the record — which is gone by then — and the retry needs the produced commit and the tree
+      # it lives in; neither is in the publisher's result or the service's run row.
+      def remember_delivery(record, result, root:, pattern:)
+        return if @ledger.nil?
+
+        @ledger.deliver(
+          repo: record.repository, commit: record.commit,
+          from_version: record.from_version, to_version: record.to_version,
+          state: {
+            "attempted" => true,
+            "delivered" => delivered?(result, record.repository),
+            "branch" => result.branch,
+            "commit" => result.commit,
+            "pull_request" => result.pull_request,
+            "reason" => result.reason,
+            "root" => root.to_s,
+            "branch_pattern" => pattern.to_s
+          }
+        )
+      end
+
+      # A branch is delivered when it is on the remote. A pull request is part of delivery only on
+      # github.com; a plain git remote has nowhere to open one, and treating that as unfinished is how
+      # a mirror would be retried for ever.
+      def delivered?(result, repository)
+        return false unless result.pushed
+
+        github = @publish_class.respond_to?(:github?) ? @publish_class.github?(repository) : true
+        !github || !result.pull_request.to_s.empty?
+      end
+
+      # **Delivery, on its own.** A passed rung whose publish failed is retried from the commit the
+      # first attempt produced, and never through the step: the suite that passed is the evidence, and
+      # re-walking the rung would both spend it again and change the commit the branch should carry.
+      # A tree that is gone cannot be retried (the commit was in it, and the corpus holds the patch but
+      # not the objects), so that is said rather than silently skipped.
+      def retry_delivery
+        return if @ledger.nil?
+
+        @ledger.entries.each do |entry|
+          delivery = entry.delivery
+          next unless entry.verdict == Ledger::PASSED && delivery.is_a?(Hash)
+          next unless delivery["attempted"] == true && delivery["delivered"] != true
+
+          root = delivery["root"].to_s
+          unless File.directory?(root)
+            @out.puts("serve: #{entry.repo} — the delivery of #{entry.to_version} cannot be retried: " \
+                      "the tree at #{root} is gone")
+            next
+          end
+
+          result = @publish_class.new(
+            root: root, repository: entry.repo, from_version: entry.from_version,
+            to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
+            out: @out, token: ENV[Publish::ENV_TOKEN],
+            branch_pattern: delivery["branch_pattern"]
+          ).call
+          @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
+          @ledger.deliver(
+            repo: entry.repo, commit: entry.commit,
+            from_version: entry.from_version, to_version: entry.to_version,
+            state: delivery.merge(
+              "delivered" => delivered?(result, entry.repo),
+              "branch" => result.branch,
+              "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
+              "pull_request" => result.pull_request,
+              "reason" => result.reason
+            )
+          )
+        end
       end
 
       # The operator's list wins when there is one — a deployment that named its repositories
