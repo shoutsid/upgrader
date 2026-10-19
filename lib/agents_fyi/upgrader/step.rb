@@ -621,9 +621,26 @@ module AgentsFyi
             env: @worktree.bundle_env(machine: machine), machine: machine)
           stages << stage
         end
-        return stage if stage.ok? || moved_gems.empty?
+        return stage if stage.ok? || (moved_gems.empty? && broken_extension(stage).nil?)
 
-        conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
+        # **A native extension that will not build is a fact about the *version* the lock holds, and the
+        # installer names it.** Measured at the 7.2 rung on the 3.2 era: `An error occurred while
+        # installing nio4r (2.3.1), and Bundler cannot continue. In Gemfile: rails was resolved to
+        # 7.1.0, which depends on actioncable …` — a *transitive* gem, so nothing this tool edited
+        # names it and the conservative update above had nothing to widen. The installer's own sentence
+        # is the evidence, and the fix is the same one the pin uses for a line it cannot resolve: name
+        # the gem and let the resolver take the newest release that fits.
+        conservative_update(stages, (moved_gems + Array(broken_extension(stage))).uniq,
+          stage: Record::BUNDLE, machine: machine)
+      end
+
+      # The gem whose own extension failed to build, from the installer's own sentence. A name that is
+      # not in the lock is not one this can move, and nil is "the failure was something else".
+      def broken_extension(stage)
+        name = stage.output_tail.to_s[/An error occurred while installing ([a-zA-Z0-9_-]+) \(/, 1]
+        return nil if name.nil? || !@lockfile.specs.key?(name)
+
+        name
       end
 
       # **A lock whose `BUNDLED WITH` names a bundler the era cannot run has to lose that trailer, and

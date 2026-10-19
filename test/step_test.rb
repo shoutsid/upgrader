@@ -423,6 +423,24 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **A double whose bundle install fails the way a compiler does.** The installer names the gem it could
+  # not build — `An error occurred while installing nio4r (2.3.1)` — and that sentence is the only thing
+  # that says which line to move, because a *transitive* gem is one nothing this tool edited names.
+  class BrokenExtensionRunner < FakeRunner
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil)
+      if argv.join(" ") == "bundle install"
+        @calls << argv.join(" ")
+        @envs << [argv.join(" "), env]
+        @timeouts << [argv.join(" "), timeout]
+        @stdins << [argv.join(" "), nil]
+        return Command.new(stage: stage, command: argv.join(" "), ran: true, exit_code: 5, seconds: 0.1,
+          output_tail: "An error occurred while installing nio4r (2.3.1), and Bundler cannot continue.\n")
+      end
+
+      super
+    end
+  end
+
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
            suite_env: nil, applier: nil)
@@ -1031,6 +1049,22 @@ class StepTest < Minitest::Test
     # And nothing after it ran — no pin, no `app:update`, no boot. Carrying on would report
     # on a tree whose gems are missing.
     assert_equal ["git rev-parse --short HEAD", "bundle --version", "bundle install"], runner.calls
+  end
+
+  # **A native extension that will not build is a fact about the version the lock holds, and the
+  # installer names it.** Measured at the 7.2 rung on the 3.2 era: `nio4r 2.3.1` is a *transitive* gem
+  # (actioncable depends on it), so nothing this tool edited names it and the conservative update had
+  # nothing to widen — the install stage stopped with a bundle it could not build. The installer's own
+  # sentence is the evidence, and the fix is the one the pin uses for a line it cannot resolve: name the
+  # gem and let the resolver take the newest release that fits.
+  def test_a_transitive_extension_that_will_not_build_is_named_in_the_update
+    dir = track(app(lockfile: LOCKFILE.sub(/^(  specs:\n)/, "\\1    nio4r (2.3.1)\n")))
+    runner = BrokenExtensionRunner.new
+
+    step(dir, runner: runner).run
+
+    assert_includes runner.calls, "bundle update nio4r --conservative",
+      "the gem the installer named was not moved: #{runner.calls.inspect}"
   end
 
   # A kept tree — one the loop owns across cycles — is put back to its base commit before
