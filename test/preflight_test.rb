@@ -773,4 +773,30 @@ class PreflightTest < Minitest::Test
       "a relation's exists? was rewritten: #{result.repairs.map(&:subject).inspect}"
     assert_includes read(dir, "app/models/user.rb"), "User.exists?(1)"
   end
+
+  # **A companion's stage follows its entry's clause, and the deferred stage is the rung-scoped one.**
+  # An interpreter-scoped entry's companion is applied beside its line in the preflight, because the
+  # baseline that needs it runs before the pin; a rung-scoped entry's line moves *after* the pin, so its
+  # edits belong there too. Measured at the 7.2 rung: `factory_girl_rails`'s rename is scoped by
+  # `rails_at_least 7.2`, and the application's 93 `FactoryGirl` call sites have to move with the line or
+  # the suite the pin leaves behind cannot load.
+  def test_a_deferred_entrys_companion_is_applied_where_its_line_is
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.0.rc1"\n) +
+      %(gem "factory_girl_rails", "~> 4.0"\n)
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "spec", "factories"))
+    File.write(File.join(dir, "spec", "factories", "user_factory.rb"),
+      "FactoryGirl.define do\n  factory :user do\n  end\nend\n")
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.2", rails: "7.2.0")
+      .declare_deferred([
+        entry(gem: "factory_girl_rails", replacement: "factory_bot_rails", requirement: "~> 4.9",
+          condition: { "rails_at_least" => "7.2" })
+      ])
+
+    assert_includes read(dir, "Gemfile"), %(gem "factory_bot_rails", "~> 4.9")
+    assert_includes read(dir, "spec/factories/user_factory.rb"), "FactoryBot.define do"
+    assert(result.repairs.any? { |each| each.subject == "factory_bot" },
+      "the companion was not applied with its line: #{result.repairs.map(&:subject).inspect}")
+  end
 end

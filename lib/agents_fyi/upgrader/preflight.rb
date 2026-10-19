@@ -188,6 +188,13 @@ module AgentsFyi
             notes << "the digest's entry for #{name} was held for the pin, but the Gemfile " \
                      "declares no line of its own for it: #{entry["note"]}"
           end
+          # **A companion's stage follows its entry's clause, and this is the rung-scoped stage.** The
+          # preflight applies an interpreter-scoped entry's companion beside its line, because the
+          # baseline that needs it runs before the pin; a rung-scoped entry's line moves *here*, after the
+          # pin, so its edits belong here too. Measured at the 7.2 rung: `factory_girl_rails`'s rename is
+          # scoped by `rails_at_least 7.2`, and the application's 93 `FactoryGirl` call sites have to move
+          # with the line or the suite the pin leaves behind cannot load.
+          apply_companion(entry, repairs, notes)
         end
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: [])
       end

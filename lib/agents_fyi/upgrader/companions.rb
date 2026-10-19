@@ -322,7 +322,39 @@ module AgentsFyi
         ]
       )
 
-      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS].freeze
+      # **A gem the framework deprecated by name, whose successor is the same code under a new one — and
+      # the code has to be renamed with it.** Measured at the 7.2 rung: `app:update` dies inside
+      # `Bundler.require` with `factory_girl-4.9.0/lib/factory_girl.rb:158: private method `warn' called
+      # for ActiveSupport::Deprecation:Class`, which Rails 7.2 made private — and `factory_bot` 4.9.0,
+      # the same release renamed, has no `Deprecation.warn` call site at all (measured by fetching each
+      # release and grepping its own files). The application has **93** `FactoryGirl` call sites: the
+      # factories, the specs, and `spec_helper`'s `config.include FactoryGirl::Syntax::Methods`.
+      #
+      # **A whole-word rename, and nothing cleverer.** The two names are the same length of idea and
+      # differ by one word, so a rule that rewrote `FactoryGirl` wherever it appears as a constant is the
+      # whole change; `FactoryBot` inside a string or a symbol is not this gem's business and a
+      # word-boundary pattern leaves it alone.
+      FACTORY_BOT = Entry.new(
+        gem: "factory_girl_rails",
+        requirement: "~> 4.9",
+        subject: "factory_bot",
+        note: "factory_girl was renamed factory_bot at 4.9.0 — the same release under a new name — and " \
+              "the application's 93 `FactoryGirl` call sites have to move with it; measured, factory_bot " \
+              "4.9.0 also stops calling the `ActiveSupport::Deprecation.warn` that Rails 7.2 made private",
+        globs: %w[app/**/*.rb config/**/*.rb lib/**/*.rb spec/**/*.rb test/**/*.rb],
+        inserts: [],
+        rules: [
+          Rewrites::Rule.new(
+            family: :name_moved,
+            subject: "factory_bot",
+            pattern: /\bFactoryGirl\b/,
+            replace: "FactoryBot",
+            all: true
+          )
+        ]
+      )
+
+      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS, FACTORY_BOT].freeze
 
       class << self
         # The companion for a move, or nil. The requirement is matched exactly: the digest's line *is*

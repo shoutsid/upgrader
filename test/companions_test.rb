@@ -387,4 +387,30 @@ class CompanionsTest < Minitest::Test
     refute(edits.any? { |edit| edit.after.to_s.include?(":username).case_insensitive") },
       "a case-sensitive uniqueness assertion was told to be case-insensitive")
   end
+
+  # **A gem renamed by its own maintainers, and the code has to be renamed with it.** Measured at the
+  # 7.2 rung: `factory_girl-4.9.0/lib/factory_girl.rb:158: private method `warn' called for
+  # ActiveSupport::Deprecation:Class` — Rails 7.2 made that private — and `factory_bot` 4.9.0, the same
+  # release renamed, does not call it at all. The application has 93 `FactoryGirl` call sites.
+  def test_the_gem_that_was_renamed_takes_its_constant_with_it
+    factory = Companions::FACTORY_BOT
+    root = tree(
+      "spec/factories/user_factory.rb" => "FactoryGirl.define do\n  factory :user do\n  end\nend\n",
+      "spec/model/user_spec.rb" => "user = FactoryGirl.create(:user)\nFactoryGirl.build(:user)\n"
+    )
+
+    edits = Companions.edits(factory, root: root)
+
+    assert_equal 3, edits.size, "every call site is the change: #{edits.map(&:after).inspect}"
+    edits.each { |edit| assert_includes edit.after, "FactoryBot" }
+    refute_match(/FactoryGirl/, edits.map(&:after).join)
+  end
+
+  # **The rename is a word, not a string.** `FactoryGirl` inside a string is somebody's data, and a
+  # pattern without a word boundary would rewrite it.
+  def test_the_rename_leaves_a_string_that_merely_names_it
+    root = tree("spec/x_spec.rb" => %(puts "FactoryGirl is the old name"\n))
+
+    assert_empty Companions.edits(Companions::FACTORY_BOT, root: root)
+  end
 end
