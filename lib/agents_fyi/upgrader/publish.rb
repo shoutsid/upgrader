@@ -68,7 +68,7 @@ module AgentsFyi
       def self.branch_for(version) = "#{BRANCH_PREFIX}#{version}"
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
-                     out: nil, api: nil, git: nil)
+                     out: nil, api: nil, git: nil, pause: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -83,6 +83,9 @@ module AgentsFyi
         # and a rejected lease without a network: [output, status], the shape
         # `Checkpoint`'s own `git` returns.
         @git = git
+        # How a retry waits, injectable so a test drives three attempts without sleeping through
+        # them. See `push` for why a push is retried at all.
+        @pause = pause || ->(seconds) { sleep(seconds) }
       end
 
       def call
@@ -171,11 +174,32 @@ module AgentsFyi
         Checkpoint.commit(@root, from: @from_version, to: @to_version, out: @out)
       end
 
-      def push(commit)
-        out, status = git("push", "--quiet", "--force", push_url, "#{commit}:refs/heads/#{branch}")
-        return [true, ""] if status&.success?
+      # **A push is retried, because the failure a walk actually meets is the network.** Measured on
+      # the deployment: `agents-fyi/upgrade-4.1.0` pushed and opened its pull request, and the next
+      # rung's push answered `fatal: unable to access … Could not resolve host: github.com` — the rung
+      # *passed*, the branch was never created, and the hole is permanent because the loop never
+      # revisits a passed rung (`settled?`). A transient failure clears on a second attempt; a
+      # permanent one — no permission, a rejected ref — reports the same reason after the last, so the
+      # retry costs two attempts and buys back a rung's delivery.
+      PUSH_ATTEMPTS = 3
 
-        [false, "the branch could not be pushed to #{@repository}: #{redact(out.to_s.strip)}"]
+      # Seconds before the second attempt, doubled for the third. Short: a resolver that was not
+      # answering a moment ago is the case this is for, and a walk is not waiting on it.
+      PUSH_BACKOFF_SECONDS = 5
+
+      def push(commit)
+        reason = ""
+        PUSH_ATTEMPTS.times do |attempt|
+          out, status = git("push", "--quiet", "--force", push_url, "#{commit}:refs/heads/#{branch}")
+          return [true, ""] if status&.success?
+
+          reason = "the branch could not be pushed to #{@repository}: #{redact(out.to_s.strip)}"
+          next if attempt == PUSH_ATTEMPTS - 1
+
+          @out.puts("publish: #{reason} — retrying") if @out
+          @pause.call(PUSH_BACKOFF_SECONDS * (attempt + 1))
+        end
+        [false, reason]
       end
 
       # The origin URL with a token in it. GitHub's own convention for an app token is the

@@ -444,6 +444,38 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **A reader of the panel is asking about the move happening now, and that is the rung's.**
+  # `@to` is where the *walk* is going, so a progress write fed from it says "5.0.0 -> 6.0.0" while
+  # the step is moving to 5.0.0. The runner reads the file on the way past, because the step clears it
+  # when it finishes and the panel is only interesting *during* a step.
+  class ReadingRunner < FakeRunner
+    attr_reader :seen
+
+    def initialize(dir)
+      super()
+      @dir = dir
+      @seen = []
+    end
+
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
+      path = File.join(@dir, "state", "progress.json")
+      @seen << JSON.parse(File.read(path))["to_version"] if File.file?(path)
+      super
+    end
+  end
+
+  def test_the_live_view_names_the_rung_being_walked_rather_than_the_loops_target
+    dir = track(app)
+    runner = ReadingRunner.new(dir)
+
+    step(dir, corpus: FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11")),
+      tests: CapturingTests.new, runner: runner).run
+
+    refute_empty runner.seen, "the step wrote no progress at all"
+    assert_equal ["5.0.0"], runner.seen.compact.uniq,
+      "the live view named the loop's target rather than the rung: #{runner.seen.compact.uniq.inspect}"
+  end
+
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
            suite_env: nil, applier: nil)

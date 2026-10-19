@@ -87,17 +87,20 @@ class PublishTest < Minitest::Test
   class FakeGit
     attr_reader :calls
 
-    def initialize(symref: "ref: refs/heads/main\tHEAD", heads: "", push: [0, ""])
+    def initialize(symref: "ref: refs/heads/main\tHEAD", heads: "", push: [0, ""], pushes: nil)
       @symref = symref
       @heads = heads
-      @push = push
+      # A *sequence* is how a retry is driven: the first attempt fails the way the deployment's did
+      # and the second succeeds, with no network and no sleeping.
+      @pushes = pushes || [push]
       @calls = []
     end
 
     def call(root, *argv)
       @calls << argv
       if argv.first == "push"
-        [@push.last, @push.first.zero? ? instance_double_success : instance_double_failure]
+        status, output = @pushes.size > 1 ? @pushes.shift : @pushes.first
+        [output, status.zero? ? instance_double_success : instance_double_failure]
       elsif argv.include?("--symref")
         [@symref, instance_double_success]
       elsif argv.include?("--heads")
@@ -208,12 +211,38 @@ class PublishTest < Minitest::Test
     result = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
       from_version: "4.0.0.rc1", to_version: "4.1.0",
       record: passed_record(repository: "https://github.com/acme/storefront"),
-      token: "ghp_secret", git: git, api: FakeApi.new).call
+      token: "ghp_secret", git: git, api: FakeApi.new, pause: ->(_seconds) {}).call
 
     refute result.pushed
     assert_includes result.reason, "403"
     assert_includes result.reason, "***"
     refute_includes result.to_h.to_s, "ghp_secret"
+  end
+
+  # **A push that failed is retried, because the failure a walk actually meets is the network.**
+  # Measured on the deployment: `agents-fyi/upgrade-4.1.0` pushed and opened its pull request, and the
+  # next rung's push answered `fatal: unable to access … Could not resolve host: github.com` — the rung
+  # *passed*, its branch was never created, and the hole is permanent because a passed move is settled
+  # and never revisited. The second attempt is the whole fix.
+  def test_a_push_that_failed_once_is_retried_before_the_rung_loses_its_branch
+    _bare, clone = origin_and_clone
+    git = FakeGit.new(pushes: [
+      [1, "fatal: unable to access 'https://github.com/acme/storefront.git/': " \
+          "Could not resolve host: github.com"],
+      [0, ""]
+    ])
+    waits = []
+
+    result = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0",
+      record: passed_record(repository: "https://github.com/acme/storefront"),
+      token: "ghp_token", git: git, api: FakeApi.new,
+      pause: ->(seconds) { waits << seconds }).call
+
+    assert result.pushed, "a push that failed once lost the rung's branch: #{result.reason}"
+    assert_equal 2, git.calls.count { |call| call.first == "push" },
+      "the push was not attempted a second time"
+    assert_equal [AgentsFyi::Upgrader::Publish::PUSH_BACKOFF_SECONDS], waits
   end
 
   def test_a_github_repository_with_no_token_is_not_pushed_at_all

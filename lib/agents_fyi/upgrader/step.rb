@@ -182,6 +182,10 @@ module AgentsFyi
 
         @out.puts("  step: #{step["name"]} (#{step["from_version"]} -> #{step["to_version"]}), " \
                   "requires Ruby #{step["requires_ruby"] || "unstated"}") if @out
+        # **The rung's own target, not the loop's.** `@to` is where the *walk* is going (8.1.0), so a
+        # panel fed from it said "4.1.0 -> 8.1.0" while the step was moving to 4.2.0 — the move a
+        # reader is asking about is the one happening now.
+        @rung_to = step["to_version"]
 
         # The ledger, consulted *before* anything runs: a settled move is the whole
         # point of keeping one, and a step costs a bundle resolve and a suite. `nil`
@@ -2473,7 +2477,9 @@ module AgentsFyi
       # nil before the lockfile is read and `@worktree` before the working copy exists, so the
       # fields that are not known yet are left out rather than invented.
       def announce(stage, detail, note: "")
-        @progress.stage(repo: @repository, from: @from, to: @to,
+        # `@rung_to` only: before the plan is fetched the rung is *not known*, and `@to` is where the
+        # walk is going — a panel that showed the target would be naming a move the step is not making.
+        @progress.stage(repo: @repository, from: @from, to: @rung_to,
           commit: (@worktree.commit if @worktree.respond_to?(:commit)),
           era: (@machine.era if @machine.respond_to?(:era)),
           stage: stage, detail: detail, note: note)
