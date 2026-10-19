@@ -53,7 +53,12 @@ module AgentsFyi
       # over a tree the first pass had already fixed would insert it again. The field defaults to
       # `line` (nil means "the line is its own evidence"), which is why the one-line inserts below
       # never mention it.
-      Insert = Struct.new(:path, :anchor, :line, :note, :marker, keyword_init: true)
+      #
+      # **`types` is the third shape: content the application's own tree decides.** A line whose text
+      # depends on which directories an application has cannot be data, so an insert that names a
+      # `types` table is computed at edit time — one call per directory that is actually there — and
+      # each call is guarded by itself, because a person who fixed one of them has fixed that one.
+      Insert = Struct.new(:path, :anchor, :line, :note, :marker, :types, keyword_init: true)
 
       # The move that needs the edits, and the edits themselves.
       Entry = Struct.new(:gem, :requirement, :subject, :note, :globs, :inserts, :rules,
@@ -115,6 +120,22 @@ module AgentsFyi
         ]
       )
 
+      # **The spec directories rspec-rails does not infer a `type` from, and the type each one means.**
+      # `infer_spec_type_from_file_location!` matches the *plural* names a generated application has —
+      # measured in rspec-rails 3.5.2, the pattern is `Regexp.compile(%w[spec models].join('[\\/]') +
+      # '[\\/]')`, so `spec/model/` is not it. An application of this era wrote the singular, and its
+      # example groups then carry **no type at all**, which is invisible until a gem starts filtering by
+      # one: rspec-rails' own example-group modules and every shoulda-matchers library are included with
+      # `type:`, so a group with no type loses its model helpers and every matcher with them. Measured
+      # at the 7.0 rung: this application's `spec/model/*_spec.rb` is **all 26** of its baseline's
+      # failures. `routing` is absent on purpose — rspec-rails spells it the same way in both places, so
+      # that directory *is* inferred from.
+      SINGULAR_SPEC_DIRECTORIES = {
+        "model" => "model", "controller" => "controller", "mailer" => "mailer",
+        "helper" => "helper", "job" => "job", "view" => "view", "feature" => "feature",
+        "request" => "request"
+      }.freeze
+
       # The block shoulda-matchers 3.0 onward tells an application to add to its test helper, in the
       # gem's own words: its `MissingTestFramework#validate!` prints exactly this, and its README
       # carries it. Nothing here is a choice — the gem will not include a single matcher until it is
@@ -151,8 +172,10 @@ module AgentsFyi
         requirement: "~> 4.1",
         subject: "shoulda-matchers 3",
         note: "shoulda-matchers 3.0 stopped including its matchers automatically, so the suite has " \
-              "to carry a `Shoulda::Matchers.configure` block; measured at the 7.0 rung, its absence " \
-              "is 16 of the 17 baseline failures on the 2.7 era",
+              "to carry a `Shoulda::Matchers.configure` block **and give its example groups a " \
+              "`type`** — every library is included with one, and rspec-rails infers a type only from " \
+              "the plural directory names; measured at the 7.0 rung, its absence is all 26 baseline " \
+              "failures on the 2.7 era",
         globs: [],
         inserts: [
           Insert.new(
@@ -176,6 +199,29 @@ module AgentsFyi
             marker: "Shoulda::Matchers.configure do |config|",
             note: "shoulda-matchers 3.0 includes no matcher until the suite configures it; an " \
                   "application on `rails_helper.rb` configures it there"
+          ),
+          # **The second half of the same move, and the half the gem's own documentation does not
+          # mention.** Configuring the gem is necessary and not sufficient: every shoulda-matchers
+          # library is included with a `type:`, so an example group with no type has no matchers
+          # whatever the configuration says. Measured at the 7.0 rung, where the block alone left the
+          # baseline red with the *same* 26 failures, all of them `spec/model/*`.
+          Insert.new(
+            path: "spec/spec_helper.rb",
+            anchor: "RSpec.configure do |config|",
+            line: nil,
+            types: SINGULAR_SPEC_DIRECTORIES,
+            note: "shoulda-matchers' libraries are included with `type:`, and rspec-rails infers a " \
+                  "type only from the plural directory names (`spec/models`, `spec/controllers`), so " \
+                  "this application's `spec/model` specs have no type and no matchers — the gem's own " \
+                  "configuration block is not enough on its own"
+          ),
+          Insert.new(
+            path: "spec/rails_helper.rb",
+            anchor: "RSpec.configure do |config|",
+            line: nil,
+            types: SINGULAR_SPEC_DIRECTORIES,
+            note: "shoulda-matchers' libraries are included with `type:`, so a suite whose spec " \
+                  "directories are named in the singular derives them here"
           )
         ],
         rules: []
@@ -210,7 +256,7 @@ module AgentsFyi
             path = File.join(root, insert.path)
             next false unless File.file?(path)
 
-            carries?(File.read(path, encoding: "utf-8").lines.map(&:chomp), insert)
+            carries?(File.read(path, encoding: "utf-8").lines.map(&:chomp), insert, root: root)
           end
         end
 
@@ -230,21 +276,53 @@ module AgentsFyi
           return nil unless File.file?(path)
 
           lines = File.read(path, encoding: "utf-8").lines.map(&:chomp)
-          return nil if carries?(lines, insert)
+          return nil if carries?(lines, insert, root: root)
 
           index = lines.index { |line| line.strip == insert.anchor.strip }
           return nil if index.nil?
 
+          body = insert.line || derived_types(insert, root: root, lines: lines).join("\n")
+          return nil if body.to_s.strip.empty?
+
           Edit.new(path: insert.path, line: index + 1, text: lines[index],
-            after: "#{lines[index]}\n#{insert.line}", subject: entry.subject,
+            after: "#{lines[index]}\n#{body}", subject: entry.subject,
             note: insert.note)
         end
 
-        # Whether a file already carries an insert — the marker where the insert names one, and the
-        # line itself where it does not.
-        def carries?(lines, insert)
+        # Whether a file already carries an insert — the marker where the insert names one, the line
+        # itself where it does not, and *every* derived call where the content is the application's
+        # own. An empty `lines` asks the question of the derived calls themselves rather than of the
+        # file, which is how `placed?` reads it. **An insert with nothing to derive is not "placed"**:
+        # an application with no singular spec directory owes this companion nothing *here*, and a
+        # vacuously-true answer would let `placed?` report the whole companion done while the gem's own
+        # configuration block was still missing.
+        def carries?(lines, insert, root:)
+          if insert.types
+            derived = derived_types(insert, root: root, lines: [])
+            return !derived.empty? &&
+              derived.all? { |line| lines.any? { |each| each.strip == line.strip } }
+          end
+
           marker = (insert.marker || insert.line).to_s.strip
           lines.any? { |line| line.strip == marker }
+        end
+
+        # **The `define_derived_metadata` call for each of the application's own spec directories that
+        # rspec-rails does not infer a type from.** One call per directory that is actually there, and
+        # only for the ones the file does not already carry, because each call is a fact about one
+        # directory: a person who derived `:model` by hand has fixed that one and not the others.
+        def derived_types(insert, root:, lines:)
+          table = insert.types || {}
+          Dir.glob("spec/*", base: root).sort.filter_map do |path|
+            type = table[File.basename(path)]
+            next if type.nil? || !File.directory?(File.join(root, path))
+
+            line = "  config.define_derived_metadata(file_path: %r{/#{Regexp.escape(path)}/}) " \
+                   "{ |metadata| metadata[:type] = :#{type} }"
+            next if lines.any? { |each| each.strip == line.strip }
+
+            line
+          end
         end
 
         # **The located line carries the companion's subject, so the rule that rewrites it is the one

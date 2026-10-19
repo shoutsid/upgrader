@@ -253,4 +253,46 @@ class CompanionsTest < Minitest::Test
     assert_equal true, rung["mechanical"],
       "the line move is a preflight repair, which is what lets its companion be applied there"
   end
+
+  # **The second half of the same move: the matchers are included with a `type`, and rspec-rails
+  # infers one only from the plural directory names.** Measured at the 7.0 rung, the gem's own
+  # configuration block alone left the baseline red with the *same* 26 failures — this application's
+  # model specs live in `spec/model`, so their example groups carry no type at all and every matcher
+  # with them. The insert is computed from the tree, and each call is guarded by itself, because a
+  # person who derived one directory has fixed that one and not the others.
+  def test_a_singular_spec_directory_has_its_type_derived
+    shoulda = Companions::SHOULDA_MATCHERS
+    root = tree(
+      "spec/model/user_spec.rb" => "describe User do\nend\n",
+      "spec/spec_helper.rb" => "require 'rspec/rails'\nRSpec.configure do |config|\nend\n"
+    )
+
+    edits = Companions.edits(shoulda, root: root)
+    derive = edits.find { |edit| edit.after.to_s.include?("define_derived_metadata") }
+
+    refute_nil derive, "no type was derived: #{edits.map(&:after).inspect}"
+    assert_equal "spec/spec_helper.rb", derive.path
+    assert_includes derive.after,
+      "  config.define_derived_metadata(file_path: %r{/spec/model/}) { |metadata| " \
+      "metadata[:type] = :model }"
+    assert_includes derive.after, "RSpec.configure do |config|", "the call goes inside the block"
+
+    Applier.new(root).apply(edits.map(&:to_h))
+    assert_empty Companions.edits(shoulda, root: root),
+      "a second pass is not a second derivation"
+  end
+
+  # A directory rspec-rails *does* infer a type from gets nothing: `spec/models` is already `:model`,
+  # and `spec/routing` is spelled the same way in the mapping, so neither is in the table.
+  def test_a_plural_spec_directory_needs_no_derivation
+    root = tree(
+      "spec/models/user_spec.rb" => "describe User do\nend\n",
+      "spec/spec_helper.rb" => "require 'rspec/rails'\nRSpec.configure do |config|\nend\n"
+    )
+
+    edits = Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
+
+    refute(edits.any? { |edit| edit.after.to_s.include?("define_derived_metadata") },
+      "a plural directory was derived: #{edits.map(&:after).inspect}")
+  end
 end
