@@ -86,12 +86,10 @@ module AgentsFyi
       # `ecosystem` is named rather than defaulted: the service's own default is `python`, and a
       # Rails walk that left it out would be answered "no report names this library" by a corpus
       # holding a dozen about it.
-      def reports_upgrade(library:, from_version:, to_version:, symbols: nil, ecosystem: "ruby",
-        include_test: false)
+      def reports_upgrade(library:, from_version:, to_version:, symbols: nil, ecosystem: "ruby")
         params = { library: library, from_version: from_version, to_version: to_version,
                   ecosystem: ecosystem }
         params[:symbols] = Array(symbols).join(",") if Array(symbols).any?
-        params[:include_test] = true if include_test
         call(:get, "/reports/upgrade", params: params)
       end
 

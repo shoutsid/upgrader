@@ -174,7 +174,7 @@ class DeployConfigTest < Minitest::Test
     block = config("upgrader")
 
     # The two credentials that would stop it being a client. The admin token is the
-    # moderation surface — hide, unhide, disable, mark-live — and handing a background
+    # moderation surface — hide, unhide, disable — and handing a background
     # container that so it could call one route is the mistake this rules out.
     refute_includes block, "DB_PASSWORD"
     refute_includes block, "ADMIN_TOKEN"
@@ -466,7 +466,7 @@ class DeployConfigTest < Minitest::Test
     assert_includes block, "${UPGRADER_API_KEY:-"
 
     # And the credential it must never be handed, however convenient it would look: the
-    # admin token is the moderation surface — hide, unhide, disable, mark-live — and this
+    # admin token is the moderation surface — hide, unhide, disable — and this
     # container clones and executes other people's applications. A client's key can file a
     # report; the whole of this container's bar is filing one.
     refute_includes block, "ADMIN_TOKEN"
