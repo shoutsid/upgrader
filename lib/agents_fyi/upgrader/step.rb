@@ -634,9 +634,9 @@ module AgentsFyi
         # So the named gem is updated on its own, without the flag, and the conservative update of the
         # gems this tool's own repairs moved still follows when there is no such gem — a build failure is
         # a fact about a version, and a repaired line is a fact about the application's Gemfile.
-        broken = broken_extension(stage)
-        if broken
-          attempt = command(Record::BUNDLE, ["bundle", "update", broken], chdir: @worktree.root,
+        broken = broken_extensions(stage)
+        unless broken.empty?
+          attempt = command(Record::BUNDLE, ["bundle", "update", *broken], chdir: @worktree.root,
             env: @worktree.bundle_env(machine: machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
@@ -648,13 +648,20 @@ module AgentsFyi
         conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
       end
 
-      # The gem whose own extension failed to build, from the installer's own sentence. A name that is
-      # not in the lock is not one this can move, and nil is "the failure was something else".
-      def broken_extension(stage)
-        name = stage.output_tail.to_s[/An error occurred while installing ([a-zA-Z0-9_-]+) \(/, 1]
-        return nil if name.nil? || !@lockfile.specs.key?(name)
-
-        name
+      # **Every gem the installer was building a native extension for, because it builds them in
+      # parallel and names only one of them.** Measured at the 7.2 rung: `bundle update nio4r` fixed
+      # `nio4r` (`Using nio4r 2.7.5 (was 2.3.1)`) and the very same attempt died on `ruby-prof 0.13.0`,
+      # which the output had already announced as `Installing ruby-prof 0.13.0 with native extensions`.
+      # Moving them one at a time converges, but it converges at one *install* per gem, and the output
+      # says which ones are in flight — so they all move at once.
+      #
+      # A name the lock does not hold is not one this can move, and an empty list is "the failure was
+      # something else".
+      def broken_extensions(stage)
+        text = stage.output_tail.to_s
+        named = text.scan(/^Installing ([a-zA-Z0-9_-]+) \S+ with native extensions/).flatten
+        named += text.scan(/An error occurred while installing ([a-zA-Z0-9_-]+) \(/).flatten
+        named.uniq.select { |name| @lockfile.specs.key?(name) }
       end
 
       # **A lock whose `BUNDLED WITH` names a bundler the era cannot run has to lose that trailer, and

@@ -434,7 +434,8 @@ class StepTest < Minitest::Test
         @timeouts << [argv.join(" "), timeout]
         @stdins << [argv.join(" "), nil]
         return Command.new(stage: stage, command: argv.join(" "), ran: true, exit_code: 5, seconds: 0.1,
-          output_tail: "An error occurred while installing nio4r (2.3.1), and Bundler cannot continue.\n")
+          output_tail: "Installing nio4r 2.3.1 with native extensions\n" \
+                       "An error occurred while installing nio4r (2.3.1), and Bundler cannot continue.\n")
       end
 
       super
