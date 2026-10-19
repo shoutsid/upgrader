@@ -2163,14 +2163,19 @@ module AgentsFyi
 
           File.delete(File.join(@worktree.root, path))
           @adopted.delete(path)
-          @decisions << Record::Decision.new(path: path, line: nil,
+          # **An edit this tool made, not work for a person.** The removal *is* the change — the rule
+          # above decided it from two facts the application states — so it belongs in the record's
+          # applied list beside the preflight's repairs, where a reader sees what moved. It was a
+          # *decision* first, which read as three more things somebody had to act on at a rung whose
+          # residue was otherwise accounted for; a decision list is what still needs a person, and this
+          # does not. The note travels with the edit, so the record still says why.
+          @applied << Preflight::Repair.new(path: path, line: nil, text: nil, after: nil,
             subject: "#{engine} migration #{File.basename(path)}",
-            reason: "`app:update` copied this migration for #{engine}, and the application's " \
-                    "`db/schema.rb` declares no `#{engine}_*` table — so it is a migration for a " \
-                    "component this application does not use, and running it fails on the table it " \
-                    "assumes. Install the component first (`bin/rails #{engine}:install`) if the " \
-                    "application wants it",
-            kind: "removed", replacement: nil, source: "app:update")
+            note: "`app:update` copied this migration for #{engine}, and the application's " \
+                  "`db/schema.rb` declares no `#{engine}_*` table — so it is a migration for a " \
+                  "component this application does not use, and running it fails on the table it " \
+                  "assumes. Install the component first (`bin/rails #{engine}:install`) if the " \
+                  "application wants it")
         end
       end
 

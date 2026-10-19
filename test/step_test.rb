@@ -1816,11 +1816,13 @@ class StepTest < Minitest::Test
 
     refute File.exist?(File.join(dir, path)),
       "a migration for a component this application does not have was kept"
-    decision = record.decisions.find { |each| each.subject.to_s.include?("active_storage") }
-    refute_nil decision, "the removal was not recorded: #{record.decisions.map(&:subject).inspect}"
-    assert_includes decision.reason, "no `active_storage_*` table"
-    assert_includes decision.reason, "active_storage:install",
-      "the reason has to say what to do next"
+    edit = record.applied.find { |each| each.subject.to_s.include?("active_storage") }
+    refute_nil edit, "the removal was not recorded as an edit: #{record.applied.map(&:subject).inspect}"
+    assert_includes edit.note, "no `active_storage_*` table"
+    assert_includes edit.note, "active_storage:install",
+      "the note has to say what to do next"
+    assert_empty record.decisions.select { |each| each.subject.to_s.include?("active_storage") },
+      "a removal the tool made is not work for a person"
     refute_includes runner.calls.join("\n"), "db:migrate",
       "the second preparation ran for a migration that was not kept: #{runner.calls.inspect}"
   end
