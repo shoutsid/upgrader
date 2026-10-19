@@ -68,6 +68,17 @@ class ProjectTest < Minitest::Test
 
   # **A repository is one identity however it is spelled.** The declaration may say `owner/name`; the
   # queue carries the URL; and the join must not depend on which the caller happened to use.
+  def test_a_github_url_gets_one_canonical_clone_spelling
+    assert_equal "https://github.com/acme/app.git",
+      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app")
+    assert_equal "https://github.com/acme/app.git",
+      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app/")
+    assert_equal "https://github.com/acme/app.git",
+      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app.git")
+    assert_equal "https://gitlab.com/acme/app",
+      AgentsFyi::Upgrader::Repository.normalize("https://gitlab.com/acme/app")
+  end
+
   def test_a_repository_is_one_identity_and_a_declaration_finds_its_row
     project = lighthouse
 

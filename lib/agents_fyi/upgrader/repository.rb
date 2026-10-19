@@ -20,9 +20,26 @@ module AgentsFyi
       # The clone URL for a reference, or the reference itself when it already names one.
       def self.normalize(reference)
         text = reference.to_s.strip
-        return text if text.empty? || path?(text) || url?(text)
+        return text if text.empty? || path?(text)
+        return canonical_url(text) if url?(text)
 
         shorthand?(text) ? format(GITHUB, text) : text
+      end
+
+      # **A GitHub URL gets its `.git` suffix, because the queue and a declaration must be the same
+      # identity.** The service's `identity` strips `.git` from a target's `repo_url`; a declaration
+      # expands `owner/name` to the `.git` form; and the ledger and the kept tree are keyed on the
+      # reference string the step was handed. Leaving `https://github.com/o/n` and
+      # `https://github.com/o/n.git` as two references made a queue row clone the baseline again
+      # while the ledger held that repository's twelve settled moves under the other spelling.
+      #
+      # A non-GitHub remote is left exactly as written: a mirror may not accept the suffix, and the
+      # service's own identity rule does not rewrite it either.
+      def self.canonical_url(text)
+        return text unless github?(text)
+
+        trimmed = text.chomp("/")
+        trimmed.end_with?(".git") ? trimmed : "#{trimmed}.git"
       end
 
       # A spec and its optional ref: `owner/name@v1`, `./app@main`, `git@…`. Split before deciding,

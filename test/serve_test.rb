@@ -686,7 +686,9 @@ class ServeTest < Minitest::Test
   # applications. The fake step records the declaration it was handed, so the wiring is visible.
   def test_a_queue_row_carries_the_declaration_whose_repository_it_names
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
-    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront.git" }])
+    # The service's queue strips `.git`; the declaration and the ledger use the clone URL. The loop
+    # must hand the step one spelling, or the ledger and the kept tree are keyed under two.
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "https://github.com/acme/storefront" }])
     dir = Dir.mktmpdir
     saved = ENV["UPGRADER_PROJECTS_DIR"]
     ENV["UPGRADER_PROJECTS_DIR"] = dir
@@ -703,6 +705,8 @@ class ServeTest < Minitest::Test
     assert_equal "console-project", project.slug
     assert_equal "agents-fyi/baseline", FakeStep.calls.first[:ref],
       "a queue row with no ref did not start where its declaration says"
+    assert_equal "https://github.com/acme/storefront.git", FakeStep.calls.first[:repository],
+      "the queue's spelling and the declaration's were handed to the step as two repositories"
   ensure
     ENV["UPGRADER_PROJECTS_DIR"] = saved
     FileUtils.remove_entry(dir) if dir && File.directory?(dir)
