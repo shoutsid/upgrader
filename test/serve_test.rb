@@ -692,7 +692,7 @@ class ServeTest < Minitest::Test
     ENV["UPGRADER_PROJECTS_DIR"] = dir
     File.write(File.join(dir, "console-project.json"), JSON.generate(
       "slug" => "console-project", "repo" => "https://github.com/acme/storefront.git",
-      "from" => "4.2.11", "to" => "5.0.0",
+      "base_ref" => "agents-fyi/baseline", "from" => "4.2.11", "to" => "5.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     ))
 
@@ -701,6 +701,8 @@ class ServeTest < Minitest::Test
     project = FakeStep.calls.first[:project]
     refute_nil project, "the queue target did not pick up its declaration"
     assert_equal "console-project", project.slug
+    assert_equal "agents-fyi/baseline", FakeStep.calls.first[:ref],
+      "a queue row with no ref did not start where its declaration says"
   ensure
     ENV["UPGRADER_PROJECTS_DIR"] = saved
     FileUtils.remove_entry(dir) if dir && File.directory?(dir)

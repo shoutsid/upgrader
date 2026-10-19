@@ -223,6 +223,14 @@ module AgentsFyi
         # several applications without being told which file belongs to which row, because the
         # declaration's own repository is the join.
         project = project_for(repository)
+        # **A queue row with no ref starts where its declaration says**, not on the repository's
+        # default branch. The target row carries the repository and (when the operator named one) a
+        # ref; the starting ref is an application fact, so a declaration's `base_ref` is the answer
+        # for a row that did not choose one. Without this the loop would clone `master` while the
+        # declaration says the walk starts at `agents-fyi/baseline`.
+        if ref.to_s.empty? && project && !project.base_ref.to_s.empty?
+          ref = project.base_ref
+        end
         return walk_repository(repository, ref, project: project) if @walk
 
         record = run_one(repository, ref, project: project)
