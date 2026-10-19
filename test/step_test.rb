@@ -495,6 +495,25 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **A clone that could not be made is not a verdict about the move.** The queue-driven run recorded
+  # a DNS failure as `refused`, which settles a move for good; `unverified` is the machine failing to
+  # measure, retried and spending no attempt.
+  def test_a_source_that_cannot_be_read_is_unverified_rather_than_refused
+    dir = track(Dir.mktmpdir)
+    failing = Class.new(FakeSource) do
+      def worktree(*, **)
+        raise AgentsFyi::Upgrader::Source::Failed,
+          "clone https://github.com/acme/storefront failed (exit 128): Could not resolve host"
+      end
+    end.new(dir, home: dir)
+
+    record = step(dir, source: failing).run
+
+    refute_nil record
+    assert_equal AgentsFyi::Upgrader::Record::UNVERIFIED, record.verdict
+    assert_includes record.why, "Could not resolve host"
+  end
+
   def test_the_live_view_names_the_rung_being_walked_rather_than_the_loops_target
     dir = track(app)
     runner = ReadingRunner.new(dir)

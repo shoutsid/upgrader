@@ -369,7 +369,14 @@ module AgentsFyi
         end
         [@worktree, @lockfile, pinned]
       rescue Source::Failed => e
-        Record.refused(repository: @repository, from_version: "unknown", to_version: @to, why: e.message)
+        # **A source that cannot be read is not a fact about the move.** A clone that could not
+        # resolve the host, a path that is not a git tree — the environment failed to make the
+        # measurement, and `unverified` is the verdict that says so: it is retried and spends no
+        # attempt. The first queue-driven run recorded a DNS failure as `refused`, which settled the
+        # move for good; a refused step is a fact about the ladder, and this one was about the
+        # network.
+        Record.unverified(repository: @repository, from_version: "unknown", to_version: @to,
+          why: e.message)
       rescue Lockfile::Missing, Lockfile::Unreadable => e
         Record.refused(repository: @repository, from_version: "unknown", to_version: @to, why: e.message)
       end
