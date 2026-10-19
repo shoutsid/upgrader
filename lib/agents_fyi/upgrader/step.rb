@@ -1381,7 +1381,7 @@ module AgentsFyi
         @unapplied_rules = rules.left
         result = @applier.new(@worktree.root).apply((scan["edits"] || []) + rules.edits)
         created = write_scaffolds(rules.scaffolds)
-        created += write_scaffolds(Zeitwerk.spellings(root: @worktree.root))
+        created += write_scaffolds(Zeitwerk.spellings(root: @worktree.root, rung: rung_of(step)))
         # **The changes whose fix is a gem**, applied to the call sites the scan located: the call
         # sites need no edit, so what handles them is a declaration in the application's Gemfile.
         declared, bridged = declare_bridges(

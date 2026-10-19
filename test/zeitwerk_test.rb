@@ -36,7 +36,7 @@ class ZeitwerkTest < Minitest::Test
   def test_a_constant_that_differs_only_in_capitalisation_is_taught_to_zeitwerk
     root = tree("lib/sse.rb" => "module SSE\n  class Client\n  end\nend\n")
 
-    scaffolds = Zeitwerk.spellings(root: root)
+    scaffolds = Zeitwerk.spellings(root: root, rung: "7.0")
 
     assert_equal 1, scaffolds.size, "no spelling was derived"
     assert_equal "config/initializers/zeitwerk.rb", scaffolds.first.path
@@ -51,7 +51,7 @@ class ZeitwerkTest < Minitest::Test
       "lib/plain.rb" => "# nothing to see\n"
     )
 
-    assert_empty Zeitwerk.spellings(root: root)
+    assert_empty Zeitwerk.spellings(root: root, rung: "7.0")
   end
 
   # **A different word is not an acronym.** `lib/sse.rb` defining `module Mailer` is a misnamed file,
@@ -60,7 +60,7 @@ class ZeitwerkTest < Minitest::Test
   def test_a_constant_that_is_a_different_word_gets_no_spelling
     root = tree("lib/sse.rb" => "module Mailer\nend\n")
 
-    assert_empty Zeitwerk.spellings(root: root)
+    assert_empty Zeitwerk.spellings(root: root, rung: "7.0")
   end
 
   # The scan reads the application's `lib` and nothing else, so an application without one gets no file
@@ -68,6 +68,21 @@ class ZeitwerkTest < Minitest::Test
   def test_an_application_with_no_lib_gets_no_file
     root = tree("app/models/user.rb" => "class User\nend\n")
 
-    assert_empty Zeitwerk.spellings(root: root)
+    assert_empty Zeitwerk.spellings(root: root, rung: "7.0")
+  end
+
+  # **The mechanism is scoped by the rung, and the scope is load-bearing.** Rails 6.0 has
+  # `Rails.autoloaders` but this application is still in classic mode there, so the initializer the
+  # mechanism writes is `Rails.autoloaders.main.inflector...` with `main` nil and the boot dies with
+  # `undefined method `inflector' for nil:NilClass`. Measured: the same file that takes the 7.0 rung to
+  # 201 examples, 0 failures fails the 6.0 rung's boot. A re-walk is what found it — the 6.0 rung had
+  # been passed before this mechanism existed.
+  def test_a_rung_below_seven_gets_no_spelling_at_all
+    root = tree("lib/sse.rb" => "module SSE\nend\n")
+
+    assert_empty Zeitwerk.spellings(root: root, rung: "6.0"),
+      "a scaffold written below 7.0 is a file the application cannot load"
+    refute_empty Zeitwerk.spellings(root: root, rung: "7.0"),
+      "the mechanism stopped applying at the rung it was measured on"
   end
 end

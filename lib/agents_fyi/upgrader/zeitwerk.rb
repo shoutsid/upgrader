@@ -23,10 +23,22 @@ module AgentsFyi
       # second place to look for the same fact.
       PATH = "config/initializers/zeitwerk.rb"
 
+      # **The rung this mechanism belongs to, and it is the *only* thing that scopes it.** Rails 6.0
+      # has `Rails.autoloaders`, but this application is in classic mode there — the `config.autoloader`
+      # setting arrived with Zeitwerk as an option and classic was not deleted until 7.0 — so the
+      # initializer's `Rails.autoloaders.main` is `nil` and the boot dies with `undefined method
+      # `inflector' for nil:NilClass`. Measured: the same file that takes the 7.0 rung's suite to 201
+      # examples, 0 failures fails the 6.0 rung's boot, because a scaffold written for every rung is a
+      # file the application cannot load until the rung that made Zeitwerk the only loader.
+      RUNG = "7.0"
+
       class << self
         # The inflector lines the application needs, or `[]` when it needs none. `root` is the
-        # application, not the repository: this reads the application's own `lib`.
-        def spellings(root:)
+        # application, not the repository: this reads the application's own `lib`. `rung` is the release
+        # being moved to, and a rung below `RUNG` gets nothing at all.
+        def spellings(root:, rung:)
+          return [] unless Rewrites.rung_reached?(RUNG, rung)
+
           files = Dir.glob(File.join(root, "lib", "**", "*.rb")).sort
           found = files.filter_map { |full| spelling(full, root: root) }
           return [] if found.empty?
