@@ -163,6 +163,12 @@ module AgentsFyi
         stages = []
         @applied = []
         @refused = []
+        # **`app:update` may not run at all**, and the database re-preparation after it asks what it
+        # adopted. A step whose application has no update runner (the method returns before adopting)
+        # crashed here with `undefined method 'grep' for nil` — measured on the second declaration,
+        # which is exactly the shape the lighthouse could not show: an application modern enough that
+        # the update task is not the one this stack runs.
+        @adopted = []
         @decisions = []
         @repairs = []
         # The digest entries the preflight held for this rung, filled in when it runs and empty before
