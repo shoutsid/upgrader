@@ -55,6 +55,7 @@ module AgentsFyi
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--force] [--publish] [--suite-env FILE]
                                     [--record DIR]
+          agents-fyi-upgrader republish [--home DIR]
           agents-fyi-upgrader prune [--home DIR]
 
         Modes:
@@ -131,6 +132,7 @@ module AgentsFyi
         when "preflight" then preflight(options)
         when "step" then step(options)
         when "serve" then serve(options)
+        when "republish" then republish(options)
         when "prune" then prune(options)
         else
           usage_error(
@@ -251,6 +253,15 @@ module AgentsFyi
       # they end, and a process that is killed runs no `ensure` at all — so a container from a
       # crash or a `SIGKILL` keeps running until something looks. This is that look, and the
       # same pass runs before any container starts.
+      # **Rewrite the bodies of delivered pull requests from their records.** A maintenance pass
+      # rather than a walk: it reads the ledger's delivered entries, rebuilds each step's record and
+      # publishes again, so a body composed by an older publisher is replaced. No branch is moved.
+      def republish(options)
+        Republish.new(home: options[:home], token: ENV[Publish::ENV_TOKEN], out: @out,
+          report_base: ENV["UPGRADER_PUBLIC_URL"]).call
+        EXIT_OK
+      end
+
       def prune(options)
         containers = Machine::Container.reap!(out: @out, inspector: @inspector)
         bundles = Source.prune_bundles(home: options[:home], out: @out)
