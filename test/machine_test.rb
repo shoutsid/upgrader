@@ -236,6 +236,36 @@ class MachineTest < Minitest::Test
     assert_nil container.stop!
   end
 
+  # **A daemon call that never answers costs its deadline, not the caller.** What this deployment
+  # measured was not "docker is down" — the callers already handle that — but "docker is answering,
+  # and this call is not coming back": `ps`, `version`, `images` and `df` returned in milliseconds
+  # while `create`, `run` and `rm` hung for minutes. A `Timeout` turns the second into the first.
+  def test_a_daemon_call_that_never_answers_returns_empty_after_its_deadline
+    hang = Object.new
+    def hang.capture2e(*) = sleep
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    answer = AgentsFyi::Upgrader::Machine.docker(hang, "docker", "create", "alpine", seconds: 0.2)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_equal ["", nil], answer
+    assert_operator elapsed, :<, 2.0, "the bound did not bound anything"
+  end
+
+  # **No call site may reach the inspector directly**, or the bound is a helper that half the code
+  # skips — which is exactly how the teardown fix left `docker run` unbounded and the next rung hung.
+  def test_the_machine_reaches_the_daemon_only_through_the_bounded_helper
+    source = File.read(File.expand_path("../lib/agents_fyi/upgrader/machine.rb", __dir__))
+    offenders = source.lines.each_with_index.filter_map do |line, number|
+      next unless line.match?(/inspector\.capture[23]/)
+      next if line.include?("inspector.capture2e(*argv)")
+
+      "#{number + 1}: #{line.strip}"
+    end
+
+    assert_empty offenders, "a daemon call bypasses Machine.docker, so a wedged daemon holds it for ever"
+  end
+
   # **The teardown is bounded, because it is the one call that can hold a step that has already
   # finished.** `docker rm` talks to the daemon, and a daemon that is restarting held one walk for three
   # minutes at exactly this line: the suite had passed, the run was recorded, and the publish behind the
@@ -252,7 +282,7 @@ class MachineTest < Minitest::Test
 
     removal = runner.calls.find { |call| call[:argv].first(2) == ["docker", "rm"] }
     refute_nil removal, "the container was not removed at all"
-    assert_equal AgentsFyi::Upgrader::Machine::Container::TEARDOWN_SECONDS, removal[:timeout],
+    assert_equal AgentsFyi::Upgrader::Machine::TEARDOWN_SECONDS, removal[:timeout],
       "the teardown has no deadline, so a wedged daemon holds a step that already passed"
   end
 

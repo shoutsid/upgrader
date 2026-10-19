@@ -3,6 +3,7 @@
 require "fileutils"
 require "open3"
 require "socket"
+require "timeout"
 
 module AgentsFyi
   module Upgrader
@@ -102,6 +103,33 @@ module AgentsFyi
       # somewhere nobody looked.
       class Unavailable < StandardError; end
 
+      # **Every call this tool makes to the daemon is bounded.** A `docker` CLI call blocks while the
+      # daemon's containerd snapshot and task path is held, and it does not fail, it waits — so an
+      # unbounded one is not a slow step, it is a walk that stops. Measured on this deployment three
+      # times in one afternoon, each time with every *metadata* call (`ps`, `version`, `images`, `df`)
+      # still answering in milliseconds: `docker rm --force` after a passed rung (its run recorded, the
+      # publish behind the `ensure` never run), `docker run` twice before an era container existed (two
+      # rungs sat at their preflight line), and `docker rm -f` on the container that started it (still
+      # `Up` twenty-two minutes later). The wedge is containerd's rather than this tool's — `docker
+      # create` hung for `alpine` with no mount, and the engine restart that cleared it took 25 seconds
+      # — so what this constant buys is that the next one costs a deadline instead of the walk.
+      DOCKER_SECONDS = 300
+
+      # A teardown is a different bet: nothing waits on the container afterwards, so it gets the short
+      # bound and is abandoned to `--rm` and `reap!` rather than the long one.
+      TEARDOWN_SECONDS = 15
+
+      # One daemon call, bounded, keeping the shape its callers already read: output and status, with
+      # empty output when the daemon would not answer. Empty is what each caller already handles — a
+      # missing digest falls back to the image tag, a missing volume to the operator's own name, a
+      # missing container id to `Unavailable` — so a deadline reads as "the daemon did not say", which
+      # is the true answer.
+      def self.docker(inspector, *argv, seconds: DOCKER_SECONDS)
+        Timeout.timeout(seconds) { inspector.capture2e(*argv) }
+      rescue Timeout::Error
+        ["", nil]
+      end
+
       # A host path as a container that has the walker's home mounted at `CONTAINER_ROOT` sees
       # it, or a refusal. One function because two machines mount the home — the step's own
       # container and the services container — and a path translated two different ways is a
@@ -190,14 +218,9 @@ module AgentsFyi
         # Why the last `start!` failed, in one sentence.
         attr_reader :unavailable
 
-        # **How long the teardown may take before the container is left to `reap!`.** `docker rm` talks
-        # to the daemon, and a daemon that is restarting or wedged held a *finished* step for three
-        # minutes at exactly this line: the suite had passed, the run was recorded, and the publish
-        # behind the `ensure` had not run — from outside, a walk that stopped for no reason. The
-        # container is started with `--rm` and its keepalive is killed here, so it removes itself;
-        # this call is the belt to that braces, which is what makes abandoning it safe — `reap!`
-        # sweeps whatever a dead owner left before the next step starts one.
-        TEARDOWN_SECONDS = 15
+        # The container is started with `--rm` and its keepalive is killed here, so it removes itself;
+        # this call is the belt to that braces, which is what makes abandoning it at
+        # `TEARDOWN_SECONDS` safe — `reap!` sweeps whatever a dead owner left before the next step.
 
         # **This runs from an `ensure`, so it never raises.** A cleanup that failed loudly
         # would replace the step's own outcome with its own, and the leak it would be
@@ -241,7 +264,7 @@ module AgentsFyi
             owner = pid.to_s.strip.empty? ? name.to_s[NAME, 1] : pid
             next if owner.to_s.empty? || Processes.alive?(owner)
 
-            inspector.capture2e("docker", "rm", "--force", id)
+            Machine.docker(inspector, "docker", "rm", "--force", id, seconds: TEARDOWN_SECONDS)
             removed << id
           end
           out&.puts("  reaped #{removed.size} step container(s) whose process was gone") if removed.any?
@@ -253,7 +276,7 @@ module AgentsFyi
         # label is read for the ones that carry it.
         def self.list(inspector)
           format = "{{.ID}}\t{{.Names}}\t{{.Label \"#{PID_LABEL}\"}}"
-          listing, _status = inspector.capture2e(
+          listing, _status = Machine.docker(inspector,
             "docker", "ps", "-a", "--filter", NAME_PATTERN, "--format", format
           )
           listing.to_s.lines.filter_map do |line|
@@ -314,7 +337,7 @@ module AgentsFyi
         def digest
           return @digest unless @digest.nil?
 
-          out, _status = @inspector.capture2e("docker", "image", "inspect", "-f", "{{.Id}}", entry.image)
+          out, _status = Machine.docker(@inspector, "docker", "image", "inspect", "-f", "{{.Id}}", entry.image)
           text = out.to_s.strip
           @digest = DIGEST.match?(text) ? text : ""
         rescue Errno::ENOENT
@@ -372,7 +395,7 @@ module AgentsFyi
             return @self_volume = ""
           end
           template = "{{range .Mounts}}{{if eq .Destination \"#{@home}\"}}{{.Name}}{{end}}{{end}}"
-          out, _status = @inspector.capture2e("docker", "inspect", "-f", template, Socket.gethostname)
+          out, _status = Machine.docker(@inspector, "docker", "inspect", "-f", template, Socket.gethostname)
           @self_volume = out.to_s.strip
         rescue StandardError
           @self_volume = ""
@@ -636,7 +659,8 @@ module AgentsFyi
         def stop!
           return if @container_id.to_s.empty?
 
-          @inspector.capture3("docker", "rm", "--force", @container_id)
+          Machine.docker(@inspector, "docker", "rm", "--force", @container_id,
+            seconds: TEARDOWN_SECONDS)
           @container_id = nil
           @entry = nil
         rescue StandardError
@@ -676,7 +700,7 @@ module AgentsFyi
             return @self_volume = ""
           end
           template = "{{range .Mounts}}{{if eq .Destination \"#{@home}\"}}{{.Name}}{{end}}{{end}}"
-          out, _status = @inspector.capture2e("docker", "inspect", "-f", template, Socket.gethostname)
+          out, _status = Machine.docker(@inspector, "docker", "inspect", "-f", template, Socket.gethostname)
           @self_volume = out.to_s.strip
         rescue StandardError
           @self_volume = ""
