@@ -334,6 +334,25 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **A corpus that is briefly unreachable, which is what a restarting service looks like.** The
+  # refusal is the client's own `Unreachable`, and the successful attempt is the ordinary recorder's.
+  class FlakyRecordingCorpus < RecordingCorpus
+    def initialize(failures:, **kwargs)
+      super(**kwargs)
+      @failures = failures
+    end
+
+    def record_run(payload)
+      if @failures.positive?
+        @failures -= 1
+        raise AgentsFyi::Upgrader::Corpus::Unreachable,
+          "could not reach http://api.test: Errno::ECONNREFUSED"
+      end
+
+      super
+    end
+  end
+
   class FakeApplier
     attr_reader :applied
 
@@ -478,14 +497,14 @@ class StepTest < Minitest::Test
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
-           suite_env: nil, applier: nil)
+           suite_env: nil, applier: nil, pause: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: applier || FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
-      reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env
+      reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env, pause: pause
     )
   end
 
@@ -1444,6 +1463,23 @@ class StepTest < Minitest::Test
     assert_equal 1, corpus.calls_of(:record_run).size
     assert_empty corpus.calls_of(:create_report), "a passing step filed a report"
     assert_empty corpus.calls_of(:precheck), "a passing step was prechecked"
+  end
+
+  # **A run is not lost to a restart beside the walk.** The corpus is a remote; measured on this
+  # deployment, `5.1.0 -> 5.2.0` passed while `service:8001` was being recreated, the client logged
+  # `not recorded: … ECONNREFUSED`, and the rung — settled, never revisited — kept no run at all. The
+  # push and the pull request retry; this is the third write with the same shape.
+  def test_a_run_is_retried_when_the_corpus_is_briefly_unreachable
+    dir = track(app)
+    corpus = FlakyRecordingCorpus.new(payload: plan, failures: 2)
+    pauses = []
+
+    record = step(dir, corpus: corpus, contribute: true,
+      pause: ->(seconds) { pauses << seconds }).run
+
+    assert record.passed?, record.why
+    assert_equal 1, corpus.calls_of(:record_run).size, "the run was recorded more than once"
+    assert_equal [5, 10], pauses, "the retries did not back off"
   end
 
   # The run body is the whole of what this tool tells the service, so it is asserted

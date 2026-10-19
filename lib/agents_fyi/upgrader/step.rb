@@ -79,7 +79,7 @@ module AgentsFyi
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil
+        progress: nil, pause: nil
       )
         @repository = repository
         @to = to
@@ -133,6 +133,8 @@ module AgentsFyi
         # a forced attempt is never read as an ordinary one. The loop never passes it: a walk
         # that ignored its own memory would re-derive every rung every cycle.
         @force = force
+        # Where a retry waits. Injected so the suite does not spend the backoff it asserts.
+        @pause = pause || ->(seconds) { sleep(seconds) }
         # **The application's own environment, when the deployment knows it.** A repository
         # that carries no secrets is the ordinary case, not the exception: this walk's first
         # real application reads `ENV["RAILS_SECRET_TOKEN"]` and that value lives in a
@@ -146,7 +148,7 @@ module AgentsFyi
         # of a bundle resolve and a suite, and the record of it only exists at the end — so
         # without this the only live signal is this container's stdout. See `Progress` for why it
         # is a file rather than an endpoint.
-        @progress = progress || Progress.new(home: home, out: out)
+        @progress = progress || Progress.new(home: @home, out: @out) || Progress.new(home: home, out: out)
       end
 
       def run
@@ -2597,7 +2599,7 @@ module AgentsFyi
         # repository URL, so it is not a queue entry" — would be this tool disagreeing
         # with the only side that owns the answer.
         client = @corpus || Corpus.new(base: @api)
-        answer = client.record_run(self.class.run_payload(record))
+        answer = record_with_retry(client, record)
         run = answer.is_a?(Hash) ? answer["run"] : nil
         @out.puts("  recorded: run #{run && run["id"]} (#{record.verdict})") if @out
 
@@ -2610,6 +2612,26 @@ module AgentsFyi
         # exactly like a quiet run from the outside, which is the miner's lesson about a
         # bare `rescue` around a remote call.
         @out.puts("  not recorded: #{e.message}") if @out
+      end
+
+      # **The corpus is a remote, and a rung that passed is settled.** A transient refusal — the
+      # service restarting beside the walk — must not lose the run for good: measured on this
+      # deployment, `5.1.0 -> 5.2.0` passed while `service:8001` was being recreated, the client logged
+      # `not recorded: … ECONNREFUSED`, and the rung's run was gone for ever, because a passed move is
+      # settled and never revisited. Same shape and numbers as the push and the pull request: attempt,
+      # wait, attempt. A `Refused` (a 4xx) is *not* retried — the corpus read the request and said no,
+      # and re-deriving it reaches the same answer.
+      RECORD_ATTEMPTS = 3
+      RECORD_BACKOFF_SECONDS = 5
+
+      def record_with_retry(client, record, attempt: 1)
+        client.record_run(self.class.run_payload(record))
+      rescue Corpus::Unreachable => e
+        raise if attempt >= RECORD_ATTEMPTS
+
+        @out&.puts("  the run was not recorded yet (#{e.message}) — retrying")
+        @pause.call(RECORD_BACKOFF_SECONDS * (2**(attempt - 1)))
+        record_with_retry(client, record, attempt: attempt + 1)
       end
 
       # Public for the reason the policy group above is — `test/step_test.rb` holds this
