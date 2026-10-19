@@ -234,9 +234,9 @@ class StepMachineTest < Minitest::Test
     end
 
     def detect(_root) = AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
-    def no_suite_reason(_root) = "no suite"
+    def no_suite_reason(_root, _stack = nil) = "no suite"
 
-    def run(root, _suite, timeout:, env:, machine: nil)
+    def run(root, _suite, timeout:, env:, machine: nil, stack: nil)
       @machines << machine
       (@results&.shift || @results&.last) || green
     end
@@ -246,7 +246,7 @@ class StepMachineTest < Minitest::Test
         exit_code: 0, seconds: 0.1, output_tail: "3 examples", timed_out: false)
     end
 
-    def machine_test_env = { "RAILS_ENV" => "test" }
+    def machine_test_env(_stack = nil) = { "RAILS_ENV" => "test" }
   end
 
   # The shell, answering by substring. Every command a fake machine carries is prefixed with

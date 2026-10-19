@@ -431,9 +431,10 @@ module AgentsFyi
         end
       end
 
-      # The script the image runs to start the services, and the ports the application's own
-      # configuration expects when it names none.
-      SERVICES_SCRIPT = "agents-fyi-services"
+      # The ports the application's own configuration expects when it names none. **The services
+      # script is not named here**: it is the stack's (the era images ship it, and the pack says
+      # which command it is), so a native machine is told which command to route to the services
+      # container rather than recognising one name (docs/refactor/adr/0008).
       PG_PORT = 5432
       REDIS_PORT = 6379
 
@@ -470,10 +471,11 @@ module AgentsFyi
         attr_reader :entry, :home
 
         def initialize(entry:, home:, services:, out: nil, runner: Shell, rvm_root: nil,
-                       gemset: nil)
+                       gemset: nil, services_command: nil)
           @entry = entry
           @home = File.expand_path(home)
           @services = services
+          @services_command = services_command.to_s
           @out = out
           @runner = runner
           @rvm_root = rvm_root.to_s.strip
@@ -531,8 +533,14 @@ module AgentsFyi
         # rather than to a step (`Services#stop!` is the caller's, at the end of the walk).
         def stop! = nil
 
+        # Whether a command is the stack's services script, which runs where the services are
+        # rather than where the application is.
+        def routed_to_services?(command)
+          !@services_command.empty? && command.to_s.strip == @services_command
+        end
+
         def command(argv, chdir:, env: {})
-          return @services.command(argv, chdir: chdir) if argv.first.to_s == SERVICES_SCRIPT
+          return @services.command(argv, chdir: chdir) if routed_to_services?(argv.first)
 
           [argv, command_env(env)]
         end
@@ -542,7 +550,7 @@ module AgentsFyi
         # application's is the services script, which runs where the services are.
         def script(command, chdir:, env: {})
           return @services.command(["sh", "-lc", command.to_s], chdir: chdir) if
-            command.to_s.strip == SERVICES_SCRIPT
+            routed_to_services?(command)
 
           [["sh", "-lc", command.to_s], command_env(env)]
         end

@@ -393,12 +393,28 @@ class CliTest < Minitest::Test
       define_method(:run) { nil }
     end
 
-    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
-      out: StringIO.new, env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
+    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
+      "--api", "https://example.invalid"], out: StringIO.new,
+      env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
 
     assert_equal 0, status
     refute_nil built, "the step was built"
     assert_equal({ "UPGRADER_COMMAND_TIMEOUT" => "120" }, built[:env])
+  end
+
+  # **There is no default service.** A walker pointed at no service must say so rather than talk to
+  # whatever deployment its author happened to run: the answers a step records are only meaningful
+  # against the corpus the caller chose. This was measured — the engine carried the author's host as
+  # `DEFAULT_API`, so `test/engine_facts_test.rb` read one application's fact out of the engine.
+  def test_a_mode_that_needs_the_service_refuses_when_none_is_named
+    err = StringIO.new
+    status = AgentsFyi::Upgrader::CLI.new(["plan", "--repo", "https://example.invalid/app"],
+      out: StringIO.new, err: err, env: {}).run
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, status
+    assert_includes err.string, "needs the service"
+    assert_includes err.string, "--api"
+    assert_includes err.string, "AGENTS_FYI_URL"
   end
 
   # **An unverified step is not a plan.** Nothing was established — no interpreter installed the bundle, say —
@@ -410,8 +426,8 @@ class CliTest < Minitest::Test
       define_method(:run) { UnverifiedRecord.new }
     end
 
-    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0"],
-      out: StringIO.new, env: {}, step_class: fake).run
+    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
+      "--api", "https://example.invalid"], out: StringIO.new, env: {}, step_class: fake).run
 
     assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, status
   end

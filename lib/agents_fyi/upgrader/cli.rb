@@ -19,10 +19,17 @@ module AgentsFyi
     # or a second port.
     class CLI
       EXIT_OK = 0
+      # The modes that read or write the corpus. `prune` is local, and `help` is not a mode.
+      NEEDS_API = %w[plan preflight step serve].freeze
+
       EXIT_FAILED = 1
       EXIT_REFUSED = 2
 
-      DEFAULT_API = "https://agents.shoutsid.fyi"
+      # **There is no default service.** A walker that quietly talks to the deployment its author
+      # ran is answering from a corpus its caller did not choose, which is the same failure
+      # `UPGRADER_TO` refuses to have: the deployment names the service (`--api`, `AGENTS_FYI_URL`)
+      # and a caller that names none is told so.
+      API_ENV = "AGENTS_FYI_URL"
       DEFAULT_HOME = "~/.cache/agents-fyi-upgrader"
 
       USAGE = <<~TEXT
@@ -100,6 +107,11 @@ module AgentsFyi
         return usage_error(options[:error]) if options[:error]
         return help if options[:help]
         return usage_error("no command given") unless options[:command]
+        # A mode that asks the service without one named is a usage refusal rather than a failed
+        # request: there is nowhere to send it.
+        if NEEDS_API.include?(options[:command]) && options[:api].empty? && @corpus.nil?
+          return usage_error("`#{options[:command]}` needs the service: pass --api URL or set #{API_ENV}")
+        end
 
         case options[:command]
         when "plan" then plan(options)
@@ -123,6 +135,10 @@ module AgentsFyi
 
       private
 
+      # The corpus a mode asks. One place, so an injected corpus (the suite's) is the one every mode
+      # sees and no mode can reach a service the caller did not name.
+      def corpus_for(options) = @corpus || Corpus.new(base: options[:api])
+
       def plan(options)
         return usage_error("plan needs --repo PATH|URL") unless options[:repo]
 
@@ -136,7 +152,7 @@ module AgentsFyi
           )
         end
 
-        corpus = @corpus || Corpus.new(base: options[:api])
+        corpus = corpus_for(options)
         payload = corpus.upgrade(from: pinned.version, to: target(options, corpus))
         @out.puts(
           Plan.new(
@@ -179,7 +195,7 @@ module AgentsFyi
         # a rung is not that. An entry whose condition needs the rung is therefore unapplied and
         # the record says so — which is the honest half of a mode that was not told the target.
         result = Preflight.new(root: source.root,
-          corpus: @corpus || Corpus.new(base: options[:api]),
+          corpus: corpus_for(options),
           ruby: lockfile_for(source.root)&.locked_ruby).run
         @out.puts(result.to_s)
         if options[:record]
@@ -319,7 +335,7 @@ module AgentsFyi
         command = argv.first&.start_with?("-") ? nil : argv.shift
         options = {
           command: command,
-          api: @env["AGENTS_FYI_URL"].to_s.empty? ? DEFAULT_API : @env["AGENTS_FYI_URL"],
+          api: @env[API_ENV].to_s.strip,
           home: File.expand_path(@env["UPGRADER_HOME"].to_s.empty? ? DEFAULT_HOME : @env["UPGRADER_HOME"]),
           interval: 600,
           step_timeout: Step::DEFAULT_SUITE_TIMEOUT
@@ -392,7 +408,7 @@ module AgentsFyi
       def target(options, corpus = nil)
         return options[:to] if options[:to]
 
-        payload = (corpus || @corpus || Corpus.new(base: options[:api])).ladder
+        payload = (corpus || corpus_for(options)).ladder
         top = payload.is_a?(Hash) ? payload["top"].to_s : ""
         raise Corpus::Unreachable, "the ladder read carried no `top`" if top.empty?
 

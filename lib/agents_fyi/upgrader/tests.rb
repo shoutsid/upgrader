@@ -43,55 +43,10 @@ module AgentsFyi
       # whole group is killed outright. Long enough for a test process to flush what it
       # was writing, short enough that a suite which traps TERM cannot hold a cycle:
       # the alternative is a step that never returns.
-      # Read top to bottom, and **the order is the decision**:
-      #
-      # 1. `bin/rails test` — a Rails 5+ application has a Rakefile as well, and
-      #    `bin/rails` is the entry point Rails documents; the `rake test` task prints a
-      #    deprecation on Rails 7 and is gone on 8, so a table that checked the Rakefile
-      #    first would break the newer application to serve the older one.
-      # 2. `bundle exec rspec` — reached only when the first entry did not match, which
-      #    is what makes an application that has both `test/` and `spec/` deterministic:
-      #    its framework suite is the one that runs.
-      # 3. `bundle exec rake test` — for Rails 4 and older, which have no `bin/rails`.
-      # **The order is the rule, and it is a decision about applications that carry two
-      # suites.** The first real walk's repository has all three shapes at once — a
-      # `spec/spec_helper.rb`, a `test/test_helper.rb` from Rails' generators, and a `Rakefile`
-      # — and the suite that matters is the spec one (its `Guardfile` watches `spec/`, its
-      # `.rspec` asks for colour). A helper file is a deliberate statement that a suite exists;
-      # a `test/` directory of generated files is not, so rspec is asked first and the
-      # *alternatives* are named in `reason` and travel into the record's baseline stage
-      # (`Step#suite_note`). Rails 5+ (`bin/rails test`) is the second shape and rake is the
-      # third, which is the order of the Rails versions that run them.
-      CANDIDATES = [
-        {
-          kind: :rspec,
-          command: "bundle exec rspec",
-          matches: ->(root) do
-            File.file?(File.join(root, "spec/spec_helper.rb")) ||
-              File.file?(File.join(root, "spec/rails_helper.rb"))
-          end,
-          reason: "a spec directory with a helper file: this application's suite is rspec"
-        },
-        {
-          kind: :rails,
-          command: "bin/rails test",
-          matches: ->(root) do
-            File.file?(File.join(root, "bin/rails")) &&
-              File.file?(File.join(root, "test/test_helper.rb"))
-          end,
-          reason: "`bin/rails` and `test/test_helper.rb`: a Rails 5 or newer application " \
-                  "runs its suite through bin/rails, and `rake test` is the deprecated entry"
-        },
-        {
-          kind: :rake,
-          command: "bundle exec rake test",
-          matches: ->(root) do
-            File.file?(File.join(root, "Rakefile")) && File.directory?(File.join(root, "test"))
-          end,
-          reason: "a Rakefile and a test directory, with no bin/rails: Rails 4 and older " \
-                  "run minitest through the rake task"
-        }
-      ].freeze
+      # **The suite candidates are the stack's, not this runner's.** What a suite is called and in what
+      # order the shapes are tried is a fact about the framework — the order is argued where the table
+      # lives, `Stacks::Rails::SUITES` — and this class only runs what it is handed.
+      CANDIDATES = Stacks::Rails.suite_candidates
 
       # The suite to run, or nil when there is none this tool knows how to run. A nil
       # is a *refusal to guess* rather than an absence: a `test/` directory with no
@@ -117,21 +72,17 @@ module AgentsFyi
       # lists where it looked, because "no suite" without that is indistinguishable
       # from a tool that looked in the wrong place — and it says what the verdict is,
       # because the sentence ends up in the record of a step.
-      def self.no_suite_reason(root)
+      def self.no_suite_reason(root, stack = Stacks::Rails)
+        looked = stack.no_suite_looked_for
+        joined = looked.length < 2 ? looked.join : "#{looked[0..-2].join(", ")} and #{looked[-1]}"
         "no suite this tool knows how to run under #{File.expand_path(root)}: it looked for " \
-          "`bin/rails` beside `test/test_helper.rb`, a `spec/spec_helper.rb` or " \
-          "`spec/rails_helper.rb`, and a `Rakefile` with a `test` directory. A step whose " \
-          "suite cannot be run is `unverified`, never `passed`."
+          "#{joined}. A step whose suite cannot be run is `unverified`, never `passed`."
       end
 
-      # The environment a Rails suite has to run under. Named here rather than left to
-      # the caller because a suite that runs without it boots in *development*, against
-      # the development database, inside a working copy somebody is upgrading — and
-      # `RACK_ENV` is included because a Rack application reads that one and not
-      # `RAILS_ENV`.
-      def self.machine_test_env
-        { "RAILS_ENV" => "test", "RACK_ENV" => "test" }
-      end
+      # The environment a suite of this kind has to run under, from the stack pack that knows the
+      # framework. Named by the pack rather than by this runner because a suite that runs without
+      # it boots in a different environment from the one the walk is measuring.
+      def self.machine_test_env(stack = Stacks::Rails) = stack.test_env
 
       # Run it, and say which of the three answers it was.
       #
@@ -155,12 +106,14 @@ module AgentsFyi
       # at the end, which is what a reader (or an agent asked to repair the rung) needs.
       SUITE_EXCERPT_BYTES = 20_000
 
-      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: SUITE_EXCERPT_BYTES, machine: nil)
+      def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: SUITE_EXCERPT_BYTES, machine: nil,
+        stack: Stacks::Rails)
         # First, so the rescue below can always measure: a run that fails to start is
         # still a run that has a duration, and the record keeps it.
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         command = suite.respond_to?(:command) ? suite.command.to_s : suite.to_s
-        environment = (rails_suite?(suite) ? machine_test_env : {}).merge(env)
+        kind = suite.respond_to?(:kind) ? suite.kind : nil
+        environment = stack.suite_env(kind).merge(env)
         argv, process_env = spawn_argv(command, root: root, env: environment, machine: machine)
 
         # **The child is `Shell`'s**, the same one a pipeline command goes through: one place decides how a
@@ -220,10 +173,6 @@ module AgentsFyi
         else
           "it was killed by a signal before it finished"
         end
-      end
-
-      def self.rails_suite?(suite)
-        %i[rails rake].include?(suite.respond_to?(:kind) ? suite.kind : nil)
       end
 
       # [argv, process_env] for `Process.spawn`, through the machine when there is one.

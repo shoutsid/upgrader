@@ -79,7 +79,7 @@ module AgentsFyi
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil, pause: nil
+        progress: nil, pause: nil, stack: nil
       )
         @repository = repository
         @to = to
@@ -135,6 +135,10 @@ module AgentsFyi
         @force = force
         # Where a retry waits. Injected so the suite does not spend the backoff it asserts.
         @pause = pause || ->(seconds) { sleep(seconds) }
+        # The stack pack: what a release changes and how a command is spelled for it.
+        # The project declares which pack by name; until the entry points are wired to the
+        # declaration, the Rails pack is what a step runs.
+        @stack = stack || Stacks.for("rails")
         # **The application's own environment, when the deployment knows it.** A repository
         # that carries no secrets is the ordinary case, not the exception: this walk's first
         # real application reads `ENV["RAILS_SECRET_TOKEN"]` and that value lives in a
@@ -631,7 +635,8 @@ module AgentsFyi
 
       def build_machine(entry)
         return @machine_factory.call(entry) if @machine_factory
-        return Machine::Host.new(entry: entry, home: @home, out: @out, services: services) if rvm_mode?
+        return Machine::Host.new(entry: entry, home: @home, out: @out, services: services,
+          services_command: @stack.services_command.first) if rvm_mode?
 
         Machine::Container.new(entry: entry, home: @home, out: @out, run_id: run_id)
       end
@@ -843,7 +848,7 @@ module AgentsFyi
       def services_stage(stages)
         return nil unless @machine.services?
 
-        stages << command(Record::SERVICES, ["agents-fyi-services"], chdir: @worktree.root)
+        stages << command(Record::SERVICES, @stack.services_command, chdir: @worktree.root)
         stages.last
       end
 
@@ -1217,7 +1222,7 @@ module AgentsFyi
       # suite expects, the bundle this run installed, and the deployment's own values for the
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
-        @tests.machine_test_env.merge(@worktree.bundle_env(machine: @machine)).merge(@suite_env)
+        @tests.machine_test_env(@stack).merge(@worktree.bundle_env(machine: @machine)).merge(@suite_env)
       end
 
       # `KEY=VALUE` lines, `#` comments and blank lines ignored, and a missing file is an
@@ -1261,15 +1266,9 @@ module AgentsFyi
         # on a database that was never created. The version at hand is the application's own
         # (`Gemfile.lock`, read before the pin is rewritten) because that is the Rails that
         # would run the command.
-        argv =
-          if rails_five_or_newer?
-            ["bin/rails", "db:create", "db:test:prepare"]
-          elsif File.file?(File.join(root, "Rakefile"))
-            ["bundle", "exec", "rake", "db:create", "db:test:prepare"]
-          end
+        argv, refusal = @stack.prepare_database(root, five_or_newer: five_or_newer?)
         unless argv
-          stages << Record::Command.new(stage: Record::DATABASE,
-            command: "no Rakefile and no bin/rails: nothing to prepare the database with",
+          stages << Record::Command.new(stage: Record::DATABASE, command: refusal,
             ran: false, exit_code: nil, seconds: 0.0, output_tail: "")
           return nil
         end
@@ -1297,7 +1296,7 @@ module AgentsFyi
         return nil if arrived.empty?
         return nil unless File.file?(File.join(@worktree.root, "config", "database.yml"))
 
-        argv = rails_five_or_newer? ? ["bin/rails", "db:migrate"] : ["bundle", "exec", "rake", "db:migrate"]
+        argv = @stack.migrate(@worktree.root, five_or_newer: five_or_newer?)
         @out.puts("  database: #{argv.join(" ")} (#{arrived.size} migration(s) from app:update)") if @out
         stage = command(Record::DATABASE, argv, chdir: @worktree.root, env: application_env)
         stage.output_tail = "#{arrived.join(", ")} arrived with app:update, so the database the " \
@@ -1312,7 +1311,7 @@ module AgentsFyi
       def baseline(stages)
         @suite_plan = @tests.detect(@worktree.root)
         unless @suite_plan
-          reason = @tests.respond_to?(:no_suite_reason) ? @tests.no_suite_reason(@worktree.root) : "no suite"
+          reason = @tests.respond_to?(:no_suite_reason) ? @tests.no_suite_reason(@worktree.root, @stack) : "no suite"
           stages << Record::Command.new(stage: Record::BASELINE, command: reason, ran: false,
             exit_code: nil, seconds: 0.0, output_tail: reason)
           return nil
@@ -1334,7 +1333,7 @@ module AgentsFyi
       # decides whether that directory is on this host or inside the step's container.
       def run_suite(stages, stage)
         announce(stage, @suite_plan.command)
-        result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout,
+        result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
           env: application_env, machine: @machine)
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
           exit_code: result.exit_code, seconds: result.seconds,
@@ -2249,9 +2248,9 @@ module AgentsFyi
         runner, task = update_runner
         unless runner
           stages << Record::Command.new(stage: Record::RAILS_UPDATE,
-            command: "bin/rails app:update",
+            command: @stack.update_command(five_or_newer: five_or_newer?),
             ran: false, exit_code: nil, seconds: 0.0,
-            output_tail: "no bin/rails and no Rakefile: nothing to run")
+            output_tail: @stack.no_update_reason)
           return
         end
 
@@ -2266,7 +2265,7 @@ module AgentsFyi
         answers = overwrite_answers
         begin
           stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
-            env: application_env.merge("RAILS_ENV" => "development", "RACK_ENV" => "development"),
+            env: @stack.development_env(application_env),
             stdin: answers)
         ensure
           answers.close
@@ -2318,7 +2317,7 @@ module AgentsFyi
             note: "`app:update` copied this migration for #{engine}, and the application's " \
                   "`db/schema.rb` declares no `#{engine}_*` table — so it is a migration for a " \
                   "component this application does not use, and running it fails on the table it " \
-                  "assumes. Install the component first (`bin/rails #{engine}:install`) if the " \
+                  "assumes. Install the component first (`#{@stack.install_command(engine)}`) if the " \
                   "application wants it")
         end
       end
@@ -2330,24 +2329,13 @@ module AgentsFyi
       # task through rake says "Don't know how to build task 'app:update'". So they are chosen
       # together, from the application's own version, and the fallback is the same shape as
       # before: an application with neither binstub nor Rakefile has nothing to run.
-      def update_runner
-        if rails_five_or_newer?
-          return [["bin/rails"], "app:update"] if File.executable?(File.join(@worktree.root, "bin/rails"))
-
-          return nil
-        end
-        return [["bundle", "exec", "rake"], "rails:update"] if File.file?(File.join(@worktree.root, "Rakefile"))
-
-        nil
-      end
+      def update_runner = @stack.app_update(@worktree.root, five_or_newer: five_or_newer?)
 
       # The Rails version the application is *on* — the one whose commands would run, read from
       # the lockfile the step opened before anything was written. `major >= 5` is the whole
       # rule: every command that moved did so at 5.0, and an application on a pre-release
       # (`4.0.0.rc1`) is on 4.
-      def rails_five_or_newer?
-        @lockfile&.rails&.version.to_s.split(".").first.to_i >= 5
-      end
+      def five_or_newer? = @stack.five_or_newer?(@lockfile)
 
       # **The class methods in this file are public, and the `private` markers around them
       # govern instance helpers only** — a bare `private` cannot reach a singleton method,
@@ -2413,10 +2401,10 @@ module AgentsFyi
       private
 
       def boot(stages)
-        return unless File.executable?(File.join(@worktree.root, "bin/rails"))
+        argv = @stack.boot(@worktree.root)
+        return if argv.nil?
 
-        stages << command(Record::BOOT, ["bin/rails", "runner", "puts Rails.version"],
-          chdir: @worktree.root, env: application_env)
+        stages << command(Record::BOOT, argv, chdir: @worktree.root, env: application_env)
       end
 
       # The patch, for a person to apply. Untracked files are included, because

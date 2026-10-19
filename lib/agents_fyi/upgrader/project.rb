@@ -186,7 +186,7 @@ module AgentsFyi
         value.each do |name|
           unless name.is_a?(String) && name.match?(ENV_NAME)
             raise Invalid,
-              "env_names carries #{name.to_s.inspect}: a name like RAILS_SECRET_TOKEN, never a value — " \
+              "env_names carries #{name.to_s.inspect}: a name like MY_SECRET_TOKEN, never a value — " \
               "the value belongs in the deployment"
           end
         end

@@ -87,10 +87,12 @@ class HostMachineTest < Minitest::Test
     root
   end
 
-  def machine(entry: entry(), root: nil, runner: nil, services: nil, home: nil)
+  def machine(entry: entry(), root: nil, runner: nil, services: nil, home: nil,
+    services_command: "agents-fyi-services")
     Machine::Host.new(entry: entry, home: home || temp_dir, out: nil,
       runner: runner || FakeShell.new, services: services || FakeServices.new,
-      rvm_root: root || rvm_root, gemset: "agents-fyi-upgrader")
+      rvm_root: root || rvm_root, gemset: "agents-fyi-upgrader",
+      services_command: services_command)
   end
 
   # **The era's bin directory goes in front of `PATH`, and that is the whole mechanism.** The
@@ -127,14 +129,24 @@ class HostMachineTest < Minitest::Test
     refute_empty env["PATH"]
   end
 
-  # **The one name that is not the application's.** The services script starts PostgreSQL and
-  # Redis, and on a host-run step they live in the services container — with the application's
-  # own directory as the working directory, because that is where it reads the `database.yml`
-  # whose roles and databases it creates.
+  # **The one command that is not the application's.** The services script starts PostgreSQL and
+  # Redis, and on a host-run step they live in the services container — with the application's own
+  # directory as the working directory, because that is where it reads the `database.yml` whose
+  # roles and databases it creates. *Which* command that is comes from the stack pack through the
+  # caller: this machine is told rather than recognising a name, because the name is one
+  # application's (`docs/refactor/adr/0008`).
   def test_the_services_script_runs_in_the_services_container_with_the_application_s_directory
-    argv, _env = machine.command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
+    argv, _env = machine(services_command: "agents-fyi-services").command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
 
     assert_equal ["docker", "exec", "cid", "agents-fyi-services"], argv
+  end
+
+  # And a machine told nothing routes nothing: without the stack's word, a command runs where the
+  # application is. That is what keeps the engine from carrying a second copy of the name.
+  def test_a_machine_with_no_services_command_routes_nothing
+    argv, _env = machine(services_command: "").command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
+
+    assert_equal ["agents-fyi-services"], argv
   end
 
   # Starting verifies the interpreter, and both the services container and the version check are
