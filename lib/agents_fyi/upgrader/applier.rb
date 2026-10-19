@@ -191,40 +191,11 @@ module AgentsFyi
         line.end_with?("\r") ? line[0..-2] : line
       end
 
-      # The full path when it is a file this applier may write, or `nil` and the reason
-      # it may not. Checked by spelling first and by *real* path second, because the two
-      # catch different escapes: `../` is a path nobody means, and a symlink to
-      # `/etc/passwd` is a path that looks like it belongs here.
+      # The full path when it is a file this applier may write, or `nil` and the reason it may not.
+      # The rule is `Sealed`'s, because the decision effects write to the same tree and a second copy
+      # of it is a second answer to "is this path inside the copy".
       def sealed(path)
-        if path.start_with?("/")
-          return [nil, "an absolute path (#{path}) is not a file in the working copy"]
-        end
-
-        full = File.expand_path(path, @root)
-        return [nil, "#{path} is the working copy itself, not a file in it"] if full == @root
-        unless full.start_with?("#{@root}#{File::SEPARATOR}")
-          return [nil, "#{path} resolves outside the working copy"]
-        end
-
-        real_parent = File.realpath(File.dirname(full))
-        unless inside?(real_parent)
-          return [nil, "#{path} is under #{real_parent}, which is outside the working copy"]
-        end
-
-        if File.symlink?(full)
-          real = File.realpath(full)
-          unless inside?(real)
-            return [nil, "#{path} is a symlink to #{real}, which is outside the working copy"]
-          end
-        end
-
-        [full, nil]
-      rescue SystemCallError => e
-        [nil, "#{path} could not be resolved (#{e.class}: #{e.message})"]
-      end
-
-      def inside?(real)
-        real == @root_real || real.start_with?("#{@root_real}#{File::SEPARATOR}")
+        Sealed.path(@root, path, root_real: @root_real)
       end
     end
   end

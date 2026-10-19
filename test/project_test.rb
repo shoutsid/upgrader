@@ -45,6 +45,38 @@ class ProjectTest < Minitest::Test
     assert_equal "agents-fyi/upgrade-7.1.0", lighthouse.delivery.branch_for("7.1.0")
   end
 
+  # **An accepted decision is part of the declaration, and its effects are what make it machinery.** The
+  # shape is checked here (keys, an id, a list of effects); what an effect *means* is `Effects`'s,
+  # because that is where it is applied and where a refusal belongs beside the run.
+  def test_a_declaration_carries_the_decisions_the_project_has_made
+    project = PROJECT.parse(minimal.merge("decisions" => [decision]).to_json)
+
+    assert_equal 1, project.decisions.length
+    assert_equal "d1", project.decisions.first["id"]
+    assert_equal "operator:9f2c1ab8", project.decisions.first["accepted_by"]
+    assert_equal "patch", project.decisions.first["effects"].first["kind"]
+    assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
+    assert_equal [], lighthouse.decisions, "the lighthouse declares no decisions yet"
+  end
+
+  def test_an_unknown_field_in_a_decision_is_refused
+    broken = decision.merge("asker" => "somebody")
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("decisions" => [broken]).to_json)
+    end
+
+    assert_includes error.message, "unknown field(s) in decision 0"
+    assert_includes error.message, "asker"
+  end
+
+  def test_a_decision_with_no_id_is_refused_because_nothing_could_name_it
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("decisions" => [decision.merge("id" => "")]).to_json)
+    end
+
+    assert_includes error.message, "has no `id`"
+  end
+
   # **A typo is not a comment.** A key the engine does not know is a setting that would silently do
   # nothing, which is the failure mode the class exists to prevent.
   def test_an_unknown_field_is_refused_rather_than_ignored
@@ -135,6 +167,15 @@ class ProjectTest < Minitest::Test
   end
 
   private
+
+  def decision
+    { "id" => "d1", "question" => "Should the row keep a Show link?",
+      "answer" => "remove the link", "accepted_by" => "operator:9f2c1ab8",
+      "effects" => [{ "kind" => "patch",
+                      "payload" => { "path" => "app/views/bids/index.html.erb",
+                                     "find" => "show", "replace" => "" },
+                      "applies_when" => { "rung_gte" => "6.0.0" } }] }
+  end
 
   # The smallest declaration that is complete: every other rule is about what may be added to it.
   def minimal

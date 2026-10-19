@@ -509,14 +509,15 @@ class StepTest < Minitest::Test
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
-           suite_env: nil, applier: nil, pause: nil)
+           suite_env: nil, applier: nil, pause: nil, project: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: applier || FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
-      reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env, pause: pause
+      reuse: reuse, research: research, env: env, repair: repair, suite_env: suite_env, pause: pause,
+      project: project
     )
   end
 
@@ -978,6 +979,44 @@ class StepTest < Minitest::Test
   # one shape a repair may be attempted on — the failure is then attributable to the move —
   # and the verdict afterwards is the *suite's* again: a repaired step passes because the
   # suite says so, never because a model said it fixed something.
+  # **A decision the project already made is applied before the scan reads the tree.** It is machinery:
+  # the same edit on every walk, in the `decisions` stage, named by the decision that made it — which is
+  # what the hand-made `agents-fyi/baseline` branch did, and the reason it could not be re-derived.
+  def test_a_declared_decision_is_applied_before_the_scan_and_recorded_with_its_origin
+    dir = track(app)
+    FileUtils.mkdir_p(File.join(dir, "app/views/layouts"))
+    File.write(File.join(dir, "app/views/layouts/application.html.erb"),
+      "<html>\n  <%= link_to 'Categories', categories_path %>\n  <%= yield %>\n</html>\n")
+    commit(dir, "the layout the decision is about")
+
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "decisions" => [{
+        "id" => "layout-category-link",
+        "question" => "The layout renders a Categories link where @category is nil.",
+        "answer" => "guard it",
+        "accepted_by" => "operator:9f2c1ab8",
+        "effects" => [{ "kind" => "patch",
+          "payload" => { "path" => "app/views/layouts/application.html.erb",
+                         "find" => "  <%= link_to 'Categories', categories_path %>\n",
+                         "replace" => "  <% if @category %><%= link_to 'Categories', categories_path %><% end %>\n" },
+          "applies_when" => { "rung_gte" => "6.0.0" } }]
+      }]
+    }.to_json)
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan(to: "6.0.0")), project: project).run
+
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "decisions"
+    assert_operator stages.index("decisions"), :<, stages.index("apply"),
+      "the scan read the tree before the decision was applied to it"
+    edit = record.applied.find { |applied| applied.origin == "decision:layout-category-link" }
+    refute_nil edit, "the decision's edit is not in the applied list"
+    assert_equal "app/views/layouts/application.html.erb", edit.path
+    assert_includes File.read(File.join(record.worktree, "app/views/layouts/application.html.erb")),
+      "<% if @category %>"
+  end
+
   def test_a_red_suite_after_a_green_baseline_is_repaired_and_the_suite_decides
     dir = track(app)
     record = step(dir, tests: SequencedTests.new(results: [green, red, green]),

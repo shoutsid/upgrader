@@ -75,6 +75,11 @@ module AgentsFyi
       # rather than being one itself (`verdict`).
       DATABASE = "database"
       APPLY = "apply"
+      # **The decisions this project has already made, applied before anything is scanned.** Its own
+      # stage because a reader has to see that the tree was not as the application left it *before* the
+      # scan read it — and the edits carry `origin: decision:<id>`, so the stage and the applied list
+      # agree about which decision made them.
+      DECISIONS = "decisions"
       # **The digest's rung-scoped entries, made between the pin rewrite and its resolve.** A
       # `declared` entry is about a gem the target framework brings in, and a rewrite is about a
       # line that release asks for, so neither can be applied while the Gemfile still names the

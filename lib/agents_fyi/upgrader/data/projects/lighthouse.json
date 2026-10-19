@@ -21,5 +21,6 @@
     "provider": "github",
     "branch": "agents-fyi/upgrade-<release>",
     "chain": true
-  }
+  },
+  "decisions": []
 }

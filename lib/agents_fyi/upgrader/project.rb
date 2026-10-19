@@ -21,7 +21,15 @@ module AgentsFyi
       # The fields a declaration may carry. **An unknown key is an error rather than a comment:** a
       # typo is a setting that silently does nothing, and a walk that ignores a setting its operator
       # believes is in force is the failure this class exists to prevent.
-      FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery].freeze
+      FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery
+        decisions].freeze
+
+      # The fields one accepted decision carries in a declaration. It is the console's rendering of
+      # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
+      # key nobody reads is a refusal here for the same reason every other unknown key is: a typo is
+      # a setting that silently does nothing.
+      DECISION_FIELDS = %w[id question answer accepted_by effects verified_by_run_id].freeze
+      EFFECT_FIELDS = %w[kind payload applies_when].freeze
 
       # What a suite can be. `none` is a real answer, not a missing one: an application without a
       # suite is measured by its boot, and a declaration that says so is not one typo away from a
@@ -66,7 +74,7 @@ module AgentsFyi
       end
 
       attr_reader :slug, :repo, :base_ref, :from, :to, :stack, :suite, :services, :env_names,
-        :eras, :delivery, :path
+        :eras, :delivery, :decisions, :path
 
       # The declaration named by a slug, from the projects directory.
       def self.find(slug, dir: PROJECTS)
@@ -113,6 +121,7 @@ module AgentsFyi
         @env_names = environment_names(fields["env_names"] || [])
         @eras = read_eras(fields["eras"])
         @delivery = read_delivery(fields["delivery"])
+        @decisions = read_decisions(fields["decisions"])
       end
 
       # The declaration as it would be written back — what the console edits and what a record quotes.
@@ -120,7 +129,8 @@ module AgentsFyi
         {
           "slug" => slug, "repo" => repo, "base_ref" => base_ref, "from" => from, "to" => to,
           "stack" => stack, "suite" => suite.to_h, "services" => services,
-          "env_names" => env_names, "eras" => eras, "delivery" => delivery.to_h
+          "env_names" => env_names, "eras" => eras, "delivery" => delivery.to_h,
+          "decisions" => decisions
         }.compact
       end
 
@@ -201,6 +211,52 @@ module AgentsFyi
         read_names(value, "eras")
       end
 
+      # **The decisions this project has already made, as data.** An accepted answer's effects are
+      # applied on every walk (`Effects`), which is what makes a decision machinery rather than a note.
+      # The shape is checked here — keys, an id, a list of effects — and the *meaning* of an effect
+      # (its kind, its conditions, the text it finds) is `Effects`'s, because that is where it is
+      # applied and where a refusal belongs beside the run rather than at load.
+      def read_decisions(value)
+        return [] if value.nil?
+
+        unless value.is_a?(Array)
+          raise Invalid, "decisions must be a list of accepted decisions, not #{value.class}"
+        end
+
+        value.each_with_index.map do |decision, index|
+          unless decision.is_a?(Hash)
+            raise Invalid, "decision #{index} is not an object"
+          end
+
+          unknown = decision.keys - DECISION_FIELDS
+          unless unknown.empty?
+            raise Invalid, "unknown field(s) in decision #{index}: #{unknown.sort.join(", ")} — " \
+                           "known: #{DECISION_FIELDS.join(", ")}"
+          end
+          if decision["id"].to_s.strip.empty?
+            raise Invalid, "decision #{index} has no `id`, so nothing in the run could name it"
+          end
+
+          effects = decision["effects"]
+          unless effects.is_a?(Array)
+            raise Invalid, "decision #{decision["id"]} has no `effects` list"
+          end
+          effects.each_with_index do |effect, position|
+            unless effect.is_a?(Hash)
+              raise Invalid, "decision #{decision["id"]}'s effect #{position} is not an object"
+            end
+
+            unknown_effect = effect.keys - EFFECT_FIELDS
+            unless unknown_effect.empty?
+              raise Invalid, "unknown field(s) in decision #{decision["id"]}'s effect #{position}: " \
+                             "#{unknown_effect.sort.join(", ")} — known: #{EFFECT_FIELDS.join(", ")}"
+            end
+          end
+
+          decision
+        end
+      end
+
       def read_delivery(value)
         return Delivery.new(provider: "none", branch: nil, chain: false) if value.nil?
 
@@ -216,7 +272,11 @@ module AgentsFyi
           raise Invalid, "delivery.provider is #{provider.inspect}; known: #{PROVIDERS.join(", ")}"
         end
 
-        Delivery.new(provider: provider, branch: value["branch"] || DEFAULT_BRANCH,
+        # **A branch belongs to a provider that has one.** An explicit null is "none" and is honoured;
+        # an absent branch defaults only for GitHub, because a `none` delivery with GitHub's pattern
+        # would round-trip into a different declaration than the one that was written.
+        branch = value.key?("branch") ? value["branch"] : (provider == "github" ? DEFAULT_BRANCH : nil)
+        Delivery.new(provider: provider, branch: branch,
           chain: value.key?("chain") ? value["chain"] == true : true)
       end
     end
