@@ -529,6 +529,74 @@ class PublishTest < Minitest::Test
     assert_equal "agents-fyi/upgrade-4.0.0", call[4],
       "the base fell back to the default branch on a failed ls-remote"
   end
+
+  # **The first rung is based on the walk's starting ref, not the repository's default.** A project
+  # declares `base_ref`; with no previous rung's branch to chain to, the default branch is not the
+  # parent — the lighthouse's baseline carries its own view fixes, and basing the 4.1 request on
+  # `master` put them in the 4.1 diff.
+  class BaseRefGit < FakeGit
+    def call(root, *argv)
+      if argv.include?("--heads")
+        @calls << argv
+        candidate = argv.last
+        return [candidate == "agents-fyi/baseline" ? "refs/heads/agents-fyi/baseline\n" : "",
+          instance_double_success]
+      end
+
+      super
+    end
+  end
+
+  def test_the_first_rung_targets_the_declaration_s_starting_ref
+    _bare, clone = origin_and_clone
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0", to_version: "4.1.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "4.0.0",
+        to: "4.1.0"),
+      token: "ghp_secret", git: BaseRefGit.new, api: api,
+      base_ref: "agents-fyi/baseline").call
+
+    call = api.calls.find { |entry| entry.first == :pull_request }
+    assert_equal "agents-fyi/baseline", call[4],
+      "the first rung fell back to the repository default instead of the walk's starting ref"
+  end
+
+  # A later rung still chains to its own previous rung even when a starting ref is declared.
+  class ChainGit < FakeGit
+    def initialize(branches:, **kwargs)
+      super(**kwargs)
+      @branches = branches
+    end
+
+    def call(root, *argv)
+      if argv.include?("--heads")
+        @calls << argv
+        candidate = argv.last
+        return [@branches.include?(candidate) ? "refs/heads/#{candidate}\n" : "",
+          instance_double_success]
+      end
+
+      super
+    end
+  end
+
+  def test_a_later_rung_chains_to_the_previous_rung_not_the_starting_ref
+    _bare, clone = origin_and_clone
+    git = ChainGit.new(branches: %w[agents-fyi/upgrade-4.1.0 agents-fyi/baseline])
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.1.0", to_version: "4.2.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "4.1.0",
+        to: "4.2.0"),
+      token: "ghp_secret", git: git, api: api, base_ref: "agents-fyi/baseline").call
+
+    call = api.calls.find { |entry| entry.first == :pull_request }
+    assert_equal "agents-fyi/upgrade-4.1.0", call[4],
+      "a later rung was based on the starting ref instead of the previous rung"
+  end
 end
 
 # **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through

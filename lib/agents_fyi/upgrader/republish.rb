@@ -41,11 +41,15 @@ module AgentsFyi
             next
           end
 
+          project = Project.find_by_repository(entry.repo)
+          base_ref = delivery["base_ref"].to_s
+          base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
           result = @publish_class.new(
             root: delivery["root"], repository: entry.repo,
             from_version: entry.from_version, to_version: entry.to_version,
             record: record, commit: delivery["commit"].to_s, token: @token, out: @out,
-            branch_pattern: delivery["branch_pattern"], report_base: @report_base
+            branch_pattern: delivery["branch_pattern"], report_base: @report_base,
+            base_ref: base_ref
           ).call
           @out&.puts("republish: #{entry.repo} #{entry.from_version}->#{entry.to_version}: #{result}")
           result

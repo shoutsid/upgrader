@@ -80,7 +80,7 @@ module AgentsFyi
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
                      out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
-                     report_base: nil)
+                     report_base: nil, base_ref: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -110,6 +110,11 @@ module AgentsFyi
         # The deployment names the public base, and no base means the report is named rather than
         # linked.
         @report_base = report_base.to_s.chomp("/")
+        # **The first rung's base is the walk's starting ref, not the repository's default.** A
+        # project declares `base_ref` (`agents-fyi/baseline` for the lighthouse); the first rung has
+        # no previous rung's branch to chain to, and falling back to `master` put the baseline's own
+        # view fixes into the 4.1 diff. Later rungs still use the previous rung's branch.
+        @base_ref = base_ref.to_s
       end
 
       def call
@@ -188,6 +193,7 @@ module AgentsFyi
       def base_branch
         previous = self.class.branch_for(@from_version, pattern: @branch_pattern)
         return previous if remote_has?(previous)
+        return @base_ref if !@base_ref.empty? && remote_has?(@base_ref)
 
         remote_default_branch || api_default_branch || "main"
       end

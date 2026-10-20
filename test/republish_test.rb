@@ -43,6 +43,7 @@ class RepublishTest < Minitest::Test
       ledger.deliver(repo: REPO, commit: "base123", from_version: "4.0.0", to_version: "4.1.0",
         state: { "attempted" => true, "delivered" => true, "root" => home,
                  "commit" => "produced1", "branch_pattern" => "agents-fyi/upgrade-<release>",
+                 "base_ref" => "agents-fyi/baseline",
                  "pull_request" => "https://github.com/acme/app/pull/1" })
 
       brief = Brief::Result.new(
@@ -71,6 +72,7 @@ class RepublishTest < Minitest::Test
       assert_equal 1, results.length
       call = FakePublish.calls.first
       assert_equal "produced1", call[:commit]
+      assert_equal "agents-fyi/baseline", call[:base_ref]
       assert_equal "bundle exec rspec", call[:record].stages.first.readable
       assert_equal "companion", call[:record].applied.first.origin
       assert_equal "app/y.rb", call[:record].decisions.first.path

@@ -299,16 +299,17 @@ module AgentsFyi
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
           token: ENV[Publish::ENV_TOKEN], branch_pattern: pattern,
-          report_base: ENV["UPGRADER_PUBLIC_URL"]
+          report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref
         ).call
         @out.puts("serve: #{record.repository} — #{result}")
-        remember_delivery(record, result, root: root, pattern: pattern)
+        remember_delivery(record, result, root: root, pattern: pattern,
+          base_ref: project&.base_ref)
       end
 
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
-      def remember_delivery(record, result, root:, pattern:)
+      def remember_delivery(record, result, root:, pattern:, base_ref: nil)
         state = {
           "attempted" => true,
           "delivered" => delivered?(result, record.repository),
@@ -317,7 +318,8 @@ module AgentsFyi
           "pull_request" => result.pull_request,
           "reason" => result.reason,
           "root" => root.to_s,
-          "branch_pattern" => pattern.to_s
+          "branch_pattern" => pattern.to_s,
+          "base_ref" => base_ref.to_s
         }
         @ledger&.deliver(
           repo: record.repository, commit: record.commit,
@@ -357,12 +359,15 @@ module AgentsFyi
             next
           end
 
+          project = project_for(entry.repo)
+          base_ref = delivery["base_ref"].to_s
+          base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
           result = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
             out: @out, token: ENV[Publish::ENV_TOKEN],
             branch_pattern: delivery["branch_pattern"],
-            report_base: ENV["UPGRADER_PUBLIC_URL"]
+            report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref
           ).call
           @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
           state = delivery.merge(

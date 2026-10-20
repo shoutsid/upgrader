@@ -298,6 +298,8 @@ class ServeTest < Minitest::Test
       walk: true, rungs: 1).run
 
     assert_equal "agents-fyi/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
+    assert_equal "agents-fyi/baseline", FakePublish.calls.last[:base_ref],
+      "the declaration's starting ref did not reach the publisher"
   end
 
   # **The loop waits only when waiting is the answer.** A passed rung has the next one ready now, and
