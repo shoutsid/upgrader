@@ -424,6 +424,20 @@ module AgentsFyi
           return
         end
 
+        # **A digest's line is a floor, and a newer application is not moved down to it.** The
+        # curated entries were measured on applications that pinned an older release; the same
+        # entry met a modern Gemfile on the second lighthouse — `json ~> 1.8` against a locked
+        # json 2.19.3, `carrierwave ~> 0.9.0` against 3.1.2 — and the preflight wrote the
+        # downgrade, which the resolver then refused for conflicting with a dev gem. A line the
+        # application already sits above is not a repair; it is a regression waiting for a bundle
+        # resolve to notice.
+        if newer_than_entry?(name, entry)
+          notes << "the digest's entry for #{name} was not applied: the application has " \
+                   "#{name} #{locked_version(name)} locked, newer than #{entry["requirement"]}, " \
+                   "so the move would be a downgrade"
+          return
+        end
+
         if entry["kind"].to_s == "declared"
           # **A declaration waits until the Gemfile and the pin agree.** A `declared` entry is
           # about a gem the *framework being moved to* brings in, and its requirement is a fact
@@ -770,6 +784,53 @@ module AgentsFyi
           else
             []
           end
+      end
+
+      # **What the application has locked, for the one question the digest cannot answer by
+      # itself.** The entry's `when` names an era; it cannot name the application's own release
+      # of the gem, and a modern app is not the one the entry was measured on.
+      def locked_version(name)
+        locked_versions[name.to_s]
+      end
+
+      def locked_versions
+        @locked_versions ||= begin
+          path = File.join(@root, "Gemfile.lock")
+          if File.file?(path)
+            require "bundler"
+            Bundler::LockfileParser.new(File.read(path, encoding: "utf-8")).specs.to_h do |spec|
+              [spec.name.to_s, spec.version.to_s]
+            end
+          else
+            {}
+          end
+        rescue StandardError
+          {}
+        end
+      end
+
+      # The version a requirement stops before: the `~>` bump, or a `<` clause. An `=` pin is
+      # deliberate (mimemagic is the case) and has no upper bound here — the guard protects
+      # against a line that is *behind* the application, not against a pin the digest means.
+      def upper_bound(requirement)
+        parsed = Gem::Requirement.new(requirement.to_s)
+        op, version = parsed.requirements.first
+        return version.bump if op == "~>"
+        return version if %w[< <=].include?(op)
+
+        nil
+      rescue ArgumentError
+        nil
+      end
+
+      def newer_than_entry?(name, entry)
+        current = locked_version(name)
+        upper = upper_bound(entry["requirement"])
+        return false if current.nil? || upper.nil?
+
+        Gem::Version.new(current) >= upper
+      rescue ArgumentError
+        false
       end
 
       def locked_gems

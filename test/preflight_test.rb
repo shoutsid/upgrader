@@ -184,6 +184,38 @@ class PreflightTest < Minitest::Test
       "the sentence has to say which: #{result.notes.inspect}"
   end
 
+  # **A curated entry is a floor, and the application can already be above it.** The json entry
+  # was measured on an application pinning `~> 1.7.7`, whose C source will not compile on 2.2;
+  # the second lighthouse locks 2.19.3, and applying the entry wrote `~> 1.8`, a downgrade the
+  # resolver then refused against a dev gem. A line the application is already above is not a
+  # repair.
+  def test_a_digest_replacement_below_the_locked_version_is_not_a_downgrade
+    gemfile = %(source "https://rubygems.org"\ngem "json", "2.19.3"\n)
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          json (2.19.3)
+
+      DEPENDENCIES
+        json (= 2.19.3)
+
+      BUNDLED WITH
+         2.5.9
+    LOCK
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "json", replacement: "json", requirement: "~> 1.8",
+        condition: { "ruby_at_least" => "2.2" })
+    ])
+    dir = app(gemfile: gemfile, lockfile: lockfile)
+
+    result = preflight(dir, corpus: corpus, ruby: "2.2", rails: "5.0.0")
+
+    assert_empty result.repairs
+    assert(result.notes.any? { |note| note.include?("downgrade") }, result.notes.inspect)
+    assert_includes read(dir, "Gemfile"), %(gem "json", "2.19.3")
+  end
+
   # **A digest entry can be scoped to the rung, and that is what lets one gem move twice in a walk.**
   # Measured at the 4.2 rung: Rails 4.2 removed `ActionDispatch::Routing::Mapper::Scope#merge!` and
   # devise 3.0.4's own routes file calls it, so the `~> 3.0.0` line that 4.0 and 4.1 need is the wrong
