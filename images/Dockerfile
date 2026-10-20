@@ -58,9 +58,11 @@ ARG BUNDLER=2.6.9
 # * `imagemagick`, `libmagickwand-dev` — `rmagick` and ImageMagick-backed uploaders. The
 #   distro's own version, which is the version the era's gems were written against (IM6 on
 #   every base here).
-# * `libidn11-dev` — `idn-ruby`, which `twitter-text` requires. The second lighthouse's
-#   bundle could not build it: measured, extconf answered `checking for -lidn... no` and the
-#   whole rung was unverified for a missing header rather than for the move.
+# * `libidn-dev` (or `libidn11-dev` on an older base) — `idn-ruby`, which `twitter-text`
+#   requires. The second lighthouse's bundle could not build it: measured, extconf answered
+#   `checking for -lidn... no` and the whole rung was unverified for a missing header rather
+#   than for the move. The two package names are one fact split by Debian release, so the
+#   install tries the current name and falls back to the older one.
 # * `nodejs` — an ExecJS runtime for `uglifier` and friends, so an asset-pipeline build in
 #   the era does not depend on `therubyracer` compiling.
 # * `ca-certificates` — HTTPS to rubygems.org from an OpenSSL old enough that the trust
@@ -88,12 +90,12 @@ RUN set -eux; \
         ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends \
-      build-essential pkg-config \
-      libpq-dev libyaml-dev libssl-dev zlib1g-dev libreadline-dev \
-      libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
-      postgresql postgresql-client redis-server \
-      imagemagick libmagickwand-dev libidn11-dev nodejs ca-certificates; \
+    packages="build-essential pkg-config libpq-dev libyaml-dev libssl-dev zlib1g-dev \
+      libreadline-dev libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
+      postgresql postgresql-client redis-server imagemagick libmagickwand-dev libidn-dev \
+      nodejs ca-certificates"; \
+    apt-get install -y --no-install-recommends $packages || \
+      apt-get install -y --no-install-recommends $(echo "$packages" | sed 's/libidn-dev/libidn11-dev/'); \
     rm -rf /var/lib/apt/lists/*
 
 RUN gem install bundler -v "$BUNDLER" --no-document

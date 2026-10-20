@@ -20,7 +20,7 @@ class StepMachineTest < Minitest::Test
 
   # The matrix's eras, in the order the selection tries them for this lockfile (no `ruby` line
   # and no `RUBY VERSION`, so the floor is the only filter and the walk starts at the oldest).
-  ERAS = %w[2.1 2.2 2.5 2.7 3.2 3.3].freeze
+  ERAS = %w[2.1 2.2 2.5 2.7 3.1 3.2 3.3].freeze
 
   LOCKFILE = <<~LOCK
     GEM
