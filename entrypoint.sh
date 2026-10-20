@@ -108,7 +108,7 @@ fi
 # script passes against the CLI's own usage text, which is the check that would have
 # caught it.
 
-echo "upgrader: waiting for ${API_BASE_URL}/health"
+echo "upgrader: waiting for ${API_BASE_URL}/api/health"
 attempt=0
 # The interpreter already in the image is the client, so nothing is installed just to
 # probe a URL — the same choice the image's healthcheck makes.
@@ -117,7 +117,7 @@ attempt=0
 # compiling it: `exit(0 if RESPONSE.is_a?(Net::HTTPSuccess) else 1)` is a Ruby *syntax
 # error* — a postfix `if` cannot carry an `else` — so every attempt exited 1, the loop
 # always spent its full five minutes, and it then announced that an API answering
-# `/health` "did not come up in 5 minutes". The probe's own stderr went to `/dev/null`,
+# `/api/health` "did not come up in 5 minutes". The probe's own stderr went to `/dev/null`,
 # which is where the syntax error went with it. `deploy_config_test.rb` now compiles this
 # snippet, so a probe that cannot run is a red suite rather than five wasted minutes on
 # every boot.
@@ -128,7 +128,7 @@ attempt=0
 # reason — `Net::HTTP.get_response` waits sixty seconds to connect *and* sixty to read,
 # so an address that accepts a connection and then says nothing would turn this loop's
 # five minutes into a quarter of an hour.
-until UPGRADER_HEALTH_URL="${API_BASE_URL}/health" ruby -rnet/http -ruri -e '
+until UPGRADER_HEALTH_URL="${API_BASE_URL}/api/health" ruby -rnet/http -ruri -e '
 begin
   uri = URI(ENV["UPGRADER_HEALTH_URL"])
   response = Net::HTTP.start(uri.host, uri.port, open_timeout: 4, read_timeout: 4) do |http|

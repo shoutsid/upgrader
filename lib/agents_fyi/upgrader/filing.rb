@@ -59,7 +59,7 @@ module AgentsFyi
       HEAD_LINES = 8
       HEAD_CHARS = 2_000
 
-      # The fields the comparison reads, which is narrower than what `POST /reports` takes:
+      # The fields the comparison reads, which is narrower than what `POST /api/reports` takes:
       # `environment` and `attempted` cannot change a verdict, so they are dropped from the
       # draft rather than sent and refused. The body dispatched to both is built once, from
       # `report_for`, so the draft and the submission cannot disagree about what happened.

@@ -298,12 +298,27 @@ module AgentsFyi
         result = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
-          token: ENV[Publish::ENV_TOKEN], branch_pattern: pattern,
+          token: github_token(record.repository), branch_pattern: pattern,
           report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref
         ).call
         @out.puts("serve: #{record.repository} — #{result}")
         remember_delivery(record, result, root: root, pattern: pattern,
           base_ref: project&.base_ref)
+      end
+
+      # **A connected account gets its own token, and the legacy walk keeps the deployment token.**
+      # The service answers 404 for a repository with no installation; that is the fallback, not
+      # an outage, because the pre-account lighthouse still publishes with the deployment's token.
+      def github_token(repository)
+        return ENV[Publish::ENV_TOKEN].to_s unless @corpus.respond_to?(:credential)
+
+        response = @corpus.credential(repository)
+        token = response.is_a?(Hash) ? response["token"].to_s : ""
+        token.empty? ? ENV[Publish::ENV_TOKEN].to_s : token
+      rescue Corpus::Refused, Corpus::Duplicate, Corpus::Unreachable => e
+        @out.puts("serve: no per-account GitHub credential for #{repository} (#{e.message}); " \
+                  "using the deployment token")
+        ENV[Publish::ENV_TOKEN].to_s
       end
 
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
@@ -365,7 +380,7 @@ module AgentsFyi
           result = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
-            out: @out, token: ENV[Publish::ENV_TOKEN],
+            out: @out, token: github_token(entry.repo),
             branch_pattern: delivery["branch_pattern"],
             report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref
           ).call

@@ -378,7 +378,7 @@ class PublishTest < Minitest::Test
     assert_includes body, "## Decisions in force"
     assert_includes body, "decision:6b1f0a52-0000-4000-8000-000000000001"
     assert_includes body, "app/views/bids/index.html.erb"
-    assert_includes body, "[a known failure](https://agents.example/reports/r1)"
+    assert_includes body, "[a known failure](https://agents.example/api/reports/r1)"
   end
 
   def test_the_default_branch_is_read_from_the_remote_before_the_api_is_asked

@@ -4,7 +4,7 @@ module AgentsFyi
   module Upgrader
     # **The changes this walker will make that the service will not — and the queue for the rest.**
     #
-    # `/rails/scan` locates a call site for a documented change and deliberately stops there: its
+    # `/api/rails/scan` locates a call site for a documented change and deliberately stops there: its
     # contract is a statement about the *ladder* — "this changed, here is where your code touches
     # it" — and a service that rewrote somebody's source would be answering a question nobody asked
     # it. A rule here is this tool's own knowledge of how to make one of those edits, the same shelf

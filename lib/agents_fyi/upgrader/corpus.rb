@@ -86,10 +86,10 @@ module AgentsFyi
 
       # The steps from one Rails release to another, as the service writes them.
       def upgrade(from:, to:)
-        call(:get, "/rails/upgrade", params: { from_version: from, to_version: to })
+        call(:get, "/api/rails/upgrade", params: { from_version: from, to_version: to })
       end
 
-      # **What this corpus has *observed* about a move.** `/rails/upgrade` (above) is the ladder's
+      # **What this corpus has *observed* about a move.** `/api/rails/upgrade` (above) is the ladder's
       # documented half: what a release changed. This is the other half — the reports filed against
       # that move, with the fixes that resolved them and how they were verified — and it is what a
       # rung is briefed with before the walk acts (`docs/refactor/adr/0008`, recall).
@@ -101,7 +101,7 @@ module AgentsFyi
         params = { library: library, from_version: from_version, to_version: to_version,
                   ecosystem: ecosystem }
         params[:symbols] = Array(symbols).join(",") if Array(symbols).any?
-        call(:get, "/reports/upgrade", params: params)
+        call(:get, "/api/reports/upgrade", params: params)
       end
 
       # Search the corpus, **without recording the search as demand**. `record: false` is not a
@@ -112,7 +112,7 @@ module AgentsFyi
         params = { q: query, limit: limit, offset: offset }
         params[:signature] = Array(signatures) if Array(signatures).any?
         params[:record] = false unless record
-        call(:get, "/reports/search", params: params)
+        call(:get, "/api/reports/search", params: params)
       end
 
       # The corpus's own answer to a question, with the reports it used and why — the read a brief is
@@ -125,7 +125,7 @@ module AgentsFyi
         params[:version] = version unless version.to_s.empty?
         params[:max_candidates] = max_candidates unless max_candidates.nil?
         params[:record] = false unless record
-        call(:get, "/reports/answer", params: params)
+        call(:get, "/api/reports/answer", params: params)
       end
 
       # The ladder itself: where it starts, where it tops out, and one row per step.
@@ -134,7 +134,7 @@ module AgentsFyi
       # of Rails' release order — the same rule the ladder bound in `no_target` used to
       # state, arriving as the read it promised.
       def ladder
-        call(:get, "/rails/ladder")
+        call(:get, "/api/rails/ladder")
       end
 
       # What each gem a lockfile pins needs before the move: keep, move (with a recorded
@@ -144,7 +144,7 @@ module AgentsFyi
       # index is reachable from here and not from the service, so `Research` fetches and
       # `record_facts` writes what it read.
       def route(ruby:, rails:, lockfile:)
-        call(:post, "/releases/route",
+        call(:post, "/api/releases/route",
           body: { "ecosystem" => "ruby", "ruby" => ruby, "rails" => rails, "lockfile" => lockfile })
       end
 
@@ -152,7 +152,7 @@ module AgentsFyi
       # a write into a shared corpus — the one write this tool makes that is not a record of
       # its own work.
       def record_facts(library:, facts:)
-        call(:post, "/releases/facts",
+        call(:post, "/api/releases/facts",
           body: { "ecosystem" => "ruby", "library" => library, "facts" => facts })
       end
 
@@ -166,7 +166,7 @@ module AgentsFyi
       # fine.
       def gem_migrations(gems: [])
         names = Array(gems).reject { |gem| gem.to_s.empty? }.uniq
-        call(:get, "/gems/migrations", params: names.empty? ? {} : { gems: names.join(",") })
+        call(:get, "/api/gems/migrations", params: names.empty? ? {} : { gems: names.join(",") })
       end
 
       # The call sites a move crosses, in the files the caller sent.
@@ -178,11 +178,18 @@ module AgentsFyi
       # smaller, because silently scanning less would turn "nothing found" into a claim
       # about files nobody read.
       def scan(from:, to:, files:)
-        call(:post, "/rails/scan",
+        call(:post, "/api/rails/scan",
           body: {
             from_version: from, to_version: to,
             files: files.map { |path, text| { path: path, text: text } }
           })
+      end
+
+      # The short-lived GitHub credential for a repository with a connected installation. A
+      # repository with no installation is a refusal rather than an outage; the caller keeps the
+      # deployment token as the legacy fallback.
+      def credential(repo_url)
+        call(:get, "/api/upgrades/credential", params: { repo_url: repo_url })
       end
 
       # The queue: which repositories the service thinks are worth walking, best first.
@@ -197,7 +204,7 @@ module AgentsFyi
       # deliberate narrowing of what "the queue" means: an entry with no `repo_url` is not
       # work, and a caller iterating it would clone nothing and call it a cycle.
       def targets(limit: DEFAULT_TARGET_LIMIT)
-        payload = call(:get, "/upgrades/targets", params: { limit: limit })
+        payload = call(:get, "/api/upgrades/targets", params: { limit: limit })
         unless payload.is_a?(Hash) && payload["targets"].is_a?(Array)
           raise Unreachable, "#{@base} answered the queue with a 200 that carries no list of `targets`"
         end
@@ -209,12 +216,12 @@ module AgentsFyi
       # One step, as the service files it: the verdict, the commands with their exit
       # codes, the refusals, and the patch.
       def record_run(payload)
-        call(:post, "/upgrades/runs", body: payload)
+        call(:post, "/api/upgrades/runs", body: payload)
       end
 
       # Whether a draft is new, and what it is close to if it is not.
       def precheck(payload)
-        call(:post, "/reports/precheck", body: payload)
+        call(:post, "/api/reports/precheck", body: payload)
       end
 
       # File one report.
@@ -224,7 +231,7 @@ module AgentsFyi
       # else has already hit it is the ordinary outcome. The sentence still travels, so a
       # caller that only wanted to know why nothing was written has it.
       def create_report(payload)
-        call(:post, "/reports", body: payload)
+        call(:post, "/api/reports", body: payload)
       rescue Duplicate => e
         {
           "duplicate" => true,
@@ -282,7 +289,7 @@ module AgentsFyi
         code = response.code.to_i
         if code >= 200 && code < 300
           # **Any 2xx, because the writes answer 201.** This read only `code == 200` and the
-          # first real walk's research pass failed on it — `POST /releases/facts` creates a row
+          # first real walk's research pass failed on it — `POST /api/releases/facts` creates a row
           # and answers 201, so every facts write was read as an outage and the routing's
           # `unknown` pins stayed unknown ("answered HTTP 201 instead of a plan", a sentence
           # about a request that had in fact succeeded).

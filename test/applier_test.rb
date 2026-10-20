@@ -9,7 +9,7 @@ require "agents_fyi/upgrader/applier"
 # The one place in this tool where a line of somebody's source is rewritten, so most
 # of what is asserted here is what it declines to write.
 class ApplierTest < Minitest::Test
-  # A scan entry, shaped like `POST /rails/scan`'s `edits`. `after` is null on an edit
+  # A scan entry, shaped like `POST /api/rails/scan`'s `edits`. `after` is null on an edit
   # that needs a decision, and `text` is the line exactly as the service read it.
   def edit(path:, line:, text:, after:, automatic: true, subject: "before_filter")
     {

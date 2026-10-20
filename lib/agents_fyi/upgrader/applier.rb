@@ -12,7 +12,7 @@ module AgentsFyi
     #
     # Two rules carry that weight, and both are's:
     #
-    # * **The line is re-checked before it is written.** `/rails/scan` read the file and
+    # * **The line is re-checked before it is written.** `/api/rails/scan` read the file and
     #   returned the text it saw. Between that read and this write the file can have
     #   changed — an editor, a formatter, another edit of ours — and an applier that
     #   trusts a line number edits whatever is there now. So the line is compared

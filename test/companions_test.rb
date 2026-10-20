@@ -452,7 +452,7 @@ class CompanionsTest < Minitest::Test
   end
 
   # **The gem's own deprecation, which the rename does not reach.** Measured at the 7.2 rung: with the
-  # line and the 93 call sites already moved, `app:update` dies at `spec/factories/admin_factory.rb:5`
+  # line and the 93 call sites already moved, `app:update` dies at `spec/factories/api/admin_factory.rb:5`
   # with `private method `warn' called for ActiveSupport::Deprecation:Class` — factory_bot 4.11.1's
   # `warn_static_attribute_deprecation` calls the class-level method Rails 7.2 made private, and a static
   # attribute is what reaches it. The gem's own message is the edit: "Static attributes will be removed in

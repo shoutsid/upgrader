@@ -351,7 +351,7 @@ module AgentsFyi
       # *resolvable* 4.x release calls `ActiveSupport::Deprecation.warn` — 4.8.2, 4.10.0, 4.11.0 and 4.11.1
       # have three call sites each, and 4.9.0, the only release with none, is yanked and cannot be resolved
       # — and the one this application reaches is 4.11.1's `warn_static_attribute_deprecation`: `app:update`
-      # dies at `spec/factories/admin_factory.rb:5`, whose `password 'password'` is a static attribute. The
+      # dies at `spec/factories/api/admin_factory.rb:5`, whose `password 'password'` is a static attribute. The
       # gem's own message is the edit — "Static attributes will be removed in FactoryBot 5.0. Please use
       # dynamic attributes instead by wrapping the attribute value in a block" — so this is not a workaround
       # for the warning, it is the change the release asks for and the one 5.0 will otherwise break.
@@ -362,7 +362,7 @@ module AgentsFyi
         note: "factory_girl was renamed factory_bot, and the application's 93 `FactoryGirl` call sites " \
               "have to move with the line; measured at the 7.2 rung, the gem's own static-attribute " \
               "deprecation then reaches Rails 7.2's private `ActiveSupport::Deprecation.warn` from " \
-              "`spec/factories/admin_factory.rb:5`, so the static attributes become dynamic ones — the " \
+              "`spec/factories/api/admin_factory.rb:5`, so the static attributes become dynamic ones — the " \
               "change the deprecation asks for, and the one FactoryBot 5.0 requires",
         globs: %w[app/**/*.rb config/**/*.rb lib/**/*.rb spec/**/*.rb test/**/*.rb],
         inserts: [],

@@ -7,7 +7,7 @@ require "agents_fyi/upgrader"
 
 # The changes this walker makes that the service will not.
 #
-# `/rails/scan` locates a call site and stops: its contract is a statement about the ladder. A rule
+# `/api/rails/scan` locates a call site and stops: its contract is a statement about the ladder. A rule
 # here is this tool's own knowledge of how to make one of those edits, and what is asserted is the
 # three things that keep a rule honest — it names the change it belongs to, it carries that change's
 # provenance, and it refuses to touch a line whose value it cannot see the end of.

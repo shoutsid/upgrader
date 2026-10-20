@@ -97,7 +97,7 @@ class CorpusTest < Minitest::Test
     uri, request = corpus.requests.last
     params = URI.decode_www_form(uri.query).to_h
 
-    assert_equal "/reports/upgrade", uri.path
+    assert_equal "/api/reports/upgrade", uri.path
     assert_equal "ruby", params["ecosystem"]
     assert_equal "rails", params["library"]
     assert_equal "5.0.0", params["from_version"]
@@ -112,7 +112,7 @@ class CorpusTest < Minitest::Test
     uri, = corpus.requests.last
     params = URI.decode_www_form(uri.query).to_h
 
-    assert_equal "/reports/search", uri.path
+    assert_equal "/api/reports/search", uri.path
     assert_equal "render update", params["q"]
     assert_equal "false", params["record"],
       "a walk's recall went into search_events, which measures callers rather than the tool"
@@ -134,7 +134,7 @@ class CorpusTest < Minitest::Test
     uri, = corpus.requests.last
     params = URI.decode_www_form(uri.query).to_h
 
-    assert_equal "/reports/answer", uri.path
+    assert_equal "/api/reports/answer", uri.path
     assert_equal "false", params["record"]
     assert_equal "rails", params["library"]
     assert_equal "5.1.0", params["version"]
@@ -176,7 +176,7 @@ class CorpusTest < Minitest::Test
 
     uri, request = corpus.requests.first
     assert_equal "POST", request.method
-    assert_equal "/upgrades/runs", uri.path
+    assert_equal "/api/upgrades/runs", uri.path
     assert_equal "k-123", request["X-API-Key"]
   end
 
@@ -212,7 +212,7 @@ class CorpusTest < Minitest::Test
 
     uri, request = corpus.requests.first
     assert_equal "GET", request.method
-    assert_equal "/upgrades/targets", uri.path
+    assert_equal "/api/upgrades/targets", uri.path
     assert_equal "limit=500", uri.query
   end
 
@@ -250,14 +250,14 @@ class CorpusTest < Minitest::Test
     body = JSON.generate(
       { "targets" => [], "count" => 0, "paused" => true,
         "paused_reason" => "an operator stopped it while the ladder is reworked",
-        "next_step" => "Resume it with POST /admin/collection/ruby/resume." }
+        "next_step" => "Resume it with POST /api/admin/collection/ruby/resume." }
     )
     corpus = StubbedCorpus.new(FakeResponse.new("200", body))
 
     error = assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) { corpus.targets }
 
     assert_includes error.message, "an operator stopped it"
-    assert_includes error.message, "POST /admin/collection/ruby/resume"
+    assert_includes error.message, "POST /api/admin/collection/ruby/resume"
   end
 
   # An entry the loop cannot walk is not work. Dropping it is a narrowing of what the
@@ -278,7 +278,7 @@ class CorpusTest < Minitest::Test
     answer = corpus.precheck({ "title" => "a draft", "library" => "rails" })
 
     uri, request = corpus.requests.first
-    assert_equal "/reports/precheck", uri.path
+    assert_equal "/api/reports/precheck", uri.path
     assert_equal({ "title" => "a draft", "library" => "rails" },
       JSON.parse(request.body))
     assert_equal "new", answer["verdict"]

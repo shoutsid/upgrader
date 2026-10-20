@@ -56,8 +56,8 @@ class BriefTest < Minitest::Test
     result = brief_for(corpus).call(from: "5.2.0", to: "6.0.0")
 
     assert_includes result.to_markdown(base: "https://agents.example"),
-      "[a known failure](https://agents.example/reports/r1)"
-    refute_includes result.to_markdown, "https://agents.example/reports/r1",
+      "[a known failure](https://agents.example/api/reports/r1)"
+    refute_includes result.to_markdown, "https://agents.example/api/reports/r1",
       "a brief with no reader base linked a host it does not know"
   end
 

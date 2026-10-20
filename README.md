@@ -6,7 +6,7 @@ suite's own verdict before and after, and every change the move carried that no 
 may apply.
 
 The ladder lives in the service, not here. This tool reads an application's own
-`Gemfile.lock`, asks `GET /rails/upgrade` what the move crosses, and applies only what
+`Gemfile.lock`, asks `GET /api/rails/upgrade` what the move crosses, and applies only what
 the service says is mechanical. It never invents a fix, and it keeps no copy of Rails'
 release order — a second copy of that rule is how two answers to one question start
 disagreeing, which is the failure this project has paid for more than once.
@@ -27,7 +27,7 @@ shared corpus is a tool that discovers its mistakes in the corpus.
 
 `preflight` is the half of a walk that cannot be established by installing anything: an
 application whose sources are dead fails its install for a reason no interpreter matrix
-can fix, and the digest it reads (`GET /gems/migrations`) is the *documented* half of gem
+can fix, and the digest it reads (`GET /api/gems/migrations`) is the *documented* half of gem
 upgrades — each entry a claim about an index and a repository, naming where it was read
 from. `step` runs the same preflight as its first move, before it chooses an interpreter,
 because the choice *is* a `bundle install`.
@@ -44,7 +44,7 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 |---|---|
 | `--repo PATH\|URL` | the application: a local directory (read where it is, never written to) or a git URL |
 | `--ref REF` | the branch, tag or commit to read — URLs only |
-| `--to VERSION` | the Rails release the move ends at, e.g. `7.1.0`. Optional in `plan` and `step` — without it the target is the top of the service's ladder (`GET /rails/ladder`), because "to what?" is a question the service answers better than this tool. `serve` requires it deliberately: a deployment that has not decided where it is going must not start walking somebody's application |
+| `--to VERSION` | the Rails release the move ends at, e.g. `7.1.0`. Optional in `plan` and `step` — without it the target is the top of the service's ladder (`GET /api/rails/ladder`), because "to what?" is a question the service answers better than this tool. `serve` requires it deliberately: a deployment that has not decided where it is going must not start walking somebody's application |
 | `--api URL` | the service to ask; defaults to `$AGENTS_FYI_URL`, then to the public deployment |
 | `--record DIR` | where `step` writes the patch and the JSON record |
 | `--work DIR` | where `step` puts its working copy; defaults to `$UPGRADER_HOME` |
@@ -159,7 +159,7 @@ The pipeline has three stages that make the rest mean anything:
    from the application's own `database.yml` (`images/services.sh`), then the schema the
    suite needs (`db:create db:test:prepare`, best-effort and named beside a suite failure
    rather than being one).
-6. **plan**, **apply** — the service's `POST /rails/scan` per step, then the mechanical
+6. **plan**, **apply** — the service's `POST /api/rails/scan` per step, then the mechanical
    edits, each with its line re-checked against the text the scan read. An edit whose
    line has moved is a refusal, not an edit. **Then this tool's own rules**
    (`lib/agents_fyi/upgrader/rewrites.rb`): the scan locates a call site and deliberately
@@ -195,7 +195,7 @@ The pipeline has three stages that make the rest mean anything:
    (`bootsnap`), or by a file in the tree (`sprockets-rails`) — and a change whose answer is a
    *version* rather than a presence is the same table's `floor` (`Spring` becomes
    `gem "spring", ">= 3.0.0"`). `docs/upgrades.md` has the policy.
-7. **gems**, **research** — `POST /releases/route` with the lockfile, the interpreter
+7. **gems**, **research** — `POST /api/releases/route` with the lockfile, the interpreter
    the step executes on and the Rails release it moves to, then the `move` verdicts
    applied as Gemfile rewrites with their reasons. A pin the routing could not answer
    about is *researched* first — this client can reach `index.rubygems.org` and the
@@ -367,14 +367,14 @@ difference between this class and a person running one step:
 
 * **`serve` has it on.** The loop owns an operator's account and the decision to walk
   somebody's application at all, so a run made by the container is the one that is
-  recorded: `POST /upgrades/runs` with the verdict, the commands and their exit codes,
+  recorded: `POST /api/upgrades/runs` with the verdict, the commands and their exit codes,
   the patch, and every refusal — which is what the queue's order and the coverage figure
   are computed from.
 * **A hand-run `step` leaves it off.** A person who asked what a move costs is not
   asking to write into a corpus other operators read. `--record DIR` is how they keep the
   evidence.
 
-A step that **failed** also files a report, through `POST /reports/precheck` first, so
+A step that **failed** also files a report, through `POST /api/reports/precheck` first, so
 that duplicates are the corpus's decision rather than this client's. What it files is
 what the run established: the move being made, the command that failed with its exit
 code, and that command's output. It does **not** name a gem from the traceback — that
@@ -396,7 +396,7 @@ machine reads — and `filing_test.rb` holds both halves.
 ## The queue
 
 The **service** owns which repositories to walk and in what order, and `GET
-/upgrades/targets` is where the loop gets them (whoever can reach the network fetches,
+/api/upgrades/targets` is where the loop gets them (whoever can reach the network fetches,
 the service decides what it means). Every row carries the reasons for
 its place — never attempted before attempted, the oldest pinned Rails first inside that,
 and the source of the row — so an operator can read the order and argue with it.
@@ -462,7 +462,7 @@ verifiers gaining a Rails-shaped method of their own, which is a phase, not a sw
 ## Serving
 
 `docker compose` runs this image as the `upgrader` service, with `entrypoint.sh` in front
-of the loop: it waits up to five minutes for `/health`, then starts anyway, because an API
+of the loop: it waits up to five minutes for `/api/health`, then starts anyway, because an API
 that is down is something a loop waits out rather than a reason not to start.
 
 * **The heartbeat** is a file the loop touches every cycle, and it is what the

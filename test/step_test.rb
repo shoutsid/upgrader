@@ -2417,7 +2417,7 @@ class StepTest < Minitest::Test
   # A pin with arguments this does not understand — a git source, a group with options —
   # is left alone: a rewrite it cannot read is a rewrite it must not make.
   def test_the_pin_rewrite_refuses_a_line_it_does_not_understand
-    assert_nil step(Dir.tmpdir).send(:rewrite_pin, %(gem "rails", github: "rails/rails"\n), "5.0.0")
+    assert_nil step(Dir.tmpdir).send(:rewrite_pin, %(gem "rails", github: "rails/api/rails"\n), "5.0.0")
     assert_nil step(Dir.tmpdir).send(:rewrite_pin, %(gem "pg", "1.4"\n), "5.0.0")
   end
 

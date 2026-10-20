@@ -18,7 +18,7 @@ module AgentsFyi
     #   to `https://` in the Gemfile *and* the lockfile, because Bundler reads the
     #   protocol out of the lockfile's own `remote:` lines and rewriting one file leaves
     #   the other pointing at GitHub's refusal.
-    # * **Digest repairs**, from `GET /gems/migrations`: the curated, attributed moves a
+    # * **Digest repairs**, from `GET /api/gems/migrations`: the curated, attributed moves a
     #   machine may make without reading the application's code. `mechanical` is the
     #   whole of what this class will act on; every other entry becomes a decision, because
     #   a Gemfile line it cannot rewrite alone is one a person or an agent has to look at.

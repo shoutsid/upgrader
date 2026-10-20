@@ -106,7 +106,7 @@ class DeployConfigTest < Minitest::Test
     # listening on spends its first cycle logging an outage it did not have; a process
     # that *refused* to start because the API is down is worse, because the loop already
     # treats an unreachable corpus as something to wait out.
-    assert_includes entrypoint, "/health"
+    assert_includes entrypoint, "/api/health"
     assert_match(/attempt=0.*-ge 60/m, entrypoint)
     assert_includes entrypoint, "starting anyway"
 
@@ -132,7 +132,7 @@ class DeployConfigTest < Minitest::Test
   # The waiter's probe is a Ruby program inside a shell script, and it shipped as a syntax
   # error: `exit(0 if response.is_a?(Net::HTTPSuccess) else 1)` — Ruby has no postfix `if`
   # with an `else` — so every attempt exited 1, the loop always burned its full five
-  # minutes, and it then reported that an API answering `/health` "did not come up". The
+  # minutes, and it then reported that an API answering `/api/health` "did not come up". The
   # probe's stderr goes to `/dev/null`, so the parser's complaint went with it.
   #
   # So: the snippet is compiled by the interpreter, not matched against a shape somebody

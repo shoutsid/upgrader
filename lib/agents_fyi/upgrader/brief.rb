@@ -4,7 +4,7 @@ module AgentsFyi
   module Upgrader
     # **What the corpus already knows, before the walk decides anything.**
     #
-    # A rung is not a fresh question. The ladder (`/rails/upgrade`) says what a release changed, and
+    # A rung is not a fresh question. The ladder (`/api/rails/upgrade`) says what a release changed, and
     # this corpus holds what happened when these moves were made before — by this walk, by the miner
     # over a gem pair, by an operator who hit the same failure in a different application. The first
     # twelve-rung walk learned that the expensive part is not applying a change but deciding what to
@@ -13,12 +13,12 @@ module AgentsFyi
     #
     # Three questions are asked, and the shape of each is the corpus's rather than a guess here:
     #
-    # * **The framework move** — `GET /reports/upgrade` for `rails` across the rung. This is the
+    # * **The framework move** — `GET /api/reports/upgrade` for `rails` across the rung. This is the
     #   *observed* half of the ladder: reports filed against that window, with the fix that resolved
     #   them and how that fix was verified.
     # * **Each gem the routing moves** — the same read per gem, because a gem's move carries its own
     #   reports (`factory_girl` and `squeel` both bit this application, and neither is a Rails change).
-    # * **Each change's subject** — `GET /reports/search`, which is the only read that finds a report
+    # * **Each change's subject** — `GET /api/reports/search`, which is the only read that finds a report
     #   by the *symptom* rather than by the window. Ranked by the corpus's own `rank`, which is where
     #   rarity and an identifying signature are already weighed (`is_identifying` is the service's,
     #   computed against the live corpus; a client that recomputed it would be a second opinion about
@@ -96,7 +96,7 @@ module AgentsFyi
           else
             section.items.each do |item|
               title = item.title.to_s.strip
-              title = "[#{title}](#{base}/reports/#{item.id})" if base && !item.id.to_s.empty?
+              title = "[#{title}](#{base}/api/reports/#{item.id})" if base && !item.id.to_s.empty?
               line = "- #{item.identifying? ? "**same failure**" : "mention"} · #{title}"
               line += " — #{item.status}" unless item.status.to_s.empty?
               line += " · fix: #{item.fix}" unless item.fix.to_s.empty?
@@ -229,7 +229,7 @@ module AgentsFyi
           fix: row["resolution"] || row["fix"] || row["replacement"])
       end
 
-      # `/reports/upgrade` distinguishes four meanings for an empty list, and the most reassuring one
+      # `/api/reports/upgrade` distinguishes four meanings for an empty list, and the most reassuring one
       # is the wrong one. The route's own `next_step` says which, so it is quoted rather than
       # paraphrased.
       def empty_move_note(payload)

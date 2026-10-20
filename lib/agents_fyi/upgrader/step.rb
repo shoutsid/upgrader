@@ -1166,7 +1166,7 @@ module AgentsFyi
           subject: "#{gem["name"]} #{gem["version"]}".strip,
           reason: (reason || gem["reason"] || gem["note"]).to_s,
           kind: gem["verdict"], replacement: gem["to"] || gem["replacement"],
-          source: "GET /releases/route"
+          source: "GET /api/releases/route"
         )
       end
 
@@ -2042,7 +2042,7 @@ module AgentsFyi
 
       # Which files to send. Bounded, and the bound is stated rather than silently
       # applied: a scan that read a slice and reported "nothing found" would be the
-      # empty answer that means four things (`/rails/scan`'s own caveat).
+      # empty answer that means four things (`/api/rails/scan`'s own caveat).
       def source_files
         root = @worktree.root
         paths = Dir.glob("**/*", base: root).reject do |path|
@@ -2785,7 +2785,7 @@ module AgentsFyi
       # executed inside something real.
       def contribute(record)
         # What counts as a repository is the service's rule and only the service's:
-        # `routers/upgrades.py`'s `identity()` canonicalises a URL and deliberately
+        # `routers/api/upgrades.py`'s `identity()` canonicalises a URL and deliberately
         # leaves a bare path alone, because an operator may legitimately name a
         # directory on a machine that has it. A second opinion here — "that is not a
         # repository URL, so it is not a queue entry" — would be this tool disagreeing
@@ -2856,7 +2856,7 @@ module AgentsFyi
       # this class, is an instance helper.
       public
 
-      # The body `POST /upgrades/runs` takes, built from the record alone. A class method
+      # The body `POST /api/upgrades/runs` takes, built from the record alone. A class method
       # and pure, because it is the whole of what this tool tells the service about a
       # run and a test can hold it still without a corpus.
       # The service's own bound on a run's patch is two million characters; a real
