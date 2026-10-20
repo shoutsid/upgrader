@@ -270,6 +270,7 @@ module AgentsFyi
           return finish(build(step, stages, verdict, why))
         end
 
+        javascript_stage(stages)
         database_stage(stages)
 
         # The baseline, on the unmodified copy, before anything is written.
@@ -1379,6 +1380,26 @@ module AgentsFyi
       # design: `Record.verdict` names a failed preparation beside a suite failure rather
       # than making one out of it, because a suite that manages its own schema is a normal
       # application and the stage is here for the ones that do not.
+      # **The application's own JavaScript dependencies, installed exactly as its lockfile
+      # pins them.** The suite renders views, and a stylesheet that imports from a package
+      # (`perfect-scrollbar` on the second lighthouse) is a `node_modules` path the
+      # application's CI creates and a fresh tree does not. The stage is absent for an
+      # application with neither lockfile — nothing to install is not a failure.
+      def javascript_stage(stages)
+        root = @worktree.root
+        argv, refusal = @stack.prepare_javascript(root)
+        return nil if argv.nil? && refusal.nil?
+        unless argv
+          stages << Record::Command.new(stage: Record::JAVASCRIPT, command: refusal,
+            ran: false, exit_code: nil, seconds: 0.0, output_tail: "")
+          return nil
+        end
+
+        @out.puts("  javascript: #{argv.join(" ")}") if @out
+        stages << command(Record::JAVASCRIPT, argv, chdir: root, env: application_env)
+        stages.last
+      end
+
       def database_stage(stages)
         root = @worktree.root
         return nil unless File.file?(File.join(root, "config", "database.yml"))

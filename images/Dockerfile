@@ -63,8 +63,10 @@ ARG BUNDLER=2.6.9
 #   `checking for -lidn... no` and the whole rung was unverified for a missing header rather
 #   than for the move. The two package names are one fact split by Debian release, so the
 #   install tries the current name and falls back to the older one.
-# * `nodejs` — an ExecJS runtime for `uglifier` and friends, so an asset-pipeline build in
-#   the era does not depend on `therubyracer` compiling.
+# * `nodejs` and `npm`/`yarn` — an ExecJS runtime for `uglifier` and friends, and the
+#   package manager the application's own CI uses. A suite that renders a view can import
+#   from `node_modules` (the second lighthouse's `perfect-scrollbar`), so the era has to be
+#   able to run the `yarn install` the application's lockfile pins.
 # * `ca-certificates` — HTTPS to rubygems.org from an OpenSSL old enough that the trust
 #   store, not the protocol, is what breaks first.
 RUN set -eux; \
@@ -93,10 +95,11 @@ RUN set -eux; \
     packages="build-essential pkg-config libpq-dev libyaml-dev libssl-dev zlib1g-dev \
       libreadline-dev libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
       postgresql postgresql-client redis-server imagemagick libmagickwand-dev libidn-dev \
-      nodejs ca-certificates"; \
+      nodejs npm ca-certificates"; \
     apt-get install -y --no-install-recommends $packages || \
       apt-get install -y --no-install-recommends $(echo "$packages" | sed 's/libidn-dev/libidn11-dev/'); \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    npm install -g yarn@1.22.22
 
 RUN gem install bundler -v "$BUNDLER" --no-document
 

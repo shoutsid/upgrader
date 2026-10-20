@@ -74,6 +74,7 @@ module AgentsFyi
       # schema is a normal application, and this stage failing is mentioned beside a failure
       # rather than being one itself (`verdict`).
       DATABASE = "database"
+      JAVASCRIPT = "javascript"
       APPLY = "apply"
       # **The decisions this project has already made, applied before anything is scanned.** Its own
       # stage because a reader has to see that the tree was not as the application left it *before* the

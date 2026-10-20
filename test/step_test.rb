@@ -1661,6 +1661,21 @@ class StepTest < Minitest::Test
     assert_equal source, record.decisions.first.source, "the record gave up the whole sentence"
   end
 
+  # **The application's own JavaScript dependencies are installed before the suite.** The
+  # second lighthouse renders `_application.scss`, which imports `perfect-scrollbar/css/...`
+  # from `node_modules`; the application's CI runs `yarn install`, and a fresh tree does not.
+  def test_a_javascript_lockfile_is_installed_before_the_suite
+    dir = track(app)
+    File.write(File.join(dir, "yarn.lock"), "# yarn lockfile v1\n")
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
+
+    stage = record.stages.find { |s| s.stage == AgentsFyi::Upgrader::Record::JAVASCRIPT }
+    refute_nil stage, "the yarn.lock was not installed"
+    assert_includes stage.command, "yarn install --frozen-lockfile"
+    assert_equal 0, stage.exit_code
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])

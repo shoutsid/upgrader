@@ -154,6 +154,20 @@ module AgentsFyi
           [nil, "no Rakefile and no bin/rails: nothing to prepare the database with"]
         end
 
+        # **A Rails application's asset pipeline is not in the repository.** The second
+        # lighthouse's suite rendered `app/assets/stylesheets/_application.scss` and died on
+        # `File to import not found or unreadable: perfect-scrollbar/css/perfect-scrollbar`:
+        # that import comes from `node_modules`, which the application's own CI installs with
+        # `yarn install` and a walker's fresh tree does not have. The lockfile is the same
+        # contract it is for Ruby — install exactly what is pinned — and an application with
+        # neither lockfile has nothing here to install.
+        def prepare_javascript(root)
+          return [["yarn", "install", "--frozen-lockfile"], nil] if File.file?(File.join(root, "yarn.lock"))
+          return [["npm", "ci"], nil] if File.file?(File.join(root, "package-lock.json"))
+
+          [nil, nil]
+        end
+
         # The command Rails' own message names when a migration is pending.
         def migrate(root, five_or_newer:)
           five_or_newer ? ["bin/rails", "db:migrate"] : ["bundle", "exec", "rake", "db:migrate"]
