@@ -2879,11 +2879,20 @@ module AgentsFyi
       # — so a refusal arrived describing the wrong thing in a field that meant something
       # else. The distinction is not lost: the service derives it from the subject against
       # the ladder's own rewrites (`upgrades.py`), which is the only side that owns it.
+      # **The service refuses the whole run over one long field.** Its refusals are bounded
+      # (`UpgradesBody`: subject 200, note 4,000, source 100, path 500), and a plan decision's
+      # source is the located change's own evidence, which can be longer than the chapter name
+      # the field is for — measured on the second lighthouse, where one 101-character source
+      # discarded every stage of the run. The record keeps the whole sentence; the payload is
+      # the summary the service stores, and it is clipped here rather than refused there.
+      FIELD_LIMITS = { "subject" => 200, "kind" => 30, "replacement" => 200,
+                       "note" => 4_000, "source" => 100, "path" => 500 }.freeze
+
       def self.refusal_payloads(record)
         record.refused.map do |refusal|
           note = refusal.reason.to_s
           note = "#{note}; found: #{refusal.found}" if refusal.found
-          {
+          clipped({
             "subject" => (refusal.subject || refusal.text.to_s.split(" ").first || refusal.path).to_s,
             "kind" => refusal.kind,
             "replacement" => refusal.replacement,
@@ -2891,9 +2900,9 @@ module AgentsFyi
             "source" => refusal.source,
             "path" => refusal.path,
             "line" => refusal.line
-          }
+          })
         end + record.decisions.map do |decision|
-          {
+          clipped({
             "subject" => decision.subject.to_s,
             "kind" => decision.kind,
             "replacement" => decision.replacement,
@@ -2901,13 +2910,23 @@ module AgentsFyi
             "source" => decision.source,
             "path" => decision.path,
             "line" => decision.line
-          }
+          })
+        end
+      end
+
+      def self.clipped(fields)
+        fields.each_with_object({}) do |(key, value), out|
+          out[key] = if value.is_a?(String) && FIELD_LIMITS.key?(key)
+            value[0, FIELD_LIMITS[key]]
+          else
+            value
+          end
         end
       end
 
       # Only `run_payload` calls these three, so they are private class methods rather than
       # public ones — the payload's *shape* is the contract, the builders are not.
-      private_class_method :baseline_verdict, :command_payload, :refusal_payloads
+      private_class_method :baseline_verdict, :command_payload, :refusal_payloads, :clipped
 
       private
 

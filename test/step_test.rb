@@ -1644,6 +1644,23 @@ class StepTest < Minitest::Test
     assert_includes out.string, "send at most 2,000,000 characters"
   end
 
+  # **A long field is a summary the service clips, not a run it discards.** The second
+  # lighthouse's plan source was 101 characters, and the service refused the whole run.
+  def test_a_long_decision_source_is_clipped_rather_than_refused
+    source = "the guide's chapter and the paragraph it is on, again and again " * 3
+    decision = AgentsFyi::Upgrader::Record::Decision.new(
+      subject: "config/initializers/x.rb", kind: "manual", source: source, reason: "why")
+    record = AgentsFyi::Upgrader::Record.new(
+      repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
+      verdict: "passed", why: "ok", decisions: [decision])
+
+    refusal = AgentsFyi::Upgrader::Step.run_payload(record)["refusals"].first
+
+    assert_equal 100, refusal["source"].length,
+      "the payload sent a source the service refuses"
+    assert_equal source, record.decisions.first.source, "the record gave up the whole sentence"
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])
