@@ -95,13 +95,24 @@ module AgentsFyi
         # Without it, an application whose floor is met by 2.1 but whose bundle only installs
         # on 2.2 would re-probe 2.1 on every cycle — a probe is a bundle resolve, and the
         # ledger exists to stop that.
+        # **A declaration may name the eras it will accept.** `only` is the project's `eras`
+        # field, and it is a constraint rather than a hint: the walk tries the named
+        # interpreters in the order the operator wrote them, and an era the list names that
+        # does not meet the rung's floor is not tried at all. A project that says "3.2" on an
+        # application whose CI runs 3.2 must not spend a bundle resolve on 2.7 just because
+        # that is the oldest era the rung allows.
         def candidates(requires_ruby: nil, declared: nil, locked: nil, preferred: nil,
-                       images: nil, path: MATRIX_PATH)
+                       only: nil, images: nil, path: MATRIX_PATH)
           pool = matrix(path: path, images: images)
                  .select { |entry| meets?(entry.ruby, requires_ruby) != false }
-          hinted = declared.to_s.strip
-          hinted = locked.to_s.strip if hinted.empty?
-          pool = pool.rotate(start_at(pool, hinted))
+          if only
+            named = Array(only).map(&:to_s)
+            pool = named.filter_map { |name| pool.find { |entry| entry.name == name } }
+          else
+            hinted = declared.to_s.strip
+            hinted = locked.to_s.strip if hinted.empty?
+            pool = pool.rotate(start_at(pool, hinted))
+          end
           return pool unless preferred
 
           found = pool.index { |entry| entry.name == preferred.to_s }

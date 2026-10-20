@@ -480,12 +480,13 @@ class StepMachineTest < Minitest::Test
   end
 
   def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
-           to: "4.1.0", out: nil)
+           to: "4.1.0", out: nil, project: nil)
     Step.new(
       repository: "acme/old", to: to, home: dir, out: out,
       source: FakeSource.new(dir), corpus: corpus || FakeCorpus.new,
       tests: tests || FakeTests.new, runner: runner || FakeRunner.new, ledger: ledger,
-      runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) }
+      runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) },
+      project: project
     )
   end
 
@@ -493,6 +494,37 @@ class StepMachineTest < Minitest::Test
   # 2.2's succeeds, nothing after 2.2 is started — and both attempts are in the record, because
   # "which interpreter was tried and why it was rejected" is the answer to the question a
   # failed walk asks.
+  # The declaration's `eras` reaches the selection and is the only list tried: a project that
+  # names 3.2 must not start 2.1 because the rung's floor happens to allow it.
+  def test_a_project_s_declared_eras_are_the_only_ones_started
+    fleet = machines
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0", "to" => "4.1.0",
+      "eras" => ["3.2"], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    })
+    record = step(app, machines: fleet, project: project).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_equal "3.2", record.era
+    refute fleet["2.1"].started, "an era outside the declaration was started"
+  end
+
+  # A named era that cannot meet the rung's floor is refused by name rather than silently
+  # walked on an era the operator did not choose.
+  def test_a_declared_era_that_cannot_meet_the_floor_is_refused_by_name
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.2.0", "to" => "5.0.0",
+      "eras" => ["2.1"], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    })
+    lockfile = LOCKFILE.sub("4.0.0.rc1", "4.2.0")
+    gemfile = GEMFILE.sub("4.0.0.rc1", "4.2.0")
+    record = step(app(lockfile: lockfile, gemfile: gemfile), machines: machines, to: "5.0.0",
+      project: project, corpus: FakeCorpus.new(requires_ruby: "2.2.2")).run
+
+    assert_equal "unverified", record.verdict
+    assert_includes record.why, "2.1"
+  end
+
   def test_the_first_era_that_installs_the_bundle_is_the_one_the_step_runs_on
     dir = app
     fleet = machines

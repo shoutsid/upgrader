@@ -78,6 +78,20 @@ class InterpretersTest < Minitest::Test
     assert_equal %w[2.1 2.2 2.5], names(three, requires_ruby: nil)
   end
 
+  # **A declaration's `eras` is a constraint, not a hint.** A project whose CI runs 3.2 must not
+  # spend a bundle resolve on 2.7 because that is the oldest era its rung allows.
+  def test_a_declaration_s_eras_are_the_only_ones_tried
+    assert_equal %w[2.2], names(three, only: %w[2.2])
+  end
+
+  def test_a_declaration_s_era_order_is_the_order_tried
+    assert_equal %w[2.5 2.2], names(three, only: %w[2.5 2.2])
+  end
+
+  def test_a_declared_era_below_the_floor_is_not_tried
+    assert_equal %w[2.5], names(three, requires_ruby: "2.5.0", only: %w[2.1 2.5])
+  end
+
   # Where the walk starts is what the application itself says: a lockfile resolved under
   # 2.5 does not need 2.1 probed first, and a step on a modern application must not spend a
   # bundle resolve on a 2013 interpreter to find out it cannot install Rails 8.

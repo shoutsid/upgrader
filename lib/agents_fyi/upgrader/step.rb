@@ -615,12 +615,20 @@ module AgentsFyi
 
         candidates = candidates_for(step)
         if candidates.empty?
+          why = if declared_eras
+            "this step requires Ruby #{floor} and the declaration's eras " \
+              "(#{declared_eras.join(", ")}) do not meet it (the matrix holds " \
+              "#{Interpreters.matrix.map(&:ruby).join(", ")}); name an era that does, or " \
+              "set `eras` to auto"
+          else
+            "this step requires Ruby #{floor} and no interpreter in the matrix meets it " \
+              "(the matrix holds #{Interpreters.matrix.map(&:ruby).join(", ")}); add an era " \
+              "or move the step to a release this matrix can run"
+          end
           return Record.unverified(
             repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
             from_version: @from, to_version: @to,
-            why: "this step requires Ruby #{floor} and no interpreter in the matrix meets it " \
-                 "(the matrix holds #{Interpreters.matrix.map(&:ruby).join(", ")}); add an era " \
-                 "or move the step to a release this matrix can run",
+            why: why,
             machine: no_interpreter_stamp(floor)
           )
         end
@@ -664,8 +672,16 @@ module AgentsFyi
         Interpreters.candidates(
           requires_ruby: step["requires_ruby"],
           declared: @lockfile.declared_ruby,
-          locked: @lockfile.locked_ruby
+          locked: @lockfile.locked_ruby,
+          only: declared_eras
         )
+      end
+
+      # The eras this project's declaration names, or nil when it says `auto`. The declaration is
+      # a constraint from the operator; the floor and the install probe decide within it.
+      def declared_eras
+        eras = @project&.eras
+        eras.is_a?(Array) ? eras : nil
       end
 
       def docker_mode?
