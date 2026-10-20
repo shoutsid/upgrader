@@ -185,6 +185,12 @@ module AgentsFyi
           })
       end
 
+      # The account projects the service owns, with their configuration. A walker's queue names
+      # repositories; this is what turns one into the application's own suite and versions.
+      def projects
+        call(:get, "/api/upgrades/projects")
+      end
+
       # The short-lived GitHub credential for a repository with a connected installation. A
       # repository with no installation is a refusal rather than an outage; the caller keeps the
       # deployment token as the legacy fallback.

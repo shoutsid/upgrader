@@ -252,6 +252,31 @@ class ServeTest < Minitest::Test
       record: record, project: project, environment: nil)
   end
 
+  # **The account project, not the deployment, decides the destination and suite.** The queue names
+  # a repository; the service's project feed carries the version window and the application's own
+  # suite, and the loop must hand that declaration to the step rather than the global `--to`.
+  def test_an_account_project_supplies_its_own_destination_and_suite
+    corpus = FakeCorpus.new(targets: [
+      { "repo_url" => "acme/account", "ref" => "main", "status" => "queued" }
+    ])
+    corpus.define_singleton_method(:projects) do
+      { "projects" => [{
+        "slug" => "account", "repo" => "acme/account", "base_ref" => "main",
+        "from" => "7.1.0", "to" => "8.1.0", "stack" => "rails",
+        "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+        "delivery" => { "provider" => "none" }
+      }] }
+    end
+
+    serve(corpus: corpus, cycles: 1, to: "7.1.0").run
+
+    call = FakeStep.calls.first
+    refute_nil call, "the account project's queue row was not walked"
+    assert_equal "8.1.0", call[:to], "the step walked the deployment target instead of the account's"
+    assert_equal "account", call[:project].slug
+    assert_equal "bundle exec rspec", call[:project].suite_command
+  end
+
   # **A finished target is not work.** The loop used to knock on the queue's `done` row every ten
   # minutes, be refused with "`8.1.0` and `8.1.0` are the same Rails release", and record the
   # refusal — eight rows in one evening saying a finished walk is finished. `done` and `refused` both

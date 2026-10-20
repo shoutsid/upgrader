@@ -248,7 +248,33 @@ module AgentsFyi
           return @project
         end
 
+        account_project = account_projects.find do |project|
+          Repository.name(project.repository) == Repository.name(repository)
+        end
+        return account_project if account_project
+
         Project.find_by_repository(repository)
+      end
+
+      # The account projects the service knows, read once per process. A row the service cannot make
+      # walkable is stated and skipped rather than taking the whole feed down; a queue row with no
+      # declaration still uses the stack's defaults, exactly as before.
+      def account_projects
+        return @account_projects if defined?(@account_projects)
+
+        @account_projects = if @corpus.respond_to?(:projects)
+          Array(@corpus.projects.fetch("projects", [])).filter_map do |row|
+            Project.new(row)
+          rescue Project::Invalid => e
+            @out.puts("serve: account project #{row["slug"].inspect} is not walkable: #{e.message}")
+            nil
+          end
+        else
+          []
+        end
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        @out.puts("serve: could not read account projects (#{e.message}); using declarations only")
+        @account_projects = []
       end
 
       # The target every step in this cycle moves towards: the one the operator named, or —
@@ -306,19 +332,17 @@ module AgentsFyi
           base_ref: project&.base_ref)
       end
 
-      # **A connected account gets its own token, and the legacy walk keeps the deployment token.**
-      # The service answers 404 for a repository with no installation; that is the fallback, not
-      # an outage, because the pre-account lighthouse still publishes with the deployment's token.
+      # **A connected account gets its own token; there is no deployment-wide customer credential
+      # to fall back to.** A repository with no installation is stated and publishes nothing; the
+      # account admin surface is where the connection is repaired.
       def github_token(repository)
-        return ENV[Publish::ENV_TOKEN].to_s unless @corpus.respond_to?(:credential)
+        return "" unless @corpus.respond_to?(:credential)
 
         response = @corpus.credential(repository)
-        token = response.is_a?(Hash) ? response["token"].to_s : ""
-        token.empty? ? ENV[Publish::ENV_TOKEN].to_s : token
+        response.is_a?(Hash) ? response["token"].to_s : ""
       rescue Corpus::Refused, Corpus::Duplicate, Corpus::Unreachable => e
-        @out.puts("serve: no per-account GitHub credential for #{repository} (#{e.message}); " \
-                  "using the deployment token")
-        ENV[Publish::ENV_TOKEN].to_s
+        @out.puts("serve: no per-account GitHub credential for #{repository}: #{e.message}")
+        ""
       end
 
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
@@ -489,8 +513,14 @@ module AgentsFyi
       # settled, which is not an error: it is the ledger doing its job, and it is worth a
       # line because it is also what a lost volume would look like from the other side.
       def run_one(repository, ref, project: nil)
+        project ||= project_for(repository)
+        destination = if project && !project.to.to_s.empty?
+          project.to
+        else
+          target
+        end
         record = @step_class.new(
-          repository: repository, ref: ref, to: target, api: @api, home: @home, out: @out,
+          repository: repository, ref: ref, to: destination, api: @api, home: @home, out: @out,
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
