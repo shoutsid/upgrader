@@ -1319,6 +1319,20 @@ module AgentsFyi
       def self.finder_takes_an_id(subject:, file: nil, rung: nil)
         Rule.new(family: :finder_takes_an_id, subject: subject, file: file, rung: rung,
           pattern: /(?<call>\b[A-Z]\w*\.find\()(?<arg>@?[a-z_]\w*)(?<close>\))/,
+          # **The receiver has to be one of this application's models.** The pattern reads a
+          # constant, and a constant is not necessarily a model: the second lighthouse's
+          # `TRUSTED_OEMBED_PROVIDERS.find(url)` is an OEmbed lookup, and appending `.id` there
+          # raised `NoMethodError` on every post with a link. The scan's tree carries the
+          # application's model files, so a receiver with no model file is left and the residue
+          # names it — the same "left, not silently wrong" answer the argument guard gives.
+          context: lambda do |_lines, found, _raw, tree|
+            receiver = found[:call][/\A\b([A-Z]\w*)\.find\(/, 1]
+            next false if receiver.nil?
+
+            snake = receiver.gsub(/([a-z\d])([A-Z])/, '\\1_\\2').downcase
+            body = tree["app/models/#{snake}.rb"].to_s
+            body.match?(/(?:class|module)\s+#{Regexp.escape(receiver)}\b/)
+          end,
           replace: lambda do |match|
             next match[0] if match[:arg].match?(/\A@?(?:id|.*_id)\z/)
 

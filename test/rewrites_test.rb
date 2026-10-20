@@ -585,18 +585,25 @@ class RewritesTest < Minitest::Test
       "    item = Item.find(item_id)",
       "      Item.find(params[:id])",
       "      Item.find(User.first)",
-      "      Item.find(item.id)"
+      "      Item.find(item.id)",
+      "      TRUSTED_OEMBED_PROVIDERS.find(url)"
     ]
     entries = lines.each_with_index.map do |text, index|
       entry(subject: "find with an object argument", text: text, path: "spec/model/item_spec.rb", line: index + 1)
     end
+    models = {
+      "app/models/item.rb" => "class Item < ApplicationRecord\nend",
+      "app/models/bid.rb" => "class Bid < ApplicationRecord\nend"
+    }
 
-    result = Rewrites.apply(entries, rung: "5.1.0")
+    result = Rewrites.apply(entries, rung: "5.1.0", files: models)
 
     assert_equal [
       "        Item.find(item.id).closed.should eql(false)",
       "          Bid.find(@bid.id).amount.should eql(5000.to_d)"
     ], result.edits.map { |edit| edit["after"] }
+    assert_includes result.left, "find with an object argument",
+      "a constant that is not one of the application's models was rewritten"
   end
 
   # The rule degrades to the unconditional one when it cannot read the file, because the edit it makes
