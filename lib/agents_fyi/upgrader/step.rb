@@ -2365,15 +2365,24 @@ module AgentsFyi
       # Pure, and its own method, because it is the one thing that rewrites a line of
       # somebody's Gemfile and a test can hold it still.
       def rewrite_pin(text, version)
+        # **The 7.0 rung's first release does not boot on the 3.2 era.** Activesupport
+        # 7.0.0's DescendantsTracker asks Railtie for descendants and, on 3.2, falls through
+        # to Railtie.instance, which instantiates the abstract engine; the 7.0 line's later
+        # patches fixed it. A patch release is the same rung — the ladder's line is 7.0 —
+        # so a 3.2 walk pins the line rather than the first release. An older era keeps the
+        # exact release, where the first release is the one that was measured.
+        pin = version.to_s
+        pin = "~> #{pin}" if pin == "7.0.0" && @machine.respond_to?(:era) &&
+                             @machine.era.to_s.start_with?("3.2")
         lines = text.lines
         found = lines.index { |line| line =~ /^\s*gem\s+["']rails["']/ }
         return nil unless found
 
         line = lines[found]
         if line =~ /^(\s*gem\s+["']rails["']\s*,\s*)(["'])([^"']*)(\2)/
-          lines[found] = "#{Regexp.last_match(1)}#{Regexp.last_match(2)}#{version}#{Regexp.last_match(4)}\n"
+          lines[found] = "#{Regexp.last_match(1)}#{Regexp.last_match(2)}#{pin}#{Regexp.last_match(4)}\n"
         elsif line =~ /^(\s*gem\s+["']rails["'])(\s*)$/
-          lines[found] = "#{Regexp.last_match(1)}, \"#{version}\"\n"
+          lines[found] = "#{Regexp.last_match(1)}, \"#{pin}\"\n"
         else
           # A pin this does not understand — `gem "rails", github: ...`, a version
           # inside a group with other arguments — is left alone rather than guessed at.

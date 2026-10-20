@@ -503,6 +503,21 @@ class StepMachineTest < Minitest::Test
     )
   end
 
+  # **A 3.2 walk pins the 7.0 line, not its first release.** Rails 7.0.0's activesupport
+  # cannot boot on Ruby 3.2; the 7.0 line's patches can, and a patch is the same rung.
+  def test_the_7_0_rung_on_3_2_pins_the_line_rather_than_the_first_release
+    dir = app
+    runner = FakeRunner.new(answers: %w[2.1 2.2 2.5 2.7 3.1].to_h do |era|
+      ["fake #{era} bundle install", [1, "not this era"]]
+    end)
+    record = step(dir, machines: machines, runner: runner, to: "7.0.0",
+      corpus: FakeCorpus.new(requires_ruby: "2.7.0")).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "~> 7.0.0"),
+      "the 7.0.0 pin on the 3.2 era is the release that cannot boot there"
+  end
+
   # **The record is about the rung, not the walk's destination.** A queue target of 4.2 with
   # the plan's first step at 4.1 must record 4.1; naming the destination claims a skip.
   def test_a_walk_to_a_later_release_records_the_rung_it_ran
