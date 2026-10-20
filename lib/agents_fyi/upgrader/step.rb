@@ -362,7 +362,7 @@ module AgentsFyi
         unless pinned
           return Record.refused(
             repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-            from_version: "unknown", to_version: @to,
+            from_version: "unknown", to_version: rung_to,
             why: "no Rails release is pinned under #{@worktree.root}: neither the meta-gem " \
                  "nor any framework component is in Gemfile.lock, so there is nothing to step from"
           )
@@ -375,10 +375,10 @@ module AgentsFyi
         # attempt. The first queue-driven run recorded a DNS failure as `refused`, which settled the
         # move for good; a refused step is a fact about the ladder, and this one was about the
         # network.
-        Record.unverified(repository: @repository, from_version: "unknown", to_version: @to,
+        Record.unverified(repository: @repository, from_version: "unknown", to_version: rung_to,
           why: e.message)
       rescue Lockfile::Missing, Lockfile::Unreadable => e
-        Record.refused(repository: @repository, from_version: "unknown", to_version: @to, why: e.message)
+        Record.refused(repository: @repository, from_version: "unknown", to_version: rung_to, why: e.message)
       end
 
       # The ledger entry for this move, and whether it is settled *for the machine that
@@ -436,7 +436,7 @@ module AgentsFyi
         unless step
           return Record.refused(
             repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-            from_version: @from, to_version: @to,
+            from_version: @from, to_version: rung_to,
             why: "the service returned no step for #{@from} -> #{@to}: #{payload["next_step"]}"
           )
         end
@@ -446,10 +446,10 @@ module AgentsFyi
         # reads, or which release it has no chapter for, and that is the part that
         # changes what the caller does next.
         Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-          from_version: @from, to_version: @to, why: e.message)
+          from_version: @from, to_version: rung_to, why: e.message)
       rescue Corpus::Unreachable => e
         Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-          from_version: @from, to_version: @to,
+          from_version: @from, to_version: rung_to,
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
       end
 
@@ -580,6 +580,12 @@ module AgentsFyi
         step["to_version"] || @to
       end
 
+      # **The rung the record is about, which is not the walk's destination.** `@to` is where
+      # the queue asked the loop to end up; a step that moves 6.1.7.10 to 7.0.0 must record
+      # 7.0.0, or the run claims a five-rung skip and the service is right to refuse it.
+      # Before the plan is fetched there is no rung, and the destination is the only answer.
+      def rung_to = @rung_to.to_s.empty? ? @to : @rung_to
+
       # The machine this step will run on, and the install it performed while deciding.
       #
       # Three paths, and the order is the decision:
@@ -604,7 +610,7 @@ module AgentsFyi
           if Interpreters.meets?(native.ruby_version, floor) == false
             return Record.unverified(
               repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-              from_version: @from, to_version: @to,
+              from_version: @from, to_version: rung_to,
               why: "this step requires Ruby #{floor} and this interpreter is #{native.interpreter}: " \
                    "run it with `#{RUNTIME_ENV}=docker` so the step executes in an era container " \
                    "(`scripts/upgrader-images.sh build`), or on an interpreter that meets the floor"
@@ -627,7 +633,7 @@ module AgentsFyi
           end
           return Record.unverified(
             repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-            from_version: @from, to_version: @to,
+            from_version: @from, to_version: rung_to,
             why: why,
             machine: no_interpreter_stamp(floor)
           )
@@ -651,7 +657,7 @@ module AgentsFyi
 
         Record.unverified(
           repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-          from_version: @from, to_version: @to,
+          from_version: @from, to_version: rung_to,
           stages: stages,
           why: "no interpreter installed the application's bundle — " \
                "#{attempts.empty? ? "the matrix is empty" : attempts.join("; ")}",
@@ -907,7 +913,7 @@ module AgentsFyi
       def install_record(install, stages)
         Record.unverified(
           repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
-          from_version: @from, to_version: @to, stages: stages,
+          from_version: @from, to_version: rung_to, stages: stages,
           machine: @machine&.stamp, era: @machine.respond_to?(:era) ? @machine.era : nil,
           why: "the application's bundle could not be installed (`bundle install` " \
                "#{install.ran ? "exited #{install.exit_code}" : 'did not run'}), so no " \
@@ -2745,7 +2751,7 @@ module AgentsFyi
         # sentence rather than swallowed: a refusal that will happen every cycle looks
         # exactly like a quiet run from the outside, which is the miner's lesson about a
         # bare `rescue` around a remote call.
-        @out.puts("  not recorded: #{e.message}") if @out
+        @out.puts("  not recorded: #{e.message}#{refusal_detail(e)}") if @out
       end
 
       # **The corpus is a remote, and a rung that passed is settled.** A transient refusal — the
@@ -2768,6 +2774,23 @@ module AgentsFyi
         record_with_retry(client, record, attempt: attempt + 1)
       end
 
+      # **The fields a validation refusal names.** The sentence a 422 carries is generic
+      # ("Request validation failed."); the body's details say which field and why, and that
+      # is the difference between a quiet run and a five-minute fix.
+      def refusal_detail(error)
+        payload = error.respond_to?(:payload) ? error.payload : nil
+        return "" unless payload.is_a?(Hash)
+
+        details = Array(payload.dig("error", "details")).first(3).filter_map do |detail|
+          next unless detail.is_a?(Hash)
+
+          [detail["field"], detail["message"]].compact.join(": ")
+        end
+        advice = payload["next_step"].to_s.strip
+        details << advice unless advice.empty?
+        details.empty? ? "" : " — #{details.join("; ")}"
+      end
+
       # Public for the reason the policy group above is — `test/step_test.rb` holds this
       # shape still — and `private` is restored below because `run_id`, the last method in
       # this class, is an instance helper.
@@ -2776,6 +2799,12 @@ module AgentsFyi
       # The body `POST /upgrades/runs` takes, built from the record alone. A class method
       # and pure, because it is the whole of what this tool tells the service about a
       # run and a test can hold it still without a corpus.
+      # The service's own bound on a run's patch is two million characters; a real
+      # application's app:update patch is larger (the second lighthouse's was), and the
+      # service refuses the *request* rather than clipping it, so the client clips the copy
+      # it sends. The local record and the pull request keep the whole patch.
+      RUN_PATCH_LIMIT = 2_000_000
+
       def self.run_payload(record)
         {
           "repo_url" => record.repository,
@@ -2788,7 +2817,7 @@ module AgentsFyi
           # upgrade" mean something, and it is deliberately a different field.
           "baseline_verdict" => baseline_verdict(record),
           "note" => record.why,
-          "patch" => record.patch,
+          "patch" => record.patch.to_s[0, RUN_PATCH_LIMIT],
           # A step is one process run; the record carries when it was written and the
           # commands carry their own durations, so a start time invented here would be
           # a second, disagreeing answer to a question already answered.

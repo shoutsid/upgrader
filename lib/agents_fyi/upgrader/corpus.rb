@@ -29,7 +29,18 @@ module AgentsFyi
       # request it would not take. A client that replaces that sentence with "request
       # failed" has thrown away the only part of the response that could change what the
       # caller does next.
-      class Refused < StandardError; end
+      # **The service's answer is the sentence and the body that names the field.** A 422's
+      # details are what turns "Request validation failed." into "patch: too long", and a
+      # client that logs only the sentence has made a refusal that happens every cycle look
+      # like a quiet run — the second lighthouse's runs were lost to exactly that.
+      class Refused < StandardError
+        def initialize(message = nil, payload = nil)
+          super(message)
+          @payload = payload
+        end
+
+        attr_reader :payload
+      end
 
       # The corpus already knows this, and here is what it said.
       #
@@ -290,7 +301,7 @@ module AgentsFyi
         # already knows this". Everything else in the 4xx range is the service reading the
         # request and declining it, sentence and all.
         raise Duplicate.new(sentence(payload, code), payload) if code == 409
-        raise Refused, sentence(payload, code) if code >= 400 && code < 500
+        raise Refused.new(sentence(payload, code), payload) if code >= 400 && code < 500
 
         raise Unreachable, "#{@base} answered HTTP #{code} instead of a plan#{hint(payload)}"
       end

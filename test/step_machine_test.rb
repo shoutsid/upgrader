@@ -444,6 +444,19 @@ class StepMachineTest < Minitest::Test
     def stamp = "ruby #{era} (era-#{era}@sha256:#{"f" * 64})"
   end
 
+  # A queue that asks for a later release than the next rung: the plan still starts at the
+  # rung, and the record must say so rather than the destination.
+  class TwoStepCorpus < FakeCorpus
+    def upgrade(from:, to:)
+      { "steps" => [
+        { "from_version" => from, "to_version" => "4.1.0", "name" => "Rails 4.1",
+          "requires_ruby" => @requires_ruby, "changes" => [], "note" => "" },
+        { "from_version" => "4.1.0", "to_version" => to, "name" => "Rails #{to}",
+          "requires_ruby" => @requires_ruby, "changes" => [], "note" => "" }
+      ], "next_step" => "two steps" }
+    end
+  end
+
   def setup
     @dirs = []
   end
@@ -488,6 +501,17 @@ class StepMachineTest < Minitest::Test
       runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) },
       project: project
     )
+  end
+
+  # **The record is about the rung, not the walk's destination.** A queue target of 4.2 with
+  # the plan's first step at 4.1 must record 4.1; naming the destination claims a skip.
+  def test_a_walk_to_a_later_release_records_the_rung_it_ran
+    corpus = TwoStepCorpus.new(requires_ruby: "1.9.3")
+    record = step(app, machines: machines, to: "4.2.0", corpus: corpus).run
+
+    assert_equal "4.1.0", record.to_version,
+      "the record named the walk's destination rather than the rung it executed"
+    assert_equal "passed", record.verdict, record.why
   end
 
   # The first era that installs the bundle is the one the step runs on: 2.1's attempt fails,

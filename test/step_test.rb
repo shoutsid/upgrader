@@ -1621,6 +1621,29 @@ class StepTest < Minitest::Test
     assert_equal gem_section.key, payload.dig("brief", "sections").map { |s| s["key"] }.find { |k| k == gem_section.key }
   end
 
+  # **The service refuses a body larger than its own bound rather than clipping it.** A real
+  # application's app:update patch is over two million characters; the run body sends the
+  # first two million and the local record keeps the whole patch.
+  def test_the_run_body_clips_a_patch_beyond_the_service_s_bound
+    record = step(track(app), corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
+    record.instance_variable_set(:@patch, "x" * (AgentsFyi::Upgrader::Step::RUN_PATCH_LIMIT + 10))
+
+    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+
+    assert_equal AgentsFyi::Upgrader::Step::RUN_PATCH_LIMIT, payload["patch"].length,
+      "the run body carried a patch the service refuses"
+  end
+
+  def test_a_refused_run_names_the_field_the_service_would_not_take
+    out = StringIO.new
+    step(track(app), corpus: RefusingRunCorpus.new(payload: plan(changes: [change])),
+      contribute: true, out: out).run
+
+    assert_includes out.string, "not recorded: Request validation failed."
+    assert_includes out.string, "patch: is too long"
+    assert_includes out.string, "send at most 2,000,000 characters"
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])
@@ -1645,6 +1668,16 @@ class StepTest < Minitest::Test
     # this tool's word for *who* refused — `"plan"` / `"applier"` — where the service
     # reads the kind of change and the guide chapter.
     refute_includes %w[plan applier], refusal["kind"]
+  end
+
+  # The service's 422 names the field it would not take; the client has to carry that to
+  # the operator rather than log only the generic sentence.
+  class RefusingRunCorpus < FakeCorpus
+    def record_run(_payload)
+      raise AgentsFyi::Upgrader::Corpus::Refused.new("Request validation failed.",
+        { "error" => { "details" => [{ "field" => "patch", "message" => "is too long" }] },
+          "next_step" => "send at most 2,000,000 characters" })
+    end
   end
 
   def green
