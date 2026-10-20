@@ -414,7 +414,32 @@ module AgentsFyi
         ]
       )
 
-      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS, FACTORY_BOT].freeze
+      # **The require has to be before `require "rails"`, not merely in the bundle.** Rails 7.0's
+      # `active_support` names `Logger` while it loads, and the application's own `Bundler.require`
+      # comes after `require "rails"` — so a `gem "logger"` line alone is in the bundle but not
+      # required yet. Concurrent-ruby stopped requiring it, and Rails 7.1.5 added the require
+      # upstream; this companion carries that line into the application's own file.
+      LOGGER = Entry.new(
+        gem: "logger",
+        requirement: "~> 1.4",
+        subject: "logger",
+        note: "Rails 7.0's activesupport names Logger while it loads; concurrent-ruby 1.3.4 stopped " \
+              "requiring it, and the application's Bundler.require runs after `require \"rails\"`, " \
+              "so the require has to be written before it",
+        globs: %w[config/application.rb],
+        inserts: [
+          Insert.new(
+            path: "config/application.rb",
+            anchor: 'require_relative "boot"',
+            line: 'require "logger"',
+            note: "loads the logger gem before `require \"rails\"` reaches activesupport, where " \
+                  "`Logger` is named before the application's own Bundler.require has run"
+          )
+        ],
+        rules: []
+      )
+
+      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS, FACTORY_BOT, LOGGER].freeze
 
       class << self
         # The companion for a move, or nil. The requirement is matched exactly: the digest's line *is*

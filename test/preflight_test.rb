@@ -216,6 +216,33 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "Gemfile"), %(gem "json", "2.19.3")
   end
 
+  # **A rung-scoped declaration's companion travels with it to the pin.** The logger line is in the
+  # bundle but not required before `require "rails"`, so the Gemfile edit alone leaves the boot
+  # exactly as broken; the companion writes the require into the application's own file.
+  def test_a_rung_scoped_declaration_carries_its_companion_to_the_pin
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "6.1.7.10"\n)
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "application.rb"),
+      "require_relative \"boot\"\n\nrequire \"rails\"\n")
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "logger", kind: "declared", requirement: "~> 1.4",
+        condition: { "rails_at_least" => "7.0" })
+    ])
+
+    held = preflight(dir, corpus: corpus, ruby: "3.2", rails: "7.0.0")
+    assert_equal %w[logger], held.deferred.map { |deferred| deferred["gem"] }
+
+    applied = Preflight.new(root: dir, corpus: corpus, ruby: "3.2", rails: "7.0.0")
+      .declare_deferred(held.deferred)
+
+    assert(applied.repairs.any? { |repair| repair.path == "config/application.rb" },
+      applied.to_s)
+    lines = read(dir, "config/application.rb").lines.map(&:chomp)
+    assert_operator lines.index('require "logger"'), :<, lines.index('require "rails"'),
+      "the require was written after the constant it exists to define"
+  end
+
   # **A digest entry can be scoped to the rung, and that is what lets one gem move twice in a walk.**
   # Measured at the 4.2 rung: Rails 4.2 removed `ActionDispatch::Routing::Mapper::Scope#merge!` and
   # devise 3.0.4's own routes file calls it, so the `~> 3.0.0` line that 4.0 and 4.1 need is the wrong
