@@ -272,6 +272,7 @@ module AgentsFyi
 
         javascript_stage(stages)
         database_stage(stages)
+        assets_stage(stages)
 
         # The baseline, on the unmodified copy, before anything is written.
         # The baseline, on the unmodified copy, before anything is written — the
@@ -1397,6 +1398,26 @@ module AgentsFyi
 
         @out.puts("  javascript: #{argv.join(" ")}") if @out
         stages << command(Record::JAVASCRIPT, argv, chdir: root, env: application_env)
+        stages.last
+      end
+
+      # **The assets the suite renders, compiled before the baseline reads it.** A Rails
+      # application's `public/assets` manifest is a build product of its own CI
+      # (`assets:precompile`); a fresh tree has no such directory, and sprockets-rails
+      # refuses an undeclared asset at render time. The stage is absent when the application
+      # has no `app/assets` at all.
+      def assets_stage(stages)
+        root = @worktree.root
+        argv, refusal = @stack.prepare_assets(root, five_or_newer: five_or_newer?)
+        return nil if argv.nil? && refusal.nil?
+        unless argv
+          stages << Record::Command.new(stage: Record::ASSETS, command: refusal,
+            ran: false, exit_code: nil, seconds: 0.0, output_tail: "")
+          return nil
+        end
+
+        @out.puts("  assets: #{argv.join(" ")}") if @out
+        stages << command(Record::ASSETS, argv, chdir: root, env: application_env)
         stages.last
       end
 

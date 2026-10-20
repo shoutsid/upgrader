@@ -168,6 +168,22 @@ module AgentsFyi
           [nil, nil]
         end
 
+        # **The asset manifest a suite renders against is built, not in the repository.** The
+        # second lighthouse's suite renders `javascript_include_tag :main`, and sprockets-rails
+        # 3.5 answers "Asset `main.js` was not declared to be precompiled" when the application's
+        # `public/assets` manifest has not been built — which is what the application's CI's
+        # `assets:precompile` step creates and a fresh tree lacks. An application with no
+        # `app/assets` has nothing to compile.
+        def prepare_assets(root, five_or_newer:)
+          return nil unless File.directory?(File.join(root, "app", "assets"))
+
+          if five_or_newer
+            [["bin/rails", "assets:precompile"], nil]
+          else
+            [["bundle", "exec", "rake", "assets:precompile"], nil]
+          end
+        end
+
         # The command Rails' own message names when a migration is pending.
         def migrate(root, five_or_newer:)
           five_or_newer ? ["bin/rails", "db:migrate"] : ["bundle", "exec", "rake", "db:migrate"]

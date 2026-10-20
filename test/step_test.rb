@@ -1676,6 +1676,21 @@ class StepTest < Minitest::Test
     assert_equal 0, stage.exit_code
   end
 
+  # **The asset manifest is a build product the application's CI makes.** The second
+  # lighthouse's suite renders `javascript_include_tag :main`, and sprockets-rails refuses
+  # an undeclared asset when `public/assets` was never built; the baseline compiles it first.
+  def test_assets_are_precompiled_before_the_suite
+    dir = track(app)
+    FileUtils.mkdir_p(File.join(dir, "app", "assets"))
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
+
+    stage = record.stages.find { |s| s.stage == AgentsFyi::Upgrader::Record::ASSETS }
+    refute_nil stage, "the asset manifest was not built"
+    assert_includes stage.command, "assets:precompile"
+    assert_equal 0, stage.exit_code
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])
