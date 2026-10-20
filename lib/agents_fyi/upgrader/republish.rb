@@ -96,7 +96,7 @@ module AgentsFyi
       # does not make the whole record unreadable.
       def members(struct, rows)
         keys = struct.members.map(&:to_s)
-        Array(rows).select { |row| row.is_a?(Hash) }.map do |row|
+        Array(rows).grep(Hash).map do |row|
           struct.new(**row.select { |key, _| keys.include?(key) }.transform_keys(&:to_sym))
         end
       end
