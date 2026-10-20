@@ -19,10 +19,10 @@ module AgentsFyi
     #   the service's public surface is reconciled against a frozen recording
     #   (`test/agents_fyi/fixtures/discovery_golden.json` holds the endpoints, and the verdicts a
     #   run may carry are pinned by `upgrades_golden.json`), so neither a new route nor a new
-    #   `upgrade_verdict` value can be added. A file the *console* reads is outside that contract,
+    #   `upgrade_verdict` value can be added. A file the *site admin* reads is outside that contract,
     #   which is the only place left — and it is the operator's own view, which is who is asking.
     # * **Written atomically.** The reader is another process on another container: a half-written
-    #   JSON file read at the wrong moment would be a console error rather than a stale line, so
+    #   JSON file read at the wrong moment would be a site admin error rather than a stale line, so
     #   the write goes to a temporary name and is renamed into place, which is atomic on one
     #   filesystem.
     # * **Every field the reader needs to judge it, and no clock.** `started_at` is when the
@@ -33,16 +33,16 @@ module AgentsFyi
       FILE = "progress.json"
 
       # **Its own directory, so the operator's view can be mounted without the walker's state.**
-      # The console reads this through a *separate* volume (`upgrader_state`) rather than the one
+      # The site admin reads this through a *separate* volume (`upgrader_state`) rather than the one
       # holding the ledger, the bundles and the working copies: the ledger is one loop's book and a
       # second reader of it would be a second author, while this file is written to be read.
       DIR = "state"
 
       # Where the file lives, given the walker's home. Named here and read by nothing else: the
-      # console is told the *directory* and joins this name to it, so the two cannot drift.
+      # site admin is told the *directory* and joins this name to it, so the two cannot drift.
       def self.path(home) = File.join(home.to_s, DIR, FILE)
 
-      # The directory the console is pointed at, which is this one mounted read-only.
+      # The directory the site admin is pointed at, which is this one mounted read-only.
       def self.dir(home) = File.join(home.to_s, DIR)
 
       def initialize(home:, out: nil)
@@ -92,7 +92,7 @@ module AgentsFyi
       rescue SystemCallError => e
         # A progress file that cannot be written is not a reason to stop a walk: it is the
         # operator's view, and the record is the product. Said out loud rather than swallowed,
-        # because a console that shows nothing is indistinguishable from a loop that is idle.
+        # because a site admin that shows nothing is indistinguishable from a loop that is idle.
         @out&.puts("  progress: not written: #{e.class}: #{e.message}")
       end
     end

@@ -1599,7 +1599,7 @@ class StepTest < Minitest::Test
   # rather than implied by the call above.
   # **Recall happens before the pin, and the record carries it.** The brief is asked where the rung's
   # gems are known and nothing that can change has happened yet; what comes back travels in the record
-  # and in the run body, so a reader of the pull request or the console sees what the walk knew before
+  # and in the run body, so a reader of the pull request or the site admin sees what the walk knew before
   # it decided. A brief that lived only in the log is the failure `docs/refactor/adr/0008` names.
   def test_the_rung_is_briefed_before_it_acts_and_the_brief_travels_with_the_record
     corpus = FakeCorpus.new(payload: plan(changes: [change]),

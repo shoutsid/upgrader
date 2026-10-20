@@ -247,27 +247,27 @@ class DeployConfigTest < Minitest::Test
       "the setting is not in .env.example, so an operator cannot find it"
   end
 
-  # **The operator's live view is mounted where the console reads it.** The walker writes what it is
-  # doing into a volume of its own (`Progress`) and the console reads it read-only; without the mount
+  # **The operator's live view is mounted where the site admin reads it.** The walker writes what it is
+  # doing into a volume of its own (`Progress`) and the site admin reads it read-only; without the mount
   # the panel says "not mounted" — honest, but "is it working?" then has no answer again. Measured:
   # the loop sat in a pipe read with no child for long enough that the question was asked of the
   # logs, and the run it was inside of is only written when the step *ends*.
-  def test_the_walkers_live_view_is_mounted_where_the_console_reads_it
+  def test_the_walkers_live_view_is_mounted_where_the_site_admin_reads_it
     assert_includes config("upgrader"), "upgrader_state:/home/upgrader/.cache/agents-fyi-upgrader/state",
       "the walker does not mount the volume its live view is written to"
 
     service = config("service")
     assert_includes service, "upgrader_state:/var/lib/agents-fyi/upgrader-state:ro",
-      "the console does not mount the walker's view, so its page cannot say what it is doing"
+      "the site admin does not mount the walker's view, so its page cannot say what it is doing"
     assert_includes service, "UPGRADER_STATE_DIR: /var/lib/agents-fyi/upgrader-state",
-      "the console is pointed somewhere other than where the volume is mounted"
+      "the site admin is pointed somewhere other than where the volume is mounted"
     assert_includes compose, "\n  upgrader_state:",
       "the volume the two halves share is not declared"
     # **And the image must create the directory the volume is mounted over.** A named volume takes
     # its ownership from the image's directory at that path: one the image never made arrives
     # `root:root`, and the walker — uid 10003 — cannot write it. Measured: the loop logged
     # `progress: not written: Errno::EACCES … /state/progress.json.1.tmp` on every stage while the
-    # console's panel stayed empty, which is the same trap this Dockerfile's own note describes.
+    # site admin's panel stayed empty, which is the same trap this Dockerfile's own note describes.
     assert_includes uncommented(dockerfile), "/home/upgrader/.cache/agents-fyi-upgrader/state",
       "the image does not create the directory the live view's volume is mounted over"
   end

@@ -94,31 +94,44 @@ end
 seen_users = {}
 
 environments.each do |_name, environment|
-  user = environment["username"]
-  password = environment["password"]
-  seen_users[user.to_s] = password.to_s if user && !user.to_s.strip.empty?
+  # **A Rails 7.1 multi-database file names its connections one level down.** The test
+  # environment can be `test: { ollama: { adapter: …, <<: *default } }`, and a reader that
+  # only looks at `test['adapter']` starts no server for an application that has one. Read
+  # the connection hashes as well as the environment itself; a standard one-level file still
+  # arrives as `[environment]`.
+  connections = environment.values.grep(Hash)
+  connections = [environment] if connections.empty? || !environment["adapter"].to_s.strip.empty?
 
-  url = environment["url"].to_s
-  next if url.strip.empty?
+  connections.each do |connection|
+    user = connection["username"]
+    password = connection["password"]
+    seen_users[user.to_s] = password.to_s if user && !user.to_s.strip.empty?
 
-  begin
-    parsed = URI.parse(url)
-    # `match?` is Ruby 2.4+ and `delete_prefix` is 2.5+; this file runs on the era's Ruby
-    # 2.1 (`test/dbconfig_test.rb` holds the whole file to that vocabulary, one method name
-    # at a time, because the failure is a container that starts a database with no roles in
-    # it rather than a test that goes red here).
-    if parsed.scheme.to_s =~ /\A(postgres|postgresql|mysql2?|sqlite3)\z/ # rubocop:disable Performance/RegexpMatch
-      emit("adapter", parsed.scheme == "postgres" ? "postgresql" : parsed.scheme)
+    url = connection["url"].to_s
+    next if url.strip.empty?
+
+    begin
+      parsed = URI.parse(url)
+      # `match?` is Ruby 2.4+ and `delete_prefix` is 2.5+; this file runs on the era's Ruby
+      # 2.1 (`test/dbconfig_test.rb` holds the whole file to that vocabulary, one method name
+      # at a time, because the failure is a container that starts a database with no roles in
+      # it rather than a test that goes red here).
+      if parsed.scheme.to_s =~ /\A(postgres|postgresql|mysql2?|sqlite3)\z/ # rubocop:disable Performance/RegexpMatch
+        emit("adapter", parsed.scheme == "postgres" ? "postgresql" : parsed.scheme)
+      end
+      emit("host", parsed.host)
+      emit("database", parsed.path.to_s.sub(%r{\A/}, "")) # rubocop:disable Performance/DeletePrefix
+      seen_users[parsed.user.to_s] = parsed.password.to_s if parsed.user
+    rescue StandardError
+      nil
     end
-    emit("host", parsed.host)
-    emit("database", parsed.path.to_s.sub(%r{\A/}, "")) # rubocop:disable Performance/DeletePrefix
-    seen_users[parsed.user.to_s] = parsed.password.to_s if parsed.user
-  rescue StandardError
-    nil
   end
 end
 
 test = environments["test"] || {}
+# The first named connection that carries its own adapter is the one whose server this
+# script has to start. A `test:` with no nested connection stays itself.
+test = test.values.find { |value| value.is_a?(Hash) && !value["adapter"].to_s.strip.empty? } || test
 adapter = test["adapter"].to_s
 if adapter.strip.empty? && !test["url"].to_s.strip.empty?
   adapter = begin

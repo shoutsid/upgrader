@@ -80,7 +80,7 @@ module AgentsFyi
       #   made", and it is a field rather than a trick inside each pattern because it is the same
       #   question every appending rule asks.
       Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already, :file,
-        :all, :rung, keyword_init: true) do
+        :all, :rung, :skip, keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
@@ -956,6 +956,10 @@ module AgentsFyi
                                        "`secrets[:smtp]` — and it reads the string because a callable " \
                                        "`replace` is handed the raw region. A key held in a variable is " \
                                        "not matched, and the survey beside the rule names those lines",
+        "alias_attribute" => "the rule moves a simple `alias_attribute :name, :target` — a bare " \
+                             "symbol on both sides — to `alias_method` and its setter; a target or " \
+                             "name that is not a bare symbol stays a decision, and the survey names " \
+                             "the aliases whose original attribute the file defines itself",
         "to_xml" => "the bridge declares the gem; a Gemfile whose group blocks this tool cannot read " \
                     "(a string where the group name is, a block nested in one) is left",
         "content_tag_for / div_for" => "the bridge declares the gem — the behaviour-preserving half " \
@@ -1083,11 +1087,15 @@ module AgentsFyi
           # line (the match itself was made against the masked one, where a string's contents are
           # blanked), and a lookbehind is context the region does not contain — the first version of
           # this wrote `type = media_type`, dropping `request.`. A capture travels with the region.
-          Rule.new(family: :name_moved, subject: subject,
+          # **Every occurrence on the line, not the first.** `request.content_type` can appear twice
+          # in one expression — the uploads path does, in both branches of a ternary — and replacing
+          # one left the old call behind, which is a rename half-applied. A name is safe to respell
+          # everywhere; the appending families are the ones that must not repeat.
+          Rule.new(family: :name_moved, subject: subject, all: true,
             pattern: /(?<receiver>\b#{Regexp.escape(receiver)}\.)#{Regexp.escape(from)}\b/,
             replace: "\\k<receiver>#{to}")
         else
-          Rule.new(family: :name_moved, subject: subject,
+          Rule.new(family: :name_moved, subject: subject, all: true,
             pattern: /(?<!::)\b#{Regexp.escape(from)}\b/, replace: to)
         end
       end
@@ -1191,7 +1199,7 @@ module AgentsFyi
       # generator's own junk — and the rule wrote `belongs_to:, optional: true` into them: this tool
       # editing a file the change is not about. The pattern the rule then needs is the association's
       # name, and it is the *call* that carries it, so the group still re-emits the whole call.
-      def self.option_added(subject:, call:, option:, context: nil, argument: nil, already: nil)
+      def self.option_added(subject:, call:, option:, context: nil, argument: nil, already: nil, skip: nil)
         key = option[/[a-z_]\w*(?=:)/]
         named = argument ? "\\s+#{argument}" : ""
         # **A line that already carries the option is satisfied, not refused.** The pattern's negative
@@ -1204,7 +1212,7 @@ module AgentsFyi
         # argument rather than written per instance, because it is the same string the lookahead uses.
         already ||= Regexp.new("#{Regexp.escape(call)}\\b[^\\n]*" \
                                "#{Regexp.escape(option.sub(/\A[,\s]+/, ''))}")
-        Rule.new(family: :option_added, subject: subject, context: context, already: already,
+        Rule.new(family: :option_added, subject: subject, context: context, already: already, skip: skip,
           pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
                               "(?<call>#{Regexp.escape(call)}\\b#{named}[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
           replace: "\\k<open>\\k<call>#{option}\\k<close>")
@@ -1689,7 +1697,125 @@ module AgentsFyi
         assert_tag_value(hash[:body], key)
       end
 
+      # **Rails 7.1's `alias_attribute` no longer overrides a method inherited from an included
+      # module.** The application's relayables alias `parent` to an association while
+      # `Diaspora::Relayable` declares a `parent` that raises; 7.1 resolves the module's method and
+      # every comment or poll save raises `NotImplementedError`. The alias line stays for its setter
+      # and the getter is written by hand. The rule reads the model files itself because the change is
+      # a deprecation in 7.1; the ladder's entry for it arrives at 7.2, after this rung's suite has
+      # already failed on it.
+      def self.alias_attribute_parent
+        Rule.new(family: :line_replaced, subject: "alias_attribute parent",
+          file: "app/models/**/*.rb", rung: "7.1.0",
+          pattern: /^(?<indent>\s*)alias_attribute\s+:parent,\s*:(?<association>[a-z_]\w*)\s*$/,
+          replace: lambda do |match|
+            indent = match[:indent]
+            association = match[:association]
+            "#{match[0]}\n#{indent}def parent\n#{indent}  #{association}\n#{indent}end"
+          end,
+          context: lambda do |lines, _found, _raw, _tree|
+            Array(lines).none? { |line| line.match?(/^\s*def\s+parent\b/) }
+          end)
+      end
+
+      # **Rails 7.2 will no longer accept an `alias_attribute` whose target is not an attribute.**
+      # The application aliases `post` and `parent` to the `commentable` association, and `parent`
+      # to `target`/`poll`; Rails 7.2 warns that the alias is about a non-attribute and names
+      # `alias_method` as the replacement. The alias generated a setter too, so both halves move.
+      def self.alias_attribute_method
+        Rule.new(family: :line_replaced, subject: "alias_attribute",
+          file: "app/models/**/*.rb", rung: "7.2.0",
+          pattern: /^(?<indent>\s*)alias_attribute\s+:(?<alias>[a-z_]\w*),\s*:(?<target>[a-z_]\w*)\s*$/,
+          replace: lambda do |match|
+            indent = match[:indent]
+            "#{indent}alias_method :#{match[:alias]}, :#{match[:target]}\n" \
+              "#{indent}alias_method :#{match[:alias]}=, :#{match[:target]}="
+          end,
+          already: /^\s*alias_method\s+:/)
+      end
+
+      # **Rails 7.1 removed the `ActiveRecord::NullRelation` constant.** `Model.none` is still a
+      # null relation, but the class is no longer autoloaded and the old `is_a?` check raises
+      # `NameError` on the first search. `Relation#null_relation?` is the predicate the relation
+      # itself offers, and it is what the check meant; the rule reads the model files because the
+      # ladder has no entry for a constant the framework stopped exporting.
+      def self.null_relation_predicate
+        Rule.new(family: :call_replaced, subject: "ActiveRecord::NullRelation",
+          file: "app/models/**/*.rb", rung: "7.1.0",
+          pattern: /(?<receiver>\b[a-z_]\w*)\.is_a\?\(\s*ActiveRecord::NullRelation\s*\)/,
+          replace: "\\k<receiver>.null_relation?",
+          already: /\.null_relation\?/)
+      end
+
+      # **Rails 7.2 removed the positional `serialize` argument.** The 7.1 deprecation names both
+      # forms: a class is `type:` and a coder is `coder:`. The app's first boot fails on
+      # `serialize :hidden_shareables, Hash`, and the other four lines are the same shape.
+      def self.serialize_options
+        # **The scan's 156-file budget stops before two of the five lines.** `user.rb` and
+        # `signature.rb` are the files it did not send, so the rule reads exactly those; the other
+        # two are manual entries the scan already located. A broad `app/models/**/*.rb` glob would
+        # cross `SOURCE_LIMIT` at this application's size and read a slice.
+        Rule.new(family: :line_replaced, subject: "serialize", rung: "7.2.0",
+          file: "{app/models/user.rb,lib/diaspora/signature.rb}",
+          pattern: /^(?<indent>\s*)serialize\s+(?<attribute>[^,]+),\s*(?<argument>[A-Z][A-Za-z0-9_:]*)\s*$/,
+          replace: lambda do |match|
+            kind = %w[Hash Array].include?(match[:argument]) ? "type" : "coder"
+            "#{match[:indent]}serialize #{match[:attribute]}, #{kind}: #{match[:argument]}"
+          end,
+          already: /^\s*serialize\s+[^,]+,\s*(?:type|coder):\s*/)
+      end
+
+      # **Rails 8.0 removes the keyword form of `enum`.** The 7.2 run warns about
+      # `enum status: %i(...)`; the positional form is the same list with the name first. The rule
+      # replaces the first line and leaves the symbol block where it is.
+      #
+      # **A modular monolith's models are one directory down.** `app/models/**/*.rb` alone left
+      # `components/ollama/app/models/ollama/consumed_message.rb` unedited at
+      # rails_modular_monolith's 8.0 boot, after the scan had located its enum: the application's
+      # model root is both the classic one and each component's. The brace is the same shape the
+      # serialize rule uses for files the bounded scan skips.
+      def self.enum_keyword_arguments
+        Rule.new(family: :line_replaced, subject: "enum keyword arguments",
+          file: "{app/models/**/*.rb,components/*/app/models/**/*.rb}", rung: "8.0.0",
+          pattern: /^(?<indent>\s*)enum\s+(?<name>[a-z_]\w*):\s*(?<rest>.+)$/,
+          replace: ->(match) { "#{match[:indent]}enum :#{match[:name]}, #{match[:rest]}" },
+          already: /^\s*enum\s+:[a-z_]\w*,\s*/)
+      end
+
+      # **Rails 7.2 hands a string `form_for` a `false` object.** The helper's `objects.compact`
+      # drops `nil` but not `false`, and `f.error_messages` then calls `false.errors` while the
+      # users edit page renders. The helper's question is "which objects have errors", so ask that.
+      def self.error_messages_false_object
+        Rule.new(family: :line_replaced, subject: "error_messages_for false object",
+          file: "app/helpers/error_messages_helper.rb", rung: "7.2.0",
+          pattern: /^(?<indent>\s*)messages = objects\.compact\.map \{ \|o\| o\.errors\.full_messages \}\.flatten$/,
+          replace: lambda do |match|
+            "#{match[:indent]}messages = objects.compact.select { |o| o.respond_to?(:errors) }" \
+              ".map { |o| o.errors.full_messages }.flatten"
+          end,
+          already: /objects\.compact\.select \{ \|o\| o\.respond_to\?\(:errors\) \}/)
+      end
+
+      # **Rails 8.0 reworded `ParameterMissing`.** The API's behavior is unchanged, but the two
+      # search specs assert the exact text; the wording belongs to the rung that changed it, and a
+      # rule is applied after the baseline, where a project declaration (pre-baseline) would fail
+      # the 7.2 baseline it is about to leave.
+      def self.parameter_missing_wording
+        Rule.new(family: :line_replaced, subject: "ParameterMissing wording",
+          file: "spec/integration/api/search_controller_spec.rb", rung: "8.0.0",
+          pattern: /param is missing or the value is empty: (?<name>tag|query)/,
+          replace: ->(match) { "param is missing or the value is empty or invalid: #{match[:name]}" },
+          already: /param is missing or the value is empty or invalid:/)
+      end
+
       RULES = [
+        alias_attribute_parent,
+        alias_attribute_method,
+        null_relation_predicate,
+        serialize_options,
+        enum_keyword_arguments,
+        error_messages_false_object,
+        parameter_missing_wording,
         # `link_to 'Delete', path, confirm: 'Sure?'` becomes `data: {confirm: 'Sure?'}`, and the
         # helpers built on link_to go the same way.
         option_wrapped(subject: ":confirm option on link_to", option: "confirm",
@@ -1751,6 +1877,13 @@ module AgentsFyi
           # matched: the line says the association is required, which is the *new* default rather than
           # the preserved behaviour, and a person's choice stays a decision.
           already: /^\s*belongs_to\s+:[a-z_]\w*.*\boptional:\s*true\b/,
+          # **A default already in force is not a change to preserve.** The scan looks below this
+          # rung on purpose, so a 6.1 application that already loads the 5.0 defaults is still
+          # offered this 5.0 change; adding `optional: true` there would turn required associations
+          # optional and break the application's own presence specs. The application's
+          # `config.load_defaults` line is the fact that distinguishes it from a 4.2 application,
+          # and `skip` marks the change satisfied rather than leaving a decision a person owes.
+          skip: ->(tree) { Rewrites.load_defaults_at_least?(tree, "5.0") },
           context: lambda do |lines, found, _raw, _tree|
             association = found[:call][/:\K[a-z_]\w*/]
             # **`presence`, with no boundary around it**: `validates_presence_of` has no word
@@ -2080,6 +2213,19 @@ module AgentsFyi
         false
       end
 
+      # **The application's own `config.load_defaults` is the authority on a change that flips a
+      # framework default.** The scan's window starts at the ladder's earliest so it can find work an
+      # application missed, but a default is not a call site: a 6.1 application already has
+      # `belongs_to` required, and adding `optional: true` to preserve a 4.2 behaviour changes it.
+      # Step reads the line into the rule tree because the scan's byte budget stops before `config/`.
+      def self.load_defaults_at_least?(tree, version)
+        line = Array(tree["config/application.rb"]).find { |text| text.match?(/^\s*config\.load_defaults\s/) }
+        return false if line.nil?
+
+        found = line[/config\.load_defaults\s+["']?([\d.]+)/, 1]
+        rung_reached?(version, found)
+      end
+
       def self.apply(manual, rules: RULES, files: {}, sources: {}, changes: [], rung: nil)
         # **A rule with a rung applies only when the caller names a target at or above it.** The plan is
         # what normally gates a rule (the ladder says when a change belongs); a rule the ladder does not
@@ -2101,6 +2247,14 @@ module AgentsFyi
           candidates = by_subject[subject].to_a
           if candidates.empty?
             left << subject
+            next
+          end
+          # **A rule whose change the application has already adopted is satisfied, not owed.** A
+          # default-flip is not a call site; the tree is the evidence (`belongs_to` and the 5.0
+          # default), and leaving it to the context would report a decision the application does not
+          # need. The context still answers the per-line question.
+          if candidates.any? { |candidate| candidate.skip&.call(files) }
+            satisfied << subject
             next
           end
 

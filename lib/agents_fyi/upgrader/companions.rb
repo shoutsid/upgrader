@@ -439,7 +439,42 @@ module AgentsFyi
         rules: []
       )
 
-      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS, FACTORY_BOT, LOGGER].freeze
+      # **devise-two-factor 6 moved its OTP secret onto Active Record Encryption.** The gem used to
+      # bring `attr_encrypted`; from 6 it calls `ActiveRecord::Encryption` directly, whose credentials
+      # are absent in a test environment and whose missing-key error is raised on the first `User#save!`
+      # — measured at the 7.1 rung as three 2FA controller failures and fifteen `Person.search`
+      # failures, all from a user save rather than from the search. The keys below are deterministic
+      # test material; production still supplies its own, which is why this is a test-environment
+      # insert rather than a change to the application's credentials.
+      DEVISE_TWO_FACTOR_SIX = Entry.new(
+        gem: "devise-two-factor",
+        requirement: "~> 6.3.1",
+        subject: "devise-two-factor 6",
+        note: "devise-two-factor 6 encrypts the OTP secret with Active Record Encryption, so a " \
+              "test environment needs the three keys; the failure is a user save, not a search",
+        globs: %w[config/environments/test.rb],
+        inserts: [
+          Insert.new(
+            path: "config/environments/test.rb",
+            anchor: "Rails.application.configure do",
+            line: "  # devise-two-factor 6 encrypts otp_secret with Active Record Encryption.\n  " \
+                  "# These are deterministic test keys; production supplies its own credentials.\n  " \
+                  "config.active_record.encryption.primary_key = " \
+                  "\"0123456789abcdef0123456789abcdef\"\n  " \
+                  "config.active_record.encryption.deterministic_key = " \
+                  "\"fedcba9876543210fedcba9876543210\"\n  " \
+                  "config.active_record.encryption.key_derivation_salt = " \
+                  "\"00112233445566778899aabbccddeeff\"",
+            marker: "config.active_record.encryption.primary_key = " \
+                    "\"0123456789abcdef0123456789abcdef\"",
+            note: "devise-two-factor 6 stores the OTP secret with Active Record Encryption; without " \
+                  "the keys every User#save! raises, and the failure surfaces in unrelated specs"
+          )
+        ],
+        rules: []
+      )
+
+      ENTRIES = [RSPEC_RAILS_THREE, SHOULDA_MATCHERS, FACTORY_BOT, LOGGER, DEVISE_TWO_FACTOR_SIX].freeze
 
       class << self
         # The companion for a move, or nil. The requirement is matched exactly: the digest's line *is*

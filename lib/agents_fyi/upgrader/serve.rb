@@ -102,14 +102,14 @@ module AgentsFyi
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
         @publish_class = publish_class
-        # The read-only projection the console's walk view joins: delivery facts beside the progress
+        # The read-only projection the site admin's walk view joins: delivery facts beside the progress
         # file, because the ledger itself is deliberately not mounted into the service.
         @deliveries = Deliveries.new(home: @home, out: @out)
         # The host facts the service cannot query: the era matrix, the images the daemon has, and the
         # volume's room. `nil` disables the feed (the suite's loop has no daemon).
         @environment = environment&.new(home: @home, out: @out)
-        # The effective project catalogue, for the console's Projects page: the built-ins live in
-        # this image and the console cannot read them.
+        # The effective project catalogue, for the site admin's Projects page: the built-ins live in
+        # this image and the site admin cannot read them.
         @projects_feed = ProjectsFeed.new(home: @home, out: @out)
         # The deployment's own values for the applications it walks, passed to every step this
         # loop makes (see `Step#read_env_file` for the shape and the reason).
@@ -127,7 +127,7 @@ module AgentsFyi
         @interval = interval
         @step_timeout = step_timeout
         @out = out
-        # **What the loop is doing, where the operator's console can read it.** The step announces
+        # **What the loop is doing, where the operator's site admin can read it.** The step announces
         # its own stages; this is what the loop itself announces — the interval between cycles,
         # which is otherwise indistinguishable from a step that has stopped moving.
         @progress = Progress.new(home: home, out: out)
@@ -180,7 +180,7 @@ module AgentsFyi
         end
 
         @ledger.save!
-        # **A stopped loop has nothing in flight, and says so.** The file is what the console's Now
+        # **A stopped loop has nothing in flight, and says so.** The file is what the site admin's Now
         # panel reads, a step clears it when it finishes, and a *loop* that stops between steps — the
         # end of a walk, or an operator's SIGTERM — left its last one behind, so the panel went on
         # saying "running this" until `STALLED_SECONDS` (twenty minutes) caught up. Measured on this
@@ -571,7 +571,7 @@ module AgentsFyi
         @interval
       end
 
-      # The loop's own rest, said out loud and shown to the console: a *stalled* step and a sleeping
+      # The loop's own rest, said out loud and shown to the site admin: a *stalled* step and a sleeping
       # loop look nothing alike from outside unless the loop says which it is.
       def nap(seconds, outcome)
         return if seconds <= 0

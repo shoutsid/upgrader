@@ -376,7 +376,7 @@ module AgentsFyi
 
         # **The body is a summary; the diff and the run page are the record.** A rung that a gem's
         # own upgrade touched a hundred times produced a hundred bullets here, which is a diff pasted
-        # into prose. The manual changes are split the way the console splits them: a call site this
+        # into prose. The manual changes are split the way the site admin splits them: a call site this
         # application has is work, and a change the rung carries that it does not use is not.
         if @record && !@record.decisions.empty?
           located = @record.decisions.reject { |decision| decision.path.to_s.empty? }

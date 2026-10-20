@@ -663,9 +663,9 @@ class ServeTest < Minitest::Test
       "the retry did not carry the commit the first attempt produced"
   end
 
-  # **The console reads a feed, not the ledger.** The ledger is the loop's own book and is not
+  # **The site admin reads a feed, not the ledger.** The ledger is the loop's own book and is not
   # mounted into the service; the delivery facts are written beside the progress file, where the
-  # console's read-only mount can join them to the runs it already holds.
+  # site admin's read-only mount can join them to the runs it already holds.
   def test_a_published_rung_is_written_to_the_delivery_feed
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.0.0")])
     FakePublish.reset!
@@ -674,7 +674,7 @@ class ServeTest < Minitest::Test
     serve(corpus: corpus, cycles: 1, to: "5.0.0", walk: true, publish: true, rungs: 1).run
 
     path = File.join(home, "state", "deliveries.json")
-    assert File.file?(path), "the delivery feed was not written where the console reads it"
+    assert File.file?(path), "the delivery feed was not written where the site admin reads it"
     entries = JSON.parse(File.read(path)).fetch("deliveries")
     entry = entries.find { |row| row["to_version"] == "5.0.0" }
     refute_nil entry
@@ -694,8 +694,8 @@ class ServeTest < Minitest::Test
     dir = Dir.mktmpdir
     saved = ENV["UPGRADER_PROJECTS_DIR"]
     ENV["UPGRADER_PROJECTS_DIR"] = dir
-    File.write(File.join(dir, "console-project.json"), JSON.generate(
-      "slug" => "console-project", "repo" => "https://github.com/acme/storefront.git",
+    File.write(File.join(dir, "site-admin-project.json"), JSON.generate(
+      "slug" => "site-admin-project", "repo" => "https://github.com/acme/storefront.git",
       "base_ref" => "agents-fyi/baseline", "from" => "4.2.11", "to" => "5.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     ))
@@ -704,7 +704,7 @@ class ServeTest < Minitest::Test
 
     project = FakeStep.calls.first[:project]
     refute_nil project, "the queue target did not pick up its declaration"
-    assert_equal "console-project", project.slug
+    assert_equal "site-admin-project", project.slug
     assert_equal "agents-fyi/baseline", FakeStep.calls.first[:ref],
       "a queue row with no ref did not start where its declaration says"
     assert_equal "https://github.com/acme/storefront.git", FakeStep.calls.first[:repository],

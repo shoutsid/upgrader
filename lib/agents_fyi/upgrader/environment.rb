@@ -6,9 +6,9 @@ require "open3"
 
 module AgentsFyi
   module Upgrader
-    # **The walker's environment, written where the console can read it.**
+    # **The walker's environment, written where the site admin can read it.**
     #
-    # The console cannot see the host: the era images live on the daemon, the disk is the walker's
+    # The site admin cannot see the host: the era images live on the daemon, the disk is the walker's
     # volume, and the interpreter matrix is the client's data. This is the third feed of that kind,
     # beside the progress file and the delivery list, and it exists for the same reason — the public
     # contract is frozen, so the operator's own surface is where a fact the service cannot query goes.

@@ -41,23 +41,23 @@ class ProjectTest < Minitest::Test
 
   # The branch a rung is published on is the declaration's, with the release substituted: one branch
   # per rung is a property of the project rather than a string in the publisher.
-  # **The console's directory is read first, and the built-in is the fallback.** The console writes
+  # **The site admin's directory is read first, and the built-in is the fallback.** The site admin writes
   # what the operator edits into a volume this client mounts; an empty volume must still walk the
   # project this image ships, and a written declaration of the same slug must shadow it.
-  def test_the_console_directory_is_read_before_the_built_in_declaration
+  def test_the_site_admin_directory_is_read_before_the_built_in_declaration
     Dir.mktmpdir do |dir|
-      File.write(File.join(dir, "console.json"), JSON.generate(
-        "slug" => "console", "repo" => "acme/console", "from" => "7.0.0", "to" => "7.1.0",
+      File.write(File.join(dir, "site_admin.json"), JSON.generate(
+        "slug" => "site_admin", "repo" => "acme/site-admin", "from" => "7.0.0", "to" => "7.1.0",
         "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
       ))
-      written = PROJECT.find("console", dir: dir)
-      assert_equal "acme/console", written.repo
+      written = PROJECT.find("site_admin", dir: dir)
+      assert_equal "acme/site-admin", written.repo
       assert_equal dir, File.dirname(written.path)
 
       # Nothing written under the built-in slug in this directory: the image's own copy answers.
       assert_equal "shoutsid/biddingapp", PROJECT.find("lighthouse", dir: dir).repo
 
-      # With the same slug written, the console's copy is the one used.
+      # With the same slug written, the site admin's copy is the one used.
       File.write(File.join(dir, "lighthouse.json"), JSON.generate(
         "slug" => "lighthouse", "repo" => "owner/edited", "from" => "7.0.0", "to" => "7.1.0",
         "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
@@ -89,9 +89,9 @@ class ProjectTest < Minitest::Test
     assert_nil PROJECT.find_by_repository("https://github.com/example/absent")
   end
 
-  # The console's copy of a slug shadows the built-in one, in the repository join too: an operator
+  # The site admin's copy of a slug shadows the built-in one, in the repository join too: an operator
   # who edits the declaration means the edited file, not the image's.
-  def test_the_console_s_copy_is_the_one_the_repository_join_finds
+  def test_the_site_admin_s_copy_is_the_one_the_repository_join_finds
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "lighthouse.json"), JSON.generate(
         "slug" => "lighthouse", "repo" => "https://github.com/shoutsid/biddingapp",
@@ -100,7 +100,7 @@ class ProjectTest < Minitest::Test
       ))
 
       found = PROJECT.find_by_repository("shoutsid/biddingapp", dir: dir)
-      assert_equal "7.0.0", found.from, "the console's declaration did not shadow the built-in"
+      assert_equal "7.0.0", found.from, "the site admin's declaration did not shadow the built-in"
     end
   end
 
@@ -210,7 +210,7 @@ class ProjectTest < Minitest::Test
     assert_equal "auto", project.eras
   end
 
-  # The console edits a declaration, so the object has to write one back that a reader would accept.
+  # The site admin edits a declaration, so the object has to write one back that a reader would accept.
   def test_the_declaration_round_trips_through_its_own_hash
     project = lighthouse
     again = PROJECT.parse(project.to_h.to_json)

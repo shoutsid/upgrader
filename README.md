@@ -32,7 +32,7 @@ upgrades — each entry a claim about an index and a repository, naming where it
 from. `step` runs the same preflight as its first move, before it chooses an interpreter,
 because the choice *is* a `bundle install`.
 
-```console
+```bash
 $ ./bin/agents-fyi-upgrader plan  --repo https://github.com/owner/application.git --to 7.1.0
 $ ./bin/agents-fyi-upgrader preflight --repo https://github.com/owner/application.git --record ./out
 $ ./bin/agents-fyi-upgrader step  --repo https://github.com/owner/application.git --to 7.1.0 --record ./out
@@ -513,7 +513,7 @@ same one every refusal message these modules read was captured on.
 
 ## Tests
 
-```console
+```bash
 $ cd upgrader && ruby -Ilib -Itest test/all_test.rb
 ```
 

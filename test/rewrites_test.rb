@@ -120,6 +120,171 @@ class RewritesTest < Minitest::Test
     assert_equal ["  type = request.media_type"], result.edits.map { |edit| edit["after"] }
   end
 
+  # **A rename is every occurrence on the line, not the first.** The uploads path writes
+  # `request.content_type.to_s == "" ? … : request.content_type.to_s`, and replacing one branch
+  # left the old call behind — a rename half-applied while the record said it had been made.
+  def test_the_content_type_rule_rewrites_every_occurrence_on_the_line
+    line = %(  type = request.content_type.to_s == "" ? "x" : request.content_type.to_s)
+    result = Rewrites.apply([entry(subject: "request.content_type", text: line)])
+
+    assert_equal [%(  type = request.media_type.to_s == "" ? "x" : request.media_type.to_s)],
+      result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Rails 7.1 stops `alias_attribute` from overriding a method inherited from an included
+  # module.** The application's relayables alias `parent` to an association, while
+  # `Diaspora::Relayable` declares a `parent` that raises; without this rule every comment and poll
+  # save raises NotImplementedError. The alias line stays for its setter; the getter is explicit.
+  def test_alias_attribute_parent_is_written_by_hand_at_seven_one
+    sources = {
+      "app/models/comment.rb" => ["class Comment", "  alias_attribute :parent, :commentable", "end"]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "7.1.0")
+
+    assert_equal [
+      "  alias_attribute :parent, :commentable\n  def parent\n    commentable\n  end"
+    ], result.edits.map { |edit| edit["after"] }
+    assert_equal ["alias_attribute parent"], result.applied
+  end
+
+  # The rule must not add a second method on a later rung: the alias line is still there, so the
+  # file's own `def parent` is the evidence that the edit has been made.
+  def test_alias_attribute_parent_is_left_alone_once_the_method_exists
+    sources = {
+      "app/models/comment.rb" => ["class Comment", "  alias_attribute :parent, :commentable",
+                                  "  def parent", "    commentable", "  end"]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "7.1.0")
+
+    assert_empty result.edits
+  end
+
+  # **Rails 7.2 refuses an `alias_attribute` whose target is not an attribute.** The parent rule
+  # above is the 7.1 half; this is the 7.2 half, and it must move the setter as well as the getter
+  # because the alias had generated both.
+  def test_alias_attribute_with_a_non_attribute_target_becomes_alias_method_at_seven_two
+    sources = {
+      "app/models/comment.rb" => [
+        "class Comment",
+        "  alias_attribute :post, :commentable",
+        "  alias_attribute :parent, :commentable",
+        "  def parent",
+        "    commentable",
+        "  end",
+        "end"
+      ]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "7.2.0")
+
+    assert_equal [
+      "  alias_method :post, :commentable\n  alias_method :post=, :commentable=",
+      "  alias_method :parent, :commentable\n  alias_method :parent=, :commentable="
+    ], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Rails 7.1 removed the `ActiveRecord::NullRelation` constant.** The app's search guard used it;
+  # the relation's own `null_relation?` predicate is the same question and survives the release.
+  def test_the_null_relation_check_uses_the_predicate_at_seven_one
+    sources = {
+      "app/models/person.rb" => ["return query if query.is_a?(ActiveRecord::NullRelation)"]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "7.1.0")
+
+    assert_equal ["return query if query.null_relation?"],
+      result.edits.map { |edit| edit["after"] }
+    assert_equal ["ActiveRecord::NullRelation"], result.applied
+  end
+
+  # **Rails 7.2 removed the positional `serialize` argument.** A class becomes `type:` and a coder
+  # becomes `coder:`; the 7.1 deprecation named both forms, and the first one is a boot failure.
+  def test_serialize_positional_arguments_become_keywords_at_seven_two
+    result = Rewrites.apply([
+      entry(subject: "serialize", text: "  serialize :hidden_shareables, Hash"),
+      entry(subject: "serialize", text: "  serialize :scopes, JSON")
+    ], rung: "7.2.0")
+
+    assert_equal ["  serialize :hidden_shareables, type: Hash",
+                  "  serialize :scopes, coder: JSON"],
+      result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Rails 8.0 removes the keyword form of `enum`.** The 7.2 run warns about it; the positional
+  # form is the same list with the name first, and the symbol block stays where it is.
+  def test_enum_keyword_arguments_become_positional_at_eight
+    sources = {
+      "app/models/pod.rb" => ["  enum status: %i(", "    unchecked", "    unknown_error", "  )"]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "8.0.0")
+
+    assert_equal ["  enum :status, %i("], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **A modular monolith keeps its models in components, not only in `app/models`.** The rule's
+  # first glob missed `components/ollama/app/models/ollama/consumed_message.rb`, so the scan
+  # located the enum, the rule edited nothing, and the 8.0 boot failed on the keyword form. The
+  # component path is the regression's own fixture.
+  def test_enum_keyword_arguments_cover_component_models_at_eight
+    sources = {
+      "components/ollama/app/models/ollama/consumed_message.rb" => [
+        "    enum status: {",
+        "      processing: 0,",
+        "      succeeded: 1,",
+        "      failed: 2",
+        "    }"
+      ]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "8.0.0")
+
+    assert_equal ["    enum :status, {"], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Rails 7.2 gives a string `form_for` a false object**, and `objects.compact` does not drop it.
+  # The helper asks which objects have errors; `false` does not.
+  def test_error_messages_ignores_a_false_form_object_at_seven_two
+    sources = {
+      "app/helpers/error_messages_helper.rb" => [
+        "    messages = objects.compact.map { |o| o.errors.full_messages }.flatten"
+      ]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "7.2.0")
+
+    assert_equal [
+      "    messages = objects.compact.select { |o| o.respond_to?(:errors) }" \
+        ".map { |o| o.errors.full_messages }.flatten"
+    ], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **Rails 8.0 reworded `ParameterMissing`.** The message is the rung's, and the spec's exact
+  # assertion moves with it.
+  def test_parameter_missing_wording_moves_at_eight
+    sources = {
+      "spec/integration/api/search_controller_spec.rb" => [
+        'confirm_api_error(response, 422, "param is missing or the value is empty: tag")',
+        'confirm_api_error(response, 422, "param is missing or the value is empty: query")'
+      ]
+    }
+    result = Rewrites.apply([], sources: sources, files: sources, rung: "8.0.0")
+
+    assert_equal [
+      'confirm_api_error(response, 422, "param is missing or the value is empty or invalid: tag")',
+      'confirm_api_error(response, 422, "param is missing or the value is empty or invalid: query")'
+    ], result.edits.map { |edit| edit["after"] }
+  end
+
+  # **The scan's budget is not the rule's.** The rule's own glob has to name the files the scan
+  # stops before, or the rung's boot fails on a line the rule was written for.
+  def test_the_serialize_rule_reads_the_two_files_the_scan_stops_before
+    Dir.mktmpdir do |root|
+      %w[app/models/user.rb lib/diaspora/signature.rb].each do |path|
+        FileUtils.mkdir_p(File.dirname(File.join(root, path)))
+        File.write(File.join(root, path), "")
+      end
+
+      assert_equal %w[app/models/user.rb lib/diaspora/signature.rb],
+        Dir.glob(Rewrites.serialize_options.file, base: root).sort
+    end
+  end
+
   # **A match inside a string or a comment is not a call site.** The service masks a line before it
   # matches; this mirrors that, preserving every byte's position, so the write can be spliced into
   # the raw line at the match's offsets.
@@ -378,6 +543,42 @@ class RewritesTest < Minitest::Test
       result.edits.map { |edit| edit["after"] }
     assert_equal 3, result.left.size,
       "the two associations the models already require, and the migration's column"
+  end
+
+  # **A default the application already loads is not a change to make.** The scan's window starts at
+  # the ladder's earliest so it can find work a rung missed, which also offers a 6.1 application the
+  # 5.0 `belongs_to` change. Its own `config.load_defaults` line is the fact that says the default is
+  # already in force; without this guard the rule made 30 associations optional and the application's
+  # own presence specs failed.
+  def test_the_belongs_to_rule_leaves_an_application_that_already_loads_the_default
+    files = {
+      "config/application.rb" => ["module Diaspora", "  class Application < Rails::Application",
+                                  "    config.load_defaults 6.1"],
+      "app/models/contact.rb" => ["class Contact", "  belongs_to :user"]
+    }
+    result = Rewrites.apply(
+      [entry(subject: "belongs_to", text: "  belongs_to :user", path: "app/models/contact.rb")],
+      files: files
+    )
+
+    assert_empty result.edits
+    assert_includes result.satisfied, "belongs_to"
+    assert_empty result.left
+  end
+
+  # The other half of the guard: an application that has not loaded the 5.0 defaults still needs the
+  # option, because the new default is the change it has not adopted.
+  def test_the_belongs_to_rule_still_applies_below_the_default
+    files = {
+      "config/application.rb" => ["  config.load_defaults 4.2"],
+      "app/models/contact.rb" => ["class Contact", "  belongs_to :user"]
+    }
+    result = Rewrites.apply(
+      [entry(subject: "belongs_to", text: "  belongs_to :user", path: "app/models/contact.rb")],
+      files: files
+    )
+
+    assert_equal ["  belongs_to :user, optional: true"], result.edits.map { |edit| edit["after"] }
   end
 
   # **A `belongs_to` that names no association is not a call this change is about.** The lighthouse's
@@ -1020,7 +1221,7 @@ class RewritesTest < Minitest::Test
       "package.json" => ["{", "  \"dependencies\": {", "    \"actioncable\": \"^5.2.0\",",
                          "    \"rails-ujs\": \"^5.2.0\",", "    \"jquery\": \"^3.4.0\"", "  }", "}"],
       "app/assets/javascripts/application.js" => [
-        "ActionCable.WebSocket = MySocket", "ActionCable.logger = console",
+        "ActionCable.WebSocket = MySocket", "ActionCable.logger = site admin",
         "ActionCable.startDebugging()", "ActionCable.logger.enabled = true"
       ]
     }
@@ -1031,7 +1232,7 @@ class RewritesTest < Minitest::Test
 
     assert_equal ["    \"@rails/actioncable\": \"^5.2.0\",", "    \"@rails/rails-ujs\": \"^5.2.0\","],
       result.edits.select { |edit| edit["path"] == "package.json" }.map { |edit| edit["after"] }
-    assert_equal ["ActionCable.adapters.WebSocket = MySocket", "ActionCable.logger.enabled = console",
+    assert_equal ["ActionCable.adapters.WebSocket = MySocket", "ActionCable.logger.enabled = site admin",
       "ActionCable.logger.enabled = true"],
       result.edits.select { |edit| edit["path"].end_with?(".js") }.map { |edit| edit["after"] },
       "the line that already reads `logger.enabled` is not renamed twice"

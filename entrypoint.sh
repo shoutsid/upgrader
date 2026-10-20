@@ -193,6 +193,16 @@ fi
 if [ -n "${UPGRADER_RECORD}" ]; then
     set -- "$@" --record "${UPGRADER_RECORD}"
 fi
+# A settled move is set aside: the flag an operator reaches for when the ledger says no, and the only
+# way to re-walk a rung a lost or reset target needs again.
+if [ -n "${UPGRADER_FORCE}" ]; then
+    set -- "$@" --force
+fi
+# A bounded run. Without it the loop is long-running by design; with it, a deployment can ask for one
+# pass and see it end, which is what a proof run is.
+if [ -n "${UPGRADER_CYCLES}" ]; then
+    set -- "$@" --cycles "${UPGRADER_CYCLES}"
+fi
 
 exec /app/bin/agents-fyi-upgrader serve \
     --to "${UPGRADER_TO}" \

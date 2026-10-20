@@ -24,7 +24,7 @@ module AgentsFyi
       FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery
         decisions].freeze
 
-      # The fields one accepted decision carries in a declaration. It is the console's rendering of
+      # The fields one accepted decision carries in a declaration. It is the site admin's rendering of
       # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
       # key nobody reads is a refusal here for the same reason every other unknown key is: a typo is
       # a setting that silently does nothing.
@@ -78,12 +78,12 @@ module AgentsFyi
 
       # The declaration named by a slug, from the projects directory.
       #
-      # **The console's directory is read first, and the built-in declarations are the fallback.**
-      # The operator edits the declaration on the console, which writes it into a volume this client
-      # mounts read-only; a project the console has not written still walks from the copy this image
+      # **The site admin's directory is read first, and the built-in declarations are the fallback.**
+      # The operator edits the declaration on the site admin, which writes it into a volume this client
+      # mounts read-only; a project the site admin has not written still walks from the copy this image
       # ships, so an empty volume is the built-in behaviour rather than no behavior. A written
       # declaration shadows the built-in of the same slug — that is what editing means — and the
-      # walker validates it here, so a declaration the console got wrong is refused by name at
+      # walker validates it here, so a declaration the site admin got wrong is refused by name at
       # startup rather than walked halfway.
       def self.find(slug, dir: nil)
         candidates = directories(dir)
@@ -104,7 +104,7 @@ module AgentsFyi
         all(dir: dir).find { |project| Repository.name(project.repository) == wanted }
       end
 
-      # Every declaration this process can see, keyed by slug with the console's copy winning. An
+      # Every declaration this process can see, keyed by slug with the site admin's copy winning. An
       # unreadable declaration is skipped here rather than raised: `find` is where a named project
       # says why it cannot be read, and one bad file must not hide the others.
       def self.all(dir: nil)
@@ -140,7 +140,7 @@ module AgentsFyi
         raise Invalid, "no project declaration at #{path}"
       end
 
-      # A declaration, validated. Public because the console will write one and has to be able to ask
+      # A declaration, validated. Public because the site admin will write one and has to be able to ask
       # whether it is valid before storing it (`docs/refactor/adr/0008`, the config screen).
       def self.parse(text, path: nil)
         parsed = JSON.parse(text.to_s)
@@ -173,7 +173,7 @@ module AgentsFyi
         @decisions = read_decisions(fields["decisions"])
       end
 
-      # The declaration as it would be written back — what the console edits and what a record quotes.
+      # The declaration as it would be written back — what the site admin edits and what a record quotes.
       def to_h
         {
           "slug" => slug, "repo" => repo, "base_ref" => base_ref, "from" => from, "to" => to,

@@ -142,6 +142,27 @@ class DbconfigTest < Minitest::Test
     assert_includes lines, "credential:app:hunter2"
   end
 
+  # **Rails 7.1 can name its only test connection one level down.** The reader used to look
+  # only at `test['adapter']`, so `test: { ollama: { <<: *default } }` started no server —
+  # measured on rails_modular_monolith, whose whole schema is the vector-backed ollama DB.
+  def test_a_named_test_connection_is_read_as_the_test_connection
+    lines = lines(<<~YAML)
+      default: &default
+        adapter: postgresql
+        username: app
+        password: hunter2
+
+      test:
+        ollama:
+          <<: *default
+          database: ollama_test
+    YAML
+
+    assert_includes lines, "adapter:postgresql"
+    assert_includes lines, "database:ollama_test"
+    assert_includes lines, "credential:app:hunter2"
+  end
+
   # A password with a colon in it is the case a shell `sed` split gets wrong, which is why the
   # reader emits `credential:<user>:<rest>` and the script splits on the *first* colon.
   def test_a_password_may_contain_a_colon

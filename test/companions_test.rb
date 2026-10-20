@@ -36,6 +36,24 @@ class CompanionsTest < Minitest::Test
 
   def entry = Companions::RSPEC_RAILS_THREE
 
+  # devise-two-factor 6 stores the OTP secret with Active Record Encryption. The test environment
+  # has no credentials, and the missing-key error surfaces on the first User#save! — measured at the
+  # 7.1 rung as 2FA and Person.search failures that had nothing to do with either. The companion
+  # writes deterministic test keys and must not write them twice.
+  def test_devise_two_factor_six_adds_the_test_encryption_keys_once
+    root = tree("config/environments/test.rb" => "Rails.application.configure do\nend\n")
+
+    edits = Companions.edits(Companions::DEVISE_TWO_FACTOR_SIX, root: root)
+
+    assert_equal 1, edits.size
+    assert_includes edits.first.after, "config.active_record.encryption.primary_key"
+    assert_includes edits.first.after, "config.active_record.encryption.deterministic_key"
+    assert_includes edits.first.after, "config.active_record.encryption.key_derivation_salt"
+    File.write(File.join(root, "config/environments/test.rb"), "#{edits.first.after}\nend\n")
+    assert_empty Companions.edits(Companions::DEVISE_TWO_FACTOR_SIX, root: root),
+      "a second pass must see the keys it wrote"
+  end
+
   # **The insert is anchored, not guessed at.** The line belongs inside `RSpec.configure`; a file
   # that keeps its rspec configuration some other way has no anchor and gets no edit, which is the
   # honest answer rather than appending a line to the end of somebody's file.

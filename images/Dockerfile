@@ -69,6 +69,13 @@ ARG BUNDLER=2.6.9
 #   able to run the `yarn install` the application's lockfile pins.
 # * `ca-certificates` — HTTPS to rubygems.org from an OpenSSL old enough that the trust
 #   store, not the protocol, is what breaks first.
+#
+# **`postgresql-17-pgvector` is the one package the Debian release decides.** An application
+# whose schema enables the `vector` extension cannot prepare its test database without the
+# extension's shared library, and the package name carries the server version. The trixie
+# bases here are the PostgreSQL 17 eras; older bases have no package with this name and no
+# application in this walk has needed one, so the install is scoped rather than allowed to
+# make every era fail.
 RUN set -eux; \
     codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"; \
     if [ -z "$codename" ]; then \
@@ -98,6 +105,9 @@ RUN set -eux; \
       nodejs npm ca-certificates"; \
     apt-get install -y --no-install-recommends $packages || \
       apt-get install -y --no-install-recommends $(echo "$packages" | sed 's/libidn-dev/libidn11-dev/'); \
+    if [ "$codename" = "trixie" ]; then \
+      apt-get install -y --no-install-recommends postgresql-17-pgvector; \
+    fi; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
 

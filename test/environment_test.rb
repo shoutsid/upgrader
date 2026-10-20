@@ -5,7 +5,7 @@ require "tmpdir"
 require "json"
 require "agents_fyi/upgrader"
 
-# **The feed of host facts the service cannot query.** What is pinned here is the shape the console
+# **The feed of host facts the service cannot query.** What is pinned here is the shape the site admin
 # reads and the rule that a refusal is recorded as a reason: "no disk figure" and "plenty of disk"
 # must not look the same.
 class EnvironmentTest < Minitest::Test

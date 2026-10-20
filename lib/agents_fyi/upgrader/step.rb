@@ -176,7 +176,7 @@ module AgentsFyi
         # stage moved a line does not change the answer.
         @deferred = []
         @out.puts("step: #{@repository} -> #{@to}") if @out
-        # The console's view of this step from the moment it starts. The move is not known until the
+        # The site admin's view of this step from the moment it starts. The move is not known until the
         # lockfile is read, so what is announced here is the repository and the target it is walking
         # to; every stage after this one announces itself with the move filled in.
         @progress.cycle(note: "planning #{@repository} -> #{@to}", repo: @repository)
@@ -1573,6 +1573,15 @@ module AgentsFyi
         # name their own, and the two maps are merged rather than kept apart so that "the file's lines"
         # means one thing everywhere.
         named = rule_sources
+        # **The scan's byte budget stops before `config/`, and a rule that flips a framework default
+        # needs the application's own `load_defaults` line.** Reading it here rather than widening the
+        # scan keeps the scan's bound and gives the rule the one fact that says whether the change is
+        # already in force; a rule that guessed from the rung would be wrong for an application that
+        # declares 6.1 and never ran the 5.0 rung's work.
+        application = File.join(@worktree.root, "config", "application.rb")
+        if File.file?(application)
+          named["config/application.rb"] = File.read(application, encoding: "utf-8").lines.map(&:chomp)
+        end
         tree = file_lines(files).merge(named)
         rules = Rewrites.apply(manual, files: tree, sources: named, changes: step["changes"] || [],
           rung: step["to_version"])
@@ -2658,7 +2667,7 @@ module AgentsFyi
       # resolver prints the blocks that name why it refused, and `Shell::RESOLVER_BYTES` keeps them all.
       # **What this step is doing, said while it does it.** Every stage goes through here — the
       # machine commands through `command`, the suite through `run_suite` — so the operator's
-      # console shows the stage that is *running* rather than the one that finished. `@from` is
+      # site admin shows the stage that is *running* rather than the one that finished. `@from` is
       # nil before the lockfile is read and `@worktree` before the working copy exists, so the
       # fields that are not known yet are left out rather than invented.
       def announce(stage, detail, note: "")
@@ -2716,7 +2725,7 @@ module AgentsFyi
       # asked for it. Both happen here so that a step which cannot finish still
       # settles what it established.
       def finish(record)
-        # Nothing is in flight once this returns, and the console says so rather than showing the
+        # Nothing is in flight once this returns, and the site admin says so rather than showing the
         # last stage for ever — a stalled-looking panel that is really a finished step is the same
         # lie in the other direction as a working loop that looks idle.
         @progress.clear

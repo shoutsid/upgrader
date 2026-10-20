@@ -7,7 +7,7 @@ require "agents_fyi/upgrader"
 
 # The delivery feed is a list, replaced one move at a time, and it is read by another process. What
 # is pinned here is what a reader relies on: one entry per move, a later attempt replacing its own
-# row, and a corrupt file reading as empty rather than as a console error.
+# row, and a corrupt file reading as empty rather than as a site admin error.
 class DeliveriesTest < Minitest::Test
   Deliveries = AgentsFyi::Upgrader::Deliveries
 
@@ -33,7 +33,7 @@ class DeliveriesTest < Minitest::Test
     end
   end
 
-  # The reader is the console, on another container, at any moment: a partially written file is a
+  # The reader is the site admin, on another container, at any moment: a partially written file is a
   # stale line, not an exception.
   def test_a_corrupt_file_reads_as_empty
     Dir.mktmpdir do |home|

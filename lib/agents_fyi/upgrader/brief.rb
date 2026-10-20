@@ -27,7 +27,7 @@ module AgentsFyi
     #   failure" and "this mentions the same word".
     #
     # **Nothing here is applied.** A brief is read by a person or by the repair stage and rendered in
-    # the console and the pull request; a fix this corpus offers is a proposal, and proposing is as
+    # the site admin and the pull request; a fix this corpus offers is a proposal, and proposing is as
     # far as recall goes (ADR 0008, decision 4).
     class Brief
       # How many questions one brief may ask. A rung's routing moves tens of gems and the plan has
@@ -75,7 +75,7 @@ module AgentsFyi
             "truncated" => truncated, "unavailable" => unavailable }
         end
 
-        # The brief as the pull request body and the console render it. A reviewer should be able to
+        # The brief as the pull request body and the site admin render it. A reviewer should be able to
         # read what the walk knew before it decided, in the order it decided it.
         # `base` is where the corpus is reachable *by the reader*: a pull request is opened on
         # GitHub, so a link built from the walker's own `API_BASE_URL` (`http://service:8001`) is a

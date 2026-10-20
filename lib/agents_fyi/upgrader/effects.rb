@@ -4,13 +4,13 @@ module AgentsFyi
   module Upgrader
     # **An accepted decision's effects, applied to the working tree — before anything is scanned.**
     #
-    # A decision that lived only in the console would be a note with a nicer form. The point of
+    # A decision that lived only in the site admin would be a note with a nicer form. The point of
     # making it a row (`docs/refactor/adr/0008`, decision 3) is that its *effect* is machinery: every
     # later walk of the same project applies it, in a declared order, and a rung that passes with it
     # in force is the evidence that the answer was right.
     #
     # What arrives here is the accepted decisions a project declares
-    # (`Project#decisions`, rendered by the console from `decision_questions`/`answers`/`effects`):
+    # (`Project#decisions`, rendered by the site admin from `decision_questions`/`answers`/`effects`):
     #
     #     { "id" => "…", "question" => "…", "answer" => "…", "accepted_by" => "operator:…",
     #       "effects" => [{ "kind" => "patch",

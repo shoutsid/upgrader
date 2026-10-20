@@ -10,7 +10,7 @@ require "agents_fyi/upgrader"
 #
 # The reader is another process on another container, so the file has to be complete whenever it is
 # seen and has to carry the instants rather than a duration — "3 minutes" would be wrong the moment
-# it was read. Both are asserted here rather than left to the console: a half-written body would be
+# it was read. Both are asserted here rather than left to the site admin: a half-written body would be
 # an error on an operator's page, and a pre-computed duration would be a number that drifts.
 class ProgressTest < Minitest::Test
   def home
@@ -26,7 +26,7 @@ class ProgressTest < Minitest::Test
   end
 
   # The file is under `state/`, its own directory, because that is the directory the deployment
-  # mounts into the console — the ledger and the working copies must not travel with it.
+  # mounts into the site admin — the ledger and the working copies must not travel with it.
   def test_the_file_lives_under_the_state_directory
     assert_equal File.join(home, "state", "progress.json"),
       AgentsFyi::Upgrader::Progress.path(home)
