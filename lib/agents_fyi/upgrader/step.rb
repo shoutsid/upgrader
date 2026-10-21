@@ -171,6 +171,12 @@ module AgentsFyi
         @adopted = []
         @decisions = []
         @repairs = []
+        @checks = []
+        @prepare_checks = []
+        @commits = []
+        @app_update_skipped = []
+        @base_commit = nil
+        @record_commit = nil
         # The digest entries the preflight held for this rung, filled in when it runs and empty before
         # it. The pin's naming rule reads the Gemfile (`declared_gems`) rather than this list, so which
         # stage moved a line does not change the answer.
@@ -245,6 +251,7 @@ module AgentsFyi
         # the same reason: both are preconditions of measuring, not changes the rung is judged for.
         # Each edit carries `origin: decision:<id>`, so a reader can tell it from the ladder's own.
         decisions_stage(stages, step)
+        checkpoint("preflight and accepted decisions")
 
         # **The era is the oldest the rung's floor allows, and the ledger is not a starting point.** The
         # ledger is keyed per *repository*, so a walk that climbs keeps a hint that is always at or below
@@ -273,6 +280,7 @@ module AgentsFyi
         javascript_stage(stages)
         database_stage(stages)
         assets_stage(stages)
+        @prepare_checks = prepare_checks_stage(stages)
 
         # The baseline, on the unmodified copy, before anything is written.
         # The baseline, on the unmodified copy, before anything is written — the
@@ -295,9 +303,11 @@ module AgentsFyi
           repaired = repair(stages, step, subject: @baseline, before_the_move: true,
             rerun: -> { @baseline = run_suite(stages, Record::BASELINE) })
           @baseline = repaired || @baseline
+          checkpoint("repair the baseline") if repaired
         end
 
         applied, refused, decisions = apply(stages, step)
+        checkpoint("apply mechanical rules")
         @applied.concat(applied)
         @refused.concat(refused)
         @decisions.concat(decisions)
@@ -311,8 +321,12 @@ module AgentsFyi
         pin = rewrite(stages, step)
         return finish(pin) if pin.is_a?(Record)
 
+        checkpoint("pin Rails and move gems")
         update(stages)
         migrate_after_update(stages)
+        checkpoint("run app:update")
+        style_stage(stages)
+        checkpoint("format the application")
         boot(stages)
         @suite = suite(stages)
 
@@ -328,7 +342,15 @@ module AgentsFyi
         # followed by are stages, so the record says how the rung was reached.
         repair(stages, step, subject: @suite, rerun: -> { @suite = run_suite(stages, Record::SUITE) })
 
-        verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages)
+        # **The rest of the gate, after the suite and the repairs it needed.** A check that ran
+        # before a repair would judge a tree the suite never saw. The suite is not run again here:
+        # it is the first check, and its result is `@baseline`/`@suite`.
+        @checks = Array(@prepare_checks) + checks_stage(stages)
+        # Anything a default toggle or a repair left uncommitted belongs to this rung too; the
+        # delivered head must be the tree the suite measured, not the commit before its last edit.
+        checkpoint(nil)
+        verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages,
+          checks: @checks)
         finish(build(step, stages, verdict, why))
       ensure
         # **The container is a step's, and the step's process is what ends it.** `--rm` only
@@ -355,15 +377,41 @@ module AgentsFyi
       # measured in holds nothing either.
       def prepare(stages)
         @worktree = @source.worktree(@repository, ref: @ref, home: @home, run: run_id, reuse: @reuse)
-        if @reuse && Checkpoint.dirty?(@worktree.root)
-          Checkpoint.reset(@worktree.root)
-          @out.puts("  working copy: reset to #{@worktree.commit.to_s[0, 8]} — a step was interrupted here") if @out
+        if @reuse
+          # **A clean tree is not proof that the last step finished.** Concern commits move HEAD,
+          # so a process killed after one leaves a clean tree sitting on a half-move. The marker
+          # is the commit the rung started from; a tree at any other commit is put back before a
+          # lockfile is read.
+          base = Checkpoint.base(@worktree.root)
+          if base && Checkpoint.resolvable?(@worktree.root, base)
+            current = Checkpoint.head(@worktree.root).first.to_s
+            if current != base || Checkpoint.dirty?(@worktree.root)
+              Checkpoint.reset(@worktree.root, to: base)
+              @out.puts("  working copy: reset to #{base[0, 8]} — a step was interrupted here") if @out
+            end
+            @base_commit = base
+            @record_commit = base
+          else
+            if Checkpoint.dirty?(@worktree.root)
+              Checkpoint.reset(@worktree.root)
+              @out.puts("  working copy: reset to #{Checkpoint.head(@worktree.root).first.to_s[0, 8]} " \
+                        "— a step was interrupted here") if @out
+            end
+            @base_commit = Checkpoint.head(@worktree.root).first.to_s
+            @record_commit = @worktree.commit.to_s
+            @record_commit = @base_commit if @record_commit.empty?
+            Checkpoint.remember_base(@worktree.root, @base_commit)
+          end
+        else
+          @base_commit = Checkpoint.head(@worktree.root).first.to_s
+          @record_commit = @worktree.commit.to_s
+          @record_commit = @base_commit if @record_commit.empty?
         end
         @lockfile = Lockfile.read(@worktree.root)
         pinned = @lockfile.rails
         unless pinned
           return Record.refused(
-            repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+            repository: @repository, commit: record_commit, worktree: @worktree.root,
             from_version: "unknown", to_version: rung_to,
             why: "no Rails release is pinned under #{@worktree.root}: neither the meta-gem " \
                  "nor any framework component is in Gemfile.lock, so there is nothing to step from"
@@ -390,7 +438,7 @@ module AgentsFyi
       def settled_entry(step)
         return [nil, false] unless @ledger
 
-        entry = @ledger.find(repo: @repository, commit: @worktree.commit,
+        entry = @ledger.find(repo: @repository, commit: record_commit,
           from_version: step["from_version"], to_version: step["to_version"])
         return [nil, false] unless entry
         if @force
@@ -399,7 +447,7 @@ module AgentsFyi
         end
 
         settled = @ledger.settled?(
-          repo: @repository, commit: @worktree.commit,
+          repo: @repository, commit: record_commit,
           from_version: step["from_version"], to_version: step["to_version"],
           machine: expected_machine(step, entry)
         )
@@ -437,7 +485,7 @@ module AgentsFyi
         step = payload.fetch("steps", []).first
         unless step
           return Record.refused(
-            repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+            repository: @repository, commit: record_commit, worktree: @worktree.root,
             from_version: @from, to_version: rung_to,
             why: "the service returned no step for #{@from} -> #{@to}: #{payload["next_step"]}"
           )
@@ -447,10 +495,10 @@ module AgentsFyi
         # The service's own sentence, kept whole: it says which direction this ladder
         # reads, or which release it has no chapter for, and that is the part that
         # changes what the caller does next.
-        Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+        Record.refused(repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: @from, to_version: rung_to, why: e.message)
       rescue Corpus::Unreachable => e
-        Record.refused(repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+        Record.refused(repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: @from, to_version: rung_to,
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
       end
@@ -588,6 +636,19 @@ module AgentsFyi
       # Before the plan is fetched there is no rung, and the destination is the only answer.
       def rung_to = @rung_to.to_s.empty? ? @to : @rung_to
 
+      # **The commit a record and the ledger name, which is not always the tree's patch base.** A
+      # kept tree that was killed after a concern commit is put back to its marker; the marker is
+      # both. A hand step or a test source may carry a label as its identity while the tree it
+      # points at has a real HEAD; the patch is against the real base, the record is against the
+      # label the caller and the ledger already use.
+      def record_commit
+        commit = @record_commit.to_s
+        return commit unless commit.empty?
+        return @worktree.commit.to_s if @worktree.respond_to?(:commit)
+
+        @base_commit.to_s
+      end
+
       # The machine this step will run on, and the install it performed while deciding.
       #
       # Three paths, and the order is the decision:
@@ -611,7 +672,7 @@ module AgentsFyi
         unless docker_mode? || rvm_mode?
           if Interpreters.meets?(native.ruby_version, floor) == false
             return Record.unverified(
-              repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+              repository: @repository, commit: record_commit, worktree: @worktree.root,
               from_version: @from, to_version: rung_to,
               why: "this step requires Ruby #{floor} and this interpreter is #{native.interpreter}: " \
                    "run it with `#{RUNTIME_ENV}=docker` so the step executes in an era container " \
@@ -634,7 +695,7 @@ module AgentsFyi
               "or move the step to a release this matrix can run"
           end
           return Record.unverified(
-            repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+            repository: @repository, commit: record_commit, worktree: @worktree.root,
             from_version: @from, to_version: rung_to,
             why: why,
             machine: no_interpreter_stamp(floor)
@@ -658,7 +719,7 @@ module AgentsFyi
         end
 
         Record.unverified(
-          repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+          repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: @from, to_version: rung_to,
           stages: stages,
           why: "no interpreter installed the application's bundle — " \
@@ -914,7 +975,7 @@ module AgentsFyi
       # reader needs is the bundle's own output, not a verdict about Rails.
       def install_record(install, stages)
         Record.unverified(
-          repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+          repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: @from, to_version: rung_to, stages: stages,
           machine: @machine&.stamp, era: @machine.respond_to?(:era) ? @machine.era : nil,
           why: "the application's bundle could not be installed (`bundle install` " \
@@ -949,6 +1010,12 @@ module AgentsFyi
       # `config.load_defaults` line say the same thing, and the line is the one that survives. Both
       # files are saved first, so a red run there is reverted exactly rather than approximately.
       def step_defaults(stages, step)
+        # **The declaration can forbid what the deployment's budget would allow.** `off` is the
+        # project saying this application's framework defaults are a person's decision; the
+        # environment is still the budget for a project that says `step`.
+        policy = @project&.app_update
+        return nil if policy && !policy.step_defaults?
+
         budget = @env[DEFAULTS_ENV].to_s.to_i
         return nil unless budget.positive?
         # The move's own measurement comes first, and this pass is about the defaults rather than
@@ -1150,7 +1217,11 @@ module AgentsFyi
           gems: route.fetch("gems", []),
           subjects: (step["changes"] || []).map { |change|
             { "subject" => change["subject"], "change_kind" => change["kind"] }
-          })
+          },
+          # **The walk's own earlier answers are recall too.** A decision the project carries is
+          # what this application already chose; the brief says so before the rung applies it, so a
+          # reviewer sees the answer rather than rediscovering the question.
+          decisions: @project&.decisions || [])
         @out.puts("  recall: #{result.sections.length} question(s), " \
                   "#{result.sections.sum { |section| section.items.length }} report(s)" \
                   "#{result.truncated ? ", truncated" : ""}") if @out
@@ -1505,6 +1576,93 @@ module AgentsFyi
           exit_code: result.exit_code, seconds: result.seconds,
           output_tail: result.output_tail)
         stages.last
+      end
+
+      # **The application's formatter, run as part of the step and before the suite.** A style
+      # commit made after the suite passed is a change the suite never saw; running it here makes
+      # the delivered head the tree that was measured. `format` may write — that is what a
+      # formatter is for — and a formatter that fails is a required stage, so the rung fails with
+      # the formatter's own exit code rather than publishing unformatted output.
+      def style_stage(stages)
+        policy = @project&.style
+        return if policy.nil? || policy.format.to_s.empty?
+
+        announce(Record::STYLE, policy.format)
+        result = @tests.run(@worktree.root,
+          Tests::Suite.new(kind: :check, command: policy.format,
+            reason: "the project declares this formatter"),
+          timeout: @suite_timeout, env: application_env, machine: @machine, stack: @stack)
+        stages << Record::Command.new(stage: Record::STYLE, command: policy.format,
+          ran: result.ran, exit_code: result.exit_code, seconds: result.seconds,
+          output_tail: result.output_tail)
+        @out.puts("  style: #{Tests.summary(result)}") if @out
+      end
+
+      # **The application's own preparation, as a declared list.** A project whose CI runs
+      # `db:test:prepare`, `test:prepare` or `yarn install` before its tests says so here; the step
+      # runs them after the built-in database/javascript stages and before the baseline, so the
+      # suite is measured in an environment the project prepared rather than one this walker
+      # guessed. A required prepare failure is carried into the verdict as a failed check.
+      def prepare_checks_stage(stages)
+        return [] if @project.nil?
+
+        definitions = @project.checks.select { |check| check.kind == "prepare" }
+        return [] if definitions.empty?
+
+        results = Checks.run(root: @worktree.root, checks: definitions, machine: @machine,
+          env: application_env, timeout: @suite_timeout, stack: @stack, out: @out)
+        results.each do |result|
+          stage = Checks.stage(result)
+          stages << stage if stage
+        end
+        results
+      end
+
+      # **The rest of the application's gate.** The suite is the first check and is already in the
+      # record as `baseline`/`suite`; `checks` is what the suite alone was hiding. The style check
+      # is folded in here when the project declares one, so the formatter and its verifier cannot
+      # disagree about which command they mean.
+      def checks_stage(stages)
+        return [] if @project.nil?
+
+        # **A prepare step runs before the baseline, not after the suite.** `kind: "prepare"` is the
+        # application's own `db:test:prepare` / `yarn install`; running it after the suite would be
+        # preparing a tree the suite has already judged. It is collected in `prepare_checks_stage`
+        # and carried into the same check list, so the verdict sees it and the PR renders it.
+        definitions = @project.checks.reject { |check| check.kind == "prepare" }
+        style = @project.style
+        if style && !style.check.to_s.empty? &&
+            definitions.none? { |check| check.id == "style" || check.command == style.check }
+          definitions << Project::Check.new(id: "style", name: "style", kind: "lint",
+            command: style.check, required: true, external: false, environment: nil, reason: nil)
+        end
+        return [] if definitions.empty?
+
+        results = Checks.run(root: @worktree.root, checks: definitions, machine: @machine,
+          env: application_env, timeout: @suite_timeout, stack: @stack, out: @out)
+        results.each do |result|
+          stage = Checks.stage(result)
+          stages << stage if stage
+        end
+        summarised = results.map { |result| "#{result.id}: #{result.status}" }.join(", ")
+        @out.puts("  checks: #{summarised}") if @out
+        results
+      end
+
+      # **A concern-sized commit, and the reason the tree's HEAD is the record's head.** A walk
+      # that publishes one "as this tool made it" commit asks a reviewer to read five concerns at
+      # once. The commits are made where the tree changes, so the branch is a sequence a person can
+      # review one at a time; the patch is still the whole diff against the base (`capture_patch`),
+      # and the ledger's key stays the base commit because the move is the same move.
+      def checkpoint(concern)
+        return if @worktree.nil? || !File.exist?(File.join(@worktree.root.to_s, ".git"))
+        return unless Checkpoint.dirty?(@worktree.root)
+
+        commit = Checkpoint.commit(@worktree.root, from: @from, to: @rung_to, out: @out,
+          concern: concern)
+        @commits << { "concern" => concern, "commit" => commit.to_s,
+                      "message" => Checkpoint.message(from: @from, to: @rung_to, concern: concern) }
+        @out.puts("  checkpoint: #{concern || "the step"} — #{commit.to_s[0, 8]}") if @out
       end
 
       # The project's accepted decisions, as effects on the tree — before the baseline, so the
@@ -1908,22 +2066,9 @@ module AgentsFyi
       # silent: a glob a rule writes matches a handful of files in any application, and one that matched
       # thousands would be a rule reading a tree rather than a file.
       def rule_sources
-        @truncated_sources = []
-        Rewrites::RULES.filter_map(&:file).uniq.flat_map do |glob|
-          matched = Dir.glob(glob, base: @worktree.root).sort
-          # **A truncated glob is said rather than silent.** `SOURCE_LIMIT` bounds how many files one rule's
-          # pattern is tried against, and a rule whose glob is broader than the limit would otherwise read a
-          # slice and report "no call sites here" — which is the empty answer this pipeline keeps paying for,
-          # in a rule instead of a scan. The bound is not raised here: it is a rule reading a tree rather than
-          # a file at that point, and the honest thing is to say so and let the rule be narrowed.
-          if matched.size > Rewrites::SOURCE_LIMIT
-            @truncated_sources << "#{glob} (#{matched.size} file(s), first #{Rewrites::SOURCE_LIMIT} read)"
-          end
-          matched.first(Rewrites::SOURCE_LIMIT).filter_map do |path|
-            full = File.join(@worktree.root, path)
-            [path, File.file?(full) ? File.read(full, encoding: "utf-8").lines.map(&:chomp) : nil]
-          end
-        end.to_h
+        sources, @truncated_sources = Rewrites.source_files(root: @worktree.root,
+          source_roots: @project&.source_roots || [])
+        sources
       end
 
       # The file contents the scan sent, by path and line — what a rule that reads more than its own
@@ -2045,7 +2190,7 @@ module AgentsFyi
       # empty answer that means four things (`/api/rails/scan`'s own caveat).
       def source_files
         root = @worktree.root
-        paths = Dir.glob("**/*", base: root).reject do |path|
+        paths = scan_paths(root).reject do |path|
           SCAN_SUFFIXES.none? { |suffix| path.end_with?(suffix) } ||
             path.split("/").any? { |part| SCAN_SKIP.include?(part) }
         end.sort
@@ -2065,6 +2210,20 @@ module AgentsFyi
         chosen
       end
 
+      # **Where the application's source is, from the project rather than from a convention.** An
+      # absent `source_roots` keeps the repository-wide read a declaration written before the field
+      # means; a declared list scopes the scan to those directories and still sends the root-level
+      # files (`config.ru`, `Rakefile`) a Rails application may need. A modular monolith that keeps
+      # its models under `components/*/app/models` declares `components` and the scan sees them.
+      def scan_paths(root)
+        roots = @project&.source_roots || []
+        return Dir.glob("**/*", base: root) if roots.empty?
+
+        root_files = Dir.glob("*", base: root).select { |path| File.file?(File.join(root, path)) }
+        rooted = roots.flat_map { |dir| Dir.glob(File.join(dir, "**", "*"), base: root) }
+        (root_files + rooted).uniq
+      end
+
       # The one edit this tool makes outside the applier, and it is one line. Only the
       # meta-gem is rewritten: an application that pins the framework as components has a
       # different line for each one, and choosing which of them move together is a decision
@@ -2078,7 +2237,7 @@ module AgentsFyi
           why = "Gemfile does not pin the meta-gem (`gem \"rails\", \"x\"`), so this tool " \
                 "will not choose which of the framework's components move: change the pin " \
                 "to #{step["to_version"]} yourself and re-run"
-          return Record.refused(repository: @repository, commit: @worktree.commit,
+          return Record.refused(repository: @repository, commit: record_commit,
             worktree: @worktree.root, from_version: @from,
             to_version: step["to_version"], why: why)
         end
@@ -2475,7 +2634,26 @@ module AgentsFyi
           answers.close
         end
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
-        drop_engine_migrations(@adopted)
+        apply_app_update_policy(@adopted)
+        drop_engine_migrations(@adopted) if @project.nil? || @project.app_update.skip_unused_engines
+      end
+
+      # **What the project says it does not want `app:update` to write.** A skip is a project fact
+      # — an application that keeps its own `config/storage.yml`, a generated file its CI owns — and
+      # it is applied after the added-only adoption, so a skipped path is removed and the reason is
+      # carried in the record rather than left for a reader to infer from its absence.
+      def apply_app_update_policy(adopted)
+        policy = @project&.app_update
+        return if policy.nil? || policy.skip.empty?
+
+        adopted.dup.each do |path|
+          next unless policy.skip?(path)
+
+          File.delete(File.join(@worktree.root, path)) if File.file?(File.join(@worktree.root, path))
+          @adopted.delete(path)
+          @app_update_skipped << { "path" => path,
+            "reason" => "the project's app_update policy skips it (#{policy.skip.join(", ")})" }
+        end
       end
 
       # **A migration `app:update` copies for an engine this application does not have is not kept.**
@@ -2510,6 +2688,9 @@ module AgentsFyi
 
           File.delete(File.join(@worktree.root, path))
           @adopted.delete(path)
+          @app_update_skipped << { "path" => path,
+            "reason" => "it is a migration for #{engine}, and this application's db/schema.rb " \
+                        "declares no #{engine}_* table" }
           # **An edit this tool made, not work for a person.** The removal *is* the change — the rule
           # above decided it from two facts the application states — so it belongs in the record's
           # applied list beside the preflight's repairs, where a reader sees what moved. It was a
@@ -2613,24 +2794,82 @@ module AgentsFyi
 
       # The patch, for a person to apply. Untracked files are included, because
       # `app:update`'s added files are part of what this step did.
+      #
+      # **Against the base commit, not the index.** The step commits its concerns as it goes
+      # (`checkpoint`), so a `git diff` with no revision would show only what the last concern
+      # left uncommitted. The reviewable unit is still one rung, and that is the diff from the
+      # commit the tree arrived at.
       def capture_patch
         Open3.capture2e("git", "-C", @worktree.root, "add", "--intent-to-add", "--all")
-        output, _status = Open3.capture2e("git", "-C", @worktree.root, "diff")
+        base = @base_commit.to_s
+        base = @worktree.commit.to_s if base.empty? && @worktree.respond_to?(:commit)
+        argv = ["git", "-C", @worktree.root, "diff"]
+        # **A base that is not a revision in this copy is not a base this diff can use.** A test
+        # hands a step a worktree whose `commit` is a label rather than an object; a real kept tree
+        # names a commit. Asking git whether the object exists is cheaper than a rescue around the
+        # diff, and it keeps the whole-step patch for the trees that have one.
+        if !base.empty? && Open3.capture2e("git", "-C", @worktree.root, "rev-parse", "--verify",
+          "--quiet", "#{base}^{commit}").last.success?
+          argv << base
+        end
+        output, _status = Open3.capture2e(*argv)
         output
       end
 
       def build(step, stages, verdict, why)
         settle_decisions_against_the_lock
         Record.new(
-          repository: @repository, commit: @worktree.commit, worktree: @worktree.root,
+          repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: step["from_version"], to_version: step["to_version"], name: step["name"],
           requires_ruby: step["requires_ruby"], interpreter: @machine.interpreter,
           image: @machine.image, machine: @machine.stamp,
           era: @machine.respond_to?(:era) ? @machine.era : nil,
           stages: stages, applied: @applied, refused: @refused, decisions: @decisions,
           patch: capture_patch, baseline: @baseline, suite: @suite,
-          verdict: verdict, why: why, brief: @brief, repairs: @repairs
+          verdict: verdict, why: why, brief: @brief, repairs: @repairs,
+          checks: @checks, commits: @commits,
+          accepted_decisions: accepted_decisions_in_force,
+          app_update: app_update_record(step),
+          toolchain: @project&.toolchain&.to_h,
+          project: @project&.to_h
         )
+      end
+
+      # **A decision is in force on this rung only if one of its effects was applied here.** The
+      # declaration carries every accepted decision the project has, including ones scoped to a
+      # later release; the PR must not tell a reviewer that a decision shaped a rung it never
+      # touched. The applied edits' `origin` is the record of that, and it is the same evidence the
+      # service links a passed run to.
+      def accepted_decisions_in_force
+        ids = @applied.filter_map do |edit|
+          origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
+          origin.split(":", 2).last if origin.start_with?("decision:")
+        end.uniq
+        Array(@project&.decisions).select { |decision| ids.include?(decision["id"].to_s) }
+      end
+
+      # What `app:update` did, as the PR and the durable record read it. The policy travels with
+      # the outcome so a reviewer can see why a generated file was skipped, and `load_defaults`
+      # is read from the tree rather than inferred from the rung — an application that declares
+      # an older default has not adopted this one.
+      def app_update_record(step)
+        policy = @project&.app_update
+        load_defaults = begin
+          line = File.readlines(File.join(@worktree.root, "config", "application.rb"),
+            encoding: "utf-8").find { |text| text.match?(/^\s*config\.load_defaults\s/) }
+          line && line[/config\.load_defaults\s+["']?([\d.]+)/, 1]
+        rescue Errno::ENOENT
+          nil
+        end
+        {
+          "adopt" => policy&.adopt || "added_only",
+          "adopted" => Array(@adopted),
+          "conflicts" => Array(@conflicts),
+          "skipped" => Array(@app_update_skipped),
+          "framework_defaults" => policy&.framework_defaults || "off",
+          "load_defaults" => load_defaults,
+          "rung" => step["to_version"]
+        }
       end
 
       # **A residue line the lock this step ended with already answers is not work.** The routing is
@@ -2674,7 +2913,7 @@ module AgentsFyi
         # `@rung_to` only: before the plan is fetched the rung is *not known*, and `@to` is where the
         # walk is going — a panel that showed the target would be naming a move the step is not making.
         @progress.stage(repo: @repository, from: @from, to: @rung_to,
-          commit: (@worktree.commit if @worktree.respond_to?(:commit)),
+          commit: record_commit,
           era: (@machine.era if @machine.respond_to?(:era)),
           stage: stage, detail: detail, note: note)
       end
@@ -2773,6 +3012,13 @@ module AgentsFyi
             stage.ran && stage.exit_code.to_i != 0 && stage.stage.to_s == Record::SUITE
           end].compact
         end
+        # **A check or a formatter can decide the rung while the suite is green.** The verdict names
+        # the check, not its command, so the stage selection above finds nothing; the decisive stage
+        # is the one the report will quote, and its output is the evidence a reader needs.
+        if named.empty?
+          decisive = Filing.failing_stage(record: record)
+          named = [decisive] if decisive && !decisive.ok? && !decisive.output_tail.to_s.empty?
+        end
         named.first(2).each do |stage|
           @out.puts("  #{stage.stage} failed (exit #{stage.exit_code}); its output:")
           stage.output_tail.to_s.lines.last(20).each { |line| @out.puts("    #{line.chomp}") }
@@ -2793,6 +3039,10 @@ module AgentsFyi
         client = @corpus || Corpus.new(base: @api)
         answer = record_with_retry(client, record)
         run = answer.is_a?(Hash) ? answer["run"] : nil
+        # The pull request can link the run's page only if it knows the service's id; it is the
+        # service's answer, so it is written onto the record after the answer arrives rather than
+        # invented before the request.
+        record.run_id = run["id"] if run.is_a?(Hash) && run["id"]
         @out.puts("  recorded: run #{run && run["id"]} (#{record.verdict})") if @out
 
         filing = Filing.file(corpus: client, record: record)
@@ -2891,11 +3141,21 @@ module AgentsFyi
           # **Which decisions were in force.** Read off the applied edits' origins rather than passed
           # in: the edit already says who made it (`origin: decision:<id>`), so a second list would be
           # a second copy. The service links a *passed* run to those answers, which is what verifies a
-          # decision — accepted is the operator's word, verified is the suite's.
+          # decision — accepted is the operator's word, verified is the rung's gate.
           "decisions" => record.applied.filter_map { |edit|
             origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
             origin.split(":", 2).last if origin.start_with?("decision:")
-          }.uniq
+          }.uniq,
+          # **The review brief's internal sections.** The public run response is frozen and does not
+          # grow; the service stores these for the site admin, where a reviewer reads the gate, the
+          # concern commits, the app:update outcome and the toolchain beside the command evidence.
+          "checks" => Array(record.checks).map(&:to_h),
+          "commits" => Array(record.commits),
+          "app_update" => record.app_update,
+          "toolchain" => record.toolchain,
+          # **The interpreter, not only the image.** The profile declares Ruby; the brief compares
+          # that declaration with the one that ran, and an image tag is not the same fact.
+          "interpreter" => record.interpreter
         }
       end
 

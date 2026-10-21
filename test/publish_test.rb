@@ -64,7 +64,9 @@ class PublishTest < Minitest::Test
   end
 
   def passed_record(repository:, from: "4.0.0.rc1", to: "4.1.0", verdict: "passed",
-                    decisions: [], refused: [], applied: [], brief: nil)
+                    decisions: [], refused: [], applied: [], brief: nil, checks: [],
+                    commits: [], app_update: nil, accepted_decisions: [], toolchain: nil,
+                    repairs: [])
     Record.new(
       repository: repository, commit: "abc12345", from_version: from, to_version: to,
       name: "Rails 4.1", verdict: verdict,
@@ -73,6 +75,8 @@ class PublishTest < Minitest::Test
       interpreter: "ruby 2.1.10", image: "agentsfyi-upgrader-ruby-2.1:dev",
       machine: "ruby 2.1.10 (agentsfyi-upgrader-ruby-2.1:dev@sha256:#{"a" * 64})",
       era: "2.1", decisions: decisions, refused: refused, applied: applied, brief: brief,
+      checks: checks, commits: commits, app_update: app_update,
+      accepted_decisions: accepted_decisions, toolchain: toolchain, repairs: repairs,
       stages: [
         Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 0,
           seconds: 42.0, output_tail: "12 examples, 0 failures"),
@@ -470,6 +474,63 @@ class PublishTest < Minitest::Test
     refute_includes body, "super-secret"
   end
 
+  # **An old record without a `display` still cannot put the suite's environment in a public body.**
+  # The wrapper's `-e KEY=VALUE` pairs are redacted, because the secret is in the command string and
+  # a pull request is public.
+  def test_the_body_redacts_an_old_record_s_environment
+    _bare, clone = origin_and_clone
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    record.stages.last.command =
+      "docker exec --interactive -e RAILS_SECRET_TOKEN=super-secret bundle exec rspec"
+    record.stages.last.display = nil
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    refute_includes body, "super-secret"
+    assert_includes body, "RAILS_SECRET_TOKEN=***"
+  end
+
+  # **A check's output and a repair's output are command output too.** The body's `checks` and
+  # `repairs` sections are part of the run record, and a failing suite's tail is exactly where the
+  # application's environment shows up; the full record in the body must not carry either.
+  def test_the_body_omits_check_and_repair_output_from_the_collapsed_record
+    _bare, clone = origin_and_clone
+    check = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+      command: "bundle exec rubocop", required: true, external: false, status: "passed",
+      ran: true, exit_code: 0, seconds: 1.0, output_tail: "SECRET_TOKEN=check-secret")
+    attempt = AgentsFyi::Upgrader::Repair::Attempt.new(number: 1, command: "opencode", ran: true,
+      timed_out: false, exit_code: 0, seconds: 1.0, output_tail: "SECRET_TOKEN=repair-secret",
+      changed: ["app/models/item.rb"])
+    repair = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "FAILURE_SECRET=failure-secret",
+      suite: "bundle exec rspec", attempts: [attempt], files: ["app/models/item.rb"],
+      diff: "SECRET DIFF", before_the_move: false)
+    counted = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "another failure",
+      suite: "bundle exec rspec", attempts: 1, files: ["app/models/item.rb"],
+      diff: "ANOTHER SECRET DIFF", before_the_move: false)
+    record = passed_record(repository: "https://github.com/acme/storefront",
+      checks: [check], repairs: [repair, counted])
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    refute_includes body, "check-secret"
+    refute_includes body, "repair-secret"
+    refute_includes body, "failure-secret"
+    refute_includes body, "SECRET DIFF"
+    refute_includes body, "ANOTHER SECRET DIFF"
+    assert_includes body, "\"attempts\": 1",
+      "the repair's attempt count is not command output and should survive"
+    assert_includes body, "app/models/item.rb",
+      "the repair's files are the part a reviewer needs and were dropped with its output"
+  end
+
   # **The carried guide entries are not work.** The body lists the call site this application has and
   # names the count of changes the rung carries that it does not use; a page of guide entries is a
   # page a reviewer learns to skip.
@@ -479,12 +540,15 @@ class PublishTest < Minitest::Test
       reason: "the call site this application has")
     carried = Record::Decision.new(subject: "schema.rb column order",
       reason: "the guide carries this, the application does not use it")
+    earlier = Record::Decision.new(path: "app/models/bid.rb", line: 2, subject: "belongs_to",
+      reason: "carried by an earlier rung — the one that arrives at 5.0.0, which this " \
+              "application has not crossed")
     api = FakeApi.new
 
     Publish.new(root: clone, repository: "https://github.com/acme/storefront",
       from_version: "5.2.0", to_version: "6.0.0",
       record: passed_record(repository: "https://github.com/acme/storefront", from: "5.2.0",
-        to: "6.0.0", decisions: [located, carried]),
+        to: "6.0.0", decisions: [located, carried, earlier]),
       token: "ghp_secret", git: FakeGit.new, api: api).call
 
     body = api.calls.find { |call| call.first == :pull_request }[6]
@@ -492,7 +556,66 @@ class PublishTest < Minitest::Test
     assert_includes body, "app/views/x.html.erb:4"
     assert_includes body, "## Manual changes the rung carries"
     assert_includes body, "1 change(s) this rung documents that this application does not use"
-    refute_includes body, "schema.rb column order", "a carried change was listed as work"
+    work = body.split("## Manual changes the rung carries").first
+    refute_includes work, "schema.rb column order", "a carried change was listed as work"
+    assert_includes body, "## Earlier-rung call sites"
+    work = body.split("## Earlier-rung call sites").first
+    refute_includes work, "app/models/bid.rb:2",
+      "a call site an earlier rung located was listed as this rung's work"
+  end
+
+  # **The request is a review brief, not a run log.** A reviewer can answer "what changed, what
+  # established it, what did the tool decide, what is left, is it safe" without reconstructing the
+  # walk — and the full record is there, collapsed, for the reader who wants the evidence.
+  def test_the_body_renders_the_checks_the_commits_the_decisions_and_the_update
+    _bare, clone = origin_and_clone
+    external = AgentsFyi::Upgrader::Checks::Result.new(id: "ci", name: "GitHub Actions",
+      kind: "external", required: true, external: true, status: "external", ran: false,
+      reason: "the application's CI test job")
+    lint = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+      command: "bundle exec rubocop", required: true, external: false, status: "passed",
+      ran: true, exit_code: 0, seconds: 1.0)
+    record = passed_record(repository: "https://github.com/acme/storefront",
+      from: "5.2.0", to: "6.0.0", checks: [lint, external],
+      commits: [
+        { "concern" => "pin Rails and move gems", "commit" => "b" * 40,
+          "message" => "agents-fyi upgrader: the 5.2.0 -> 6.0.0 step — pin Rails and move gems" },
+        { "concern" => "run app:update", "commit" => "c" * 40,
+          "message" => "agents-fyi upgrader: the 5.2.0 -> 6.0.0 step — run app:update" }
+      ],
+      app_update: { "adopt" => "added_only", "adopted" => ["config/initializers/new.rb"],
+                    "conflicts" => ["config/application.rb"],
+                    "skipped" => [{ "path" => "config/storage.yml",
+                                    "reason" => "the project's app_update policy skips it" }],
+                    "framework_defaults" => "off", "load_defaults" => "5.2" },
+      accepted_decisions: [{ "id" => "d1", "question" => "Remove the Show link?",
+                             "answer" => "remove it", "accepted_by" => "operator:9f2c",
+                             "effects" => [{ "kind" => "patch" }] }],
+      toolchain: { "ruby" => "3.3.12", "postgres" => "pgvector/pgvector:pg16",
+                   "extensions" => ["pgvector"] })
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "5.2.0", to_version: "6.0.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: api,
+      report_base: "https://agents.example").call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "## Checks"
+    assert_includes body, "external — not run here"
+    assert_includes body, "does not report them as green"
+    assert_includes body, "## What changed"
+    assert_includes body, "pin Rails and move gems"
+    assert_includes body, "## Decisions in force"
+    assert_includes body, "Remove the Show link?"
+    assert_includes body, "## app:update"
+    assert_includes body, "config/storage.yml"
+    assert_includes body, "Declared toolchain"
+    assert_includes body, "not the declared Ruby"
+    assert_includes body, "PostgreSQL"
+    assert_includes body, "## Review and merge"
+    assert_includes body, "<details>"
+    assert_includes body, "Full run record"
   end
 
   # **A transient remote failure must not move a rung's base to the default branch.** The chain is

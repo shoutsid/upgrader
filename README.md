@@ -20,6 +20,7 @@ disagreeing, which is the failure this project has paid for more than once.
 | `step` | runs the *first* release of that move end to end on a working copy this tool owns, and prints the record | a patch and the record, where `--record` says — and nothing to the corpus |
 | `serve` | the service: a durable ledger, the service's queue, one step per repository per cycle — or, with `--walk`, rungs chained inside a cycle up to `--rungs` | the run record and, for a failure, a report |
 | `serve --walk --publish` | the unattended walk: an empty `--to` reads as the top of the service's ladder, and every passed rung becomes a branch and a pull request chained to the rung before it | the corpus, the branches and the pull requests |
+| `preview` | renders the review brief a stored record would publish, from the JSON `step --record` wrote or the record a service kept — no checkout, token or push | nothing |
 | `prune` | removes what finished and killed runs left behind — the step container of a killed run, and the bundle a run installed (per-run by design, ~150 MB each, and the bind mount every step's container is given) — the same pass `step` and `serve` run before starting one | nothing: it removes only what belongs to a process that is gone |
 
 The default is `plan`, on the miner's reasoning: a tool whose first run writes into a
@@ -36,6 +37,7 @@ because the choice *is* a `bundle install`.
 $ ./bin/agents-fyi-upgrader plan  --repo https://github.com/owner/application.git --to 7.1.0
 $ ./bin/agents-fyi-upgrader preflight --repo https://github.com/owner/application.git --record ./out
 $ ./bin/agents-fyi-upgrader step  --repo https://github.com/owner/application.git --to 7.1.0 --record ./out
+$ ./bin/agents-fyi-upgrader preview --from ./out/owner-application-7.0.0-7.1.0.json
 $ ./bin/agents-fyi-upgrader serve --repos owner/application@main --to 7.1.0 --interval 600
 $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . --to 5.0.0
 ```
@@ -47,6 +49,9 @@ $ AGENTS_FYI_URL=http://localhost:8001 ./bin/agents-fyi-upgrader plan --repo . -
 | `--to VERSION` | the Rails release the move ends at, e.g. `7.1.0`. Optional in `plan` and `step` — without it the target is the top of the service's ladder (`GET /api/rails/ladder`), because "to what?" is a question the service answers better than this tool. `serve` requires it deliberately: a deployment that has not decided where it is going must not start walking somebody's application |
 | `--api URL` | the service to ask; defaults to `$AGENTS_FYI_URL`, then to the public deployment |
 | `--record DIR` | where `step` writes the patch and the JSON record |
+| `--from FILE` | `preview` only: the record to render |
+| `--base-ref REF` | `preview` only: the chain base the brief names |
+| `--report-base URL` | `preview` only: the public service the brief links reports to |
 | `--work DIR` | where `step` puts its working copy; defaults to `$UPGRADER_HOME` |
 | `--home DIR` | this client's own directory: working copies and the ledger |
 | `--repos OWNER/NAME[@REF]` | a repository for `serve` to walk; repeatable. Empty means the service's queue is asked |
@@ -111,6 +116,72 @@ it says which of the four it is and why.
 target needs the top of the ladder, and this tool would rather refuse than hold a second
 copy of Rails' release order. A default arrives when the service exposes the ladder
 itself.
+
+## The project declaration
+
+The walk is pointed at an application by a declaration, not by flags repeated on every run:
+`lib/agents_fyi/upgrader/data/projects/<slug>.json` (the image's copy) or a file the site admin
+writes into the volume this client mounts. The site admin's copy shadows the built-in one, and an
+unknown key is an error rather than a comment.
+
+The fields are the *application's* facts; the engine owns the mechanisms. A declaration may say:
+
+```json
+{
+  "slug": "storefront",
+  "repo": "acme/storefront",
+  "base_ref": "main",
+  "from": "7.2.0",
+  "to": "8.0.0",
+  "stack": "rails",
+  "suite": { "kind": "rspec", "command": "bundle exec rspec" },
+  "checks": [
+    { "id": "lint", "kind": "lint", "command": "bundle exec rubocop" },
+    { "id": "packwerk", "kind": "static",
+      "command": "bundle exec packwerk validate && bundle exec packwerk check" },
+    { "id": "assets", "kind": "build", "command": "yarn build", "required": false },
+    { "id": "ci", "kind": "external", "name": "GitHub Actions: test",
+      "reason": "the application's CI runs it, and this walker does not" }
+  ],
+  "source_roots": ["app", "lib", "config", "components", "engines"],
+  "toolchain": {
+    "ruby": "3.3.12", "node": "20", "postgres": "pgvector/pgvector:pg16",
+    "extensions": ["pgvector"], "apt": ["libvips"], "native": ["libvips"]
+  },
+  "style": { "format": "bundle exec rubocop -A", "check": "bundle exec rubocop" },
+  "app_update": {
+    "adopt": "added_only",
+    "skip": ["config/storage.yml", "db/migrate/*active_storage*"],
+    "skip_unused_engines": true,
+    "framework_defaults": "off"
+  },
+  "delivery": { "provider": "github", "branch": "agents-fyi/upgrade-<release>", "chain": true }
+}
+```
+
+What each field decides:
+
+* **`suite`** is the test check. It is declared separately because it is the only check that has a
+  baseline: a green suite after a green baseline is evidence, and the rest of the checks are
+  additional gates.
+* **`checks`** is the rest of the application's gate — lint, packwerk, a typecheck, a JavaScript
+  build. A local check is run after the suite and its result is a verdict: a failed required check
+  fails the rung, and one that did not run leaves it `unverified`. A check with `kind: "prepare"`
+  (`db:test:prepare`, `test:prepare`, `yarn install`) runs *before* the baseline instead, because
+  preparing a tree after the suite has judged it is not the application's CI. An `external` check
+  is recorded with where it runs and is **never** reported as green; the application's GitHub
+  Actions job is the case this exists for.
+* **`source_roots`** scopes the scan and the rules. A modular monolith declares `components`, an
+  engine declares `engines`, and a rule that used to name one application's file now reads the
+  project's own roots (`Rewrites.source_files`).
+* **`toolchain`** is the build parity the application's CI assumes. It is carried in the record
+  now; the overlay image that spends it is a later phase.
+* **`style`** runs the formatter as a stage *before* the suite, and `check` is added to the gate.
+  A style commit made after the suite passed is a change the suite never saw.
+* **`app_update`** is the policy for generated files: adopt only what the application did not have,
+  skip a generated path the project does not want, skip an unused engine's migration, and leave
+  `config.load_defaults` alone unless the declaration says `step` (and the deployment's
+  `UPGRADER_DEFAULT_STEPS` budget allows it).
 
 ## What one step does
 
@@ -228,14 +299,17 @@ The pipeline has three stages that make the rest mean anything:
    the cost of pretending otherwise — the update task loaded `shoulda-matchers 2.1.0` out of the
    application's test group, and that gem cannot load under the minitest 5 the release brought,
    so a task about config files failed on a test gem.
-10. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
+10. **style** — the project's `style.format` command, run before the suite so the head the suite
+    measures is the head the branch delivers. `style.check` is added to the gate below, and the
+    formatted files are a concern commit of their own.
+11. **boot**, **tests** — `bin/rails runner 'puts Rails.version'`, then the suite again,
     under `RAILS_ENV=test`, with `--step-timeout` as the ceiling. Then, *off unless
     `UPGRADER_DEFAULT_STEPS` says otherwise*, the **new defaults are stepped**: one toggle from
     `config/initializers/new_framework_defaults_*.rb` enabled, the suite run, kept if green and
     put back if not. When every toggle passes, the file is dropped and
     `config.load_defaults <minor>` is written into `config/application.rb` — both files saved
     first, so the one more suite run that proves the surviving state can be reverted exactly.
-11. **repair** *(off unless `UPGRADER_REPAIR_ATTEMPTS` says otherwise)* — in **two** places,
+12. **repair** *(off unless `UPGRADER_REPAIR_ATTEMPTS` says otherwise)* — in **two** places,
     in this order. Before the move, when the **baseline** is red: nothing has been changed yet,
     the failure is the application's own, and a red baseline makes everything after it
     unmeasurable — which is how applications old enough to need this walk usually arrive (the
@@ -248,6 +322,11 @@ The pipeline has three stages that make the rest mean anything:
     stage: the command, its exit code, the agent's closing words and the files it touched. A
     repaired baseline is named in the verdict, because "the suite was green before this step"
     is false without that clause.
+13. **checks** — the project's other checks, after the suite and its repairs, so the gate judges
+    the tree the repair left. A failed required check fails the rung; a check that did not run
+    leaves it `unverified`; an external check is recorded with where it runs and never becomes
+    green. The suite is the first row of the same gate, not the whole of it. A `prepare` check
+    runs before the baseline instead (see the profile above).
 
 `step` leaves a patch and a record, and it never writes to `--repo`: the working copy is
 its own.
@@ -360,6 +439,43 @@ under those versions is not noticed. The stamp says exactly that and no more. It
 rmagick 2.x, libpq, the era's PostgreSQL), which a modern host does not have and which is the
 part rvm cannot give you.
 
+## The pull request is the review brief
+
+A passed rung becomes a branch and a pull request, and the body is written for the person who has
+to accept it, not for a log reader. It answers, in this order:
+
+1. **What moved** — the rung, the base commit, the delivered head, the verdict.
+2. **Checks** — the suite (with its baseline), the formatter, every declared check, and each
+   external check with where it runs. An external check is never reported green.
+3. **What changed** — the concern-sized commit series, the pin, `app:update`'s adopted/conflicted/
+   skipped files, and the edit counts by origin.
+4. **Decisions in force** — the question, the answer, who accepted it and how many effects it had;
+   the patch is the implementation, not the explanation.
+5. **`app:update`** — generated files, conflicts kept as the application's own, policy skips and
+   the framework-default state.
+6. **What is left for a person** — only the call sites this rung found, the count of guide entries
+   it carries that this application does not use, and the edits that could not be written. The
+   full list is in the record, not pasted into prose.
+7. **Review and merge** — risk, rollback, merge order and a link to the run's page.
+8. **The full run record**, collapsed in `<details>`, with the patch omitted (the diff is the
+   patch) and command output omitted (it can carry the application's environment).
+
+The branch is a sequence of concern commits — preflight/decisions, mechanical rules, the pin and
+gem moves, `app:update`, the formatter, the step's remainder — so `git log` reads as a review order
+rather than one "as this tool made it" commit. The head of that series is the commit the ledger and
+the pull request point at, and the patch is `base..head`.
+
+**The rendered body is stored, not re-rendered by the service.** `Serve` obtains it from the same
+`Publish` object that opened the request and writes it into the rung's `deliveries.json` entry as
+`brief`; the site admin displays those bytes. A delivery retry renders it from the recorded commit
+and the stored record when one is available. `preview` remains the dry run for a record that was
+never published.
+
+Decision effects are applied before the baseline and may be typed: `patch`/`config` edit located
+text, `gem` adds/updates/removes a Gemfile declaration, `file` creates a new path, `delete` removes
+one, and `chmod` sets a mode. The order is config, gem, file, delete, chmod, patch, rule; a `rule`
+is refused by name because the walk's rules are its own.
+
 ## What a run writes, and when
 
 `contribute` decides whether a run goes into the shared corpus, and the split is the
@@ -401,9 +517,11 @@ the service decides what it means). Every row carries the reasons for
 its place — never attempted before attempted, the oldest pinned Rails first inside that,
 and the source of the row — so an operator can read the order and argue with it.
 
-`UPGRADER_REPOS` still exists and wins when it is non-empty: a deployment that named its
-repositories meant it. Leave it empty and the loop asks the service, which is the shape
-the queue exists for.
+**`UPGRADER_REPOS` is retired.** The deployment's queue is the only source of work; a
+second list in the environment would override the service's order silently. `--repos`
+remains a manual `serve` flag for a one-off run, but the compose entrypoint never passes
+it. `serve: … work from` at startup says whether the loop is reading the queue, a project
+declaration or a manual list.
 
 Two things about the queue are worth stating because both cost work rather than lines:
 

@@ -192,7 +192,68 @@ class EffectsTest < Minitest::Test
         decision(effects: [{ "kind" => "sed", "payload" => {} }])
       ])
 
-      assert_includes result.refused.first.reason, "known: patch, config, rule"
+      assert_includes result.refused.first.reason, "known: patch, config, gem, file, delete, chmod, rule"
+    end
+  end
+
+  # **A dependency decision is an operation, not a `find`/`replace`.** Add, update and remove each
+  # rewrite the declaration by name, and the result names the Gemfile line.
+  def test_a_gem_effect_adds_updates_and_removes_a_declaration
+    with_tree("Gemfile" => "source \"https://rubygems.org\"\ngem \"rails\", \"6.0.0\"\ngem \"puma\", \"~> 5.0\"\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [
+          { "kind" => "gem", "payload" => { "name" => "sidekiq", "requirement" => "~> 7.0" } },
+          { "kind" => "gem", "payload" => { "name" => "rails", "action" => "update",
+                                             "requirement" => "7.0.0" } },
+          { "kind" => "gem", "payload" => { "name" => "puma", "action" => "remove" } }
+        ])
+      ])
+
+      assert_empty result.refused
+      body = File.read(File.join(dir, "Gemfile"))
+      assert_includes body, "gem \"sidekiq\", \"~> 7.0\""
+      assert_includes body, "gem \"rails\", \"7.0.0\""
+      refute_includes body, "gem \"puma\""
+      assert_equal %w[Gemfile Gemfile Gemfile], result.applied.map(&:path)
+    end
+  end
+
+  # **A file, a delete and a mode are their own kinds.** None has a `find`, and rendering one as an
+  # empty patch was the failure this covers.
+  # A typed effect is still a write into somebody's tree, so every kind goes through the same
+  # boundary as a patch.
+  def test_typed_effects_outside_the_working_copy_are_refused
+    with_tree("Gemfile" => "gem \"rails\"\n", "app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [
+          { "kind" => "file", "payload" => { "path" => "../outside.rb", "content" => "x" } },
+          { "kind" => "delete", "payload" => { "path" => "../outside.rb" } },
+          { "kind" => "chmod", "payload" => { "path" => "../outside.rb", "mode" => "0755" } },
+          { "kind" => "gem", "payload" => { "name" => "x", "path" => "../Gemfile" } }
+        ])
+      ])
+
+      assert_empty result.applied
+      assert_equal 4, result.refused.length
+      result.refused.each { |refusal| assert_includes refusal.reason, "outside" }
+    end
+  end
+
+  def test_file_delete_and_chmod_effects_change_the_tree_without_a_find
+    with_tree("bin/run" => "#!/bin/sh\nexit 0\n", "script.sh" => "#!/bin/sh\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [
+          { "kind" => "file", "payload" => { "path" => "config/initializers/new.rb",
+                                             "content" => "NEW = true\n" } },
+          { "kind" => "delete", "payload" => { "path" => "bin/run" } },
+          { "kind" => "chmod", "payload" => { "path" => "script.sh", "mode" => "0755" } }
+        ])
+      ])
+
+      assert_empty result.refused
+      assert_equal "NEW = true\n", File.read(File.join(dir, "config/initializers/new.rb"))
+      refute File.exist?(File.join(dir, "bin/run"))
+      assert_equal 0o755, File.stat(File.join(dir, "script.sh")).mode & 0o777
     end
   end
 end

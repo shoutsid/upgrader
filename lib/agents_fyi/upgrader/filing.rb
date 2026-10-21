@@ -146,8 +146,9 @@ module AgentsFyi
                        "#{head_of(failure)}",
           "attempted" => "the rung #{record.from_version} -> #{record.to_version} ran #{outcome.attempts} " \
                          "repair attempt(s) in the step's own tree, each followed by `#{suite}` again; " \
-                         "the verdict is the suite's, never the repair's. The step carried on after " \
-                         "the repair, and its own record is the run this report came from.",
+                         "the rung's gate is the project's checks plus that suite, never the repair's " \
+                         "word. The step carried on after the repair, and its own record is the run " \
+                         "this report came from.",
           "trace" => failure,
           "resolution" => resolution
         }
@@ -223,9 +224,26 @@ module AgentsFyi
       def self.failing_stage(record:)
         failed = Record.failed_stages(record.stages)
         return failed.first unless failed.empty?
+
+        # The verdict's order: the formatter, then the suite, then the rest of the gate. A check
+        # failure with a green suite has no failing stage in `stages` — the check result is its own
+        # structure — so it is turned into the command-shaped value the report already knows how to
+        # quote. Without this, a lint failure filed the *green baseline* as the problem.
+        style = record.stages.find { |stage| stage.stage == Record::STYLE && !stage.ok? }
+        return style if style
         return record.suite if record.suite && !record.suite.ok?
 
+        check = Array(record.checks).find(&:blocking_failure?) ||
+          Array(record.checks).find(&:blocking_absence?)
+        return check_stage(check) if check
+
         record.baseline
+      end
+
+      def self.check_stage(check)
+        Record::Command.new(stage: Record::CHECK, command: check.command, display: check.command,
+          ran: check.ran, exit_code: check.exit_code, seconds: check.seconds,
+          output_tail: check.output_tail)
       end
 
       def self.title_for(record:, first:)

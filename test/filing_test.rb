@@ -44,15 +44,57 @@ class FilingTest < Minitest::Test
     )
   end
 
-  def record_for(verdict:, stages: [], baseline: nil, suite: nil, worktree: nil, repairs: [])
+  def record_for(verdict:, stages: [], baseline: nil, suite: nil, worktree: nil, repairs: [],
+    checks: [])
     AgentsFyi::Upgrader::Record.new(
       repository: "https://github.com/acme/storefront.git", commit: "9f2c1ab8",
       worktree: worktree, from_version: "6.0.4.4", to_version: "7.1.0", verdict: verdict,
       why: "the suite failed after a green baseline", name: "Rails 7.1",
       interpreter: "ruby 3.3.12", image: "agents-fyi-upgrader:latest",
       stages: stages, baseline: baseline, suite: suite, applied: [1, 2], refused: [], decisions: [],
-      repairs: repairs
+      repairs: repairs, checks: checks
     )
+  end
+
+  # **A check that failed with a green suite is the failure, not the green suite.** The report used
+  # to quote the baseline's exit 0 as the problem, which is a report about a command that passed;
+  # the decisive check is turned into the command-shaped stage the report already quotes.
+  def test_a_failed_check_is_the_problem_and_the_green_suite_is_not
+    green = command(stage: "suite", command: "bundle exec rspec", exit_code: 0,
+      output_tail: "10 examples, 0 failures")
+    lint = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+      command: "bundle exec rubocop", required: true, external: false, status: "failed",
+      ran: true, exit_code: 8, seconds: 1.0, output_tail: "8 offenses detected")
+    record = record_for(verdict: Failed, stages: [], baseline: green, suite: green, checks: [lint])
+
+    stage = AgentsFyi::Upgrader::Filing.failing_stage(record: record)
+    payload = AgentsFyi::Upgrader::Filing.report_for(record: record)
+
+    assert_equal "bundle exec rubocop", stage.command
+    assert_includes payload["problem"], "bundle exec rubocop"
+    assert_includes payload["problem"], "exited 8"
+    assert_includes payload["trace"], "8 offenses detected"
+    refute_includes payload["problem"], "10 examples, 0 failures",
+      "the green suite was filed as the problem"
+  end
+
+  # **A check that did not run is not more decisive than one that failed.** A required prepare
+  # check that could not run appears before the lint that failed, and a `find` with an OR picked
+  # the first in list order — which quoted a command that never ran.
+  def test_a_failed_check_is_chosen_before_a_check_that_did_not_run
+    green = command(stage: "suite", command: "bundle exec rspec", exit_code: 0)
+    absent = AgentsFyi::Upgrader::Checks::Result.new(id: "prepare", kind: "prepare",
+      command: "yarn install", required: true, external: false, status: "not_run", ran: false,
+      reason: "did not run (exit 127)")
+    failed = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+      command: "bundle exec rubocop", required: true, external: false, status: "failed",
+      ran: true, exit_code: 8, seconds: 1.0, output_tail: "8 offenses")
+    record = record_for(verdict: Failed, baseline: green, suite: green,
+      checks: [absent, failed])
+
+    stage = AgentsFyi::Upgrader::Filing.failing_stage(record: record)
+
+    assert_equal "bundle exec rubocop", stage.command
   end
 
   # **A repair is a report whose fix is the repair.** The failure is measured before the repair — it

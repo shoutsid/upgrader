@@ -19,7 +19,8 @@ module AgentsFyi
     # or a second port.
     class CLI
       EXIT_OK = 0
-      # The modes that read or write the corpus. `prune` is local, and `help` is not a mode.
+      # The modes that read or write the corpus. `prune` and `preview` are local, and `help` is not
+      # a mode.
       NEEDS_API = %w[plan preflight step serve].freeze
 
       EXIT_FAILED = 1
@@ -56,6 +57,7 @@ module AgentsFyi
                                     [--rungs N] [--force] [--publish] [--suite-env FILE]
                                     [--record DIR]
           agents-fyi-upgrader republish [--home DIR]
+          agents-fyi-upgrader preview --from FILE [--base-ref REF] [--report-base URL]
           agents-fyi-upgrader prune [--home DIR]
 
         Modes:
@@ -73,6 +75,10 @@ module AgentsFyi
                   `app:update` keeping only what it adds; boot it; run the suite again.
                   Prints the record, and writes the patch and the record as JSON with
                   --record. Never writes to --repo.
+          preview render the review brief a stored record would publish, without a
+                  checkout, a token or a push. This is the dry-run seam: the record is
+                  the evidence, and a reviewer reads the same body the pull request would
+                  carry.
           prune   remove what finished and killed runs left behind: the step containers a
                   killed run kept running (a process that is *killed* runs no cleanup at
                   all, so its container keeps its services and its memory) and the bundle
@@ -133,11 +139,12 @@ module AgentsFyi
         when "step" then step(options)
         when "serve" then serve(options)
         when "republish" then republish(options)
+        when "preview" then preview(options)
         when "prune" then prune(options)
         else
           usage_error(
             "unknown command `#{options[:command]}` — the modes that exist are `plan`, " \
-            "`preflight`, `step`, `serve` and `prune`"
+            "`preflight`, `step`, `serve`, `republish`, `preview` and `prune`"
           )
         end
       rescue Corpus::Refused => e
@@ -260,6 +267,21 @@ module AgentsFyi
         Republish.new(home: options[:home], token: ENV[Publish::ENV_TOKEN], out: @out,
           report_base: ENV["UPGRADER_PUBLIC_URL"]).call
         EXIT_OK
+      end
+
+      # **A record is enough to review a rung.** The preview reads the JSON `step --record` wrote
+      # (or the record a service kept) and prints the body a pull request would carry. It touches
+      # no repository and no service; a bad file is a usage refusal rather than a crash.
+      def preview(options)
+        return usage_error("preview needs --from FILE") if options[:from].to_s.empty?
+
+        base = options[:base_ref].to_s.empty? ? options[:ref] : options[:base_ref]
+        report_base = options[:report_base].to_s.empty? ? @env["UPGRADER_PUBLIC_URL"] : options[:report_base]
+        @out.puts(Preview.from_file(options[:from], base_ref: base, report_base: report_base))
+        EXIT_OK
+      rescue SystemCallError, JSON::ParserError, ArgumentError, TypeError => e
+        @err.puts("failed: the record could not be read: #{e.message}")
+        EXIT_FAILED
       end
 
       def prune(options)
@@ -398,6 +420,9 @@ module AgentsFyi
             options[:project] = v
           end
           opts.on("--record DIR", "where `step` writes the patch and the JSON record") { |v| options[:record] = v }
+          opts.on("--from FILE", "the record `preview` renders") { |v| options[:from] = v }
+          opts.on("--base-ref REF", "the chain base a preview names (default: the repository's)") { |v| options[:base_ref] = v }
+          opts.on("--report-base URL", "the public service a preview links reports to") { |v| options[:report_base] = v }
           opts.on("--work DIR", "where `step` puts its working copy (default $UPGRADER_HOME)") { |v| options[:work] = v }
           opts.on("--home DIR", "this client's own directory: worktrees and the ledger") { |v| options[:home] = File.expand_path(v) }
           opts.on("--heartbeat FILE", "the file `serve` touches every cycle") { |v| options[:heartbeat] = v }
@@ -409,9 +434,9 @@ module AgentsFyi
           opts.on("--publish", "push a branch and open (or update) a pull request for a " \
                                "passed step, chained to the previous rung's branch " \
                                "(needs $#{Publish::ENV_TOKEN})") { |v| options[:publish] = v }
-          # Repeatable, and several may follow one flag: the container's entrypoint
-          # expands `UPGRADER_REPOS` unquoted, so the shell hands over separate argv
-          # items. Those arrive here as leftover arguments and are collected below —
+          # Repeatable, for a one-off manual `serve`; the deployment's queue is the ordinary
+          # source and the entrypoint no longer passes this. Several may follow one flag: a
+          # shell list hands over separate argv items, and they are collected below —
           # OptionParser would otherwise take only the first and read the second as a
           # repository named after the next flag.
           # **Four flags the usage text named before the parser did.** `--cycles`, `--walk`,

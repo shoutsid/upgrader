@@ -264,7 +264,9 @@ module AgentsFyi
 
         @account_projects = if @corpus.respond_to?(:projects)
           Array(@corpus.projects.fetch("projects", [])).filter_map do |row|
-            Project.new(row)
+            # The feed carries the account name for the operator's benefit; it is not a fact about
+            # the application, and a project declaration refuses an unknown key by design.
+            Project.new(row.reject { |key, _| key == "account" })
           rescue Project::Invalid => e
             @out.puts("serve: account project #{row["slug"].inspect} is not walkable: #{e.message}")
             nil
@@ -321,15 +323,19 @@ module AgentsFyi
       def publish(record, project: nil)
         root = record.worktree.to_s.empty? ? @home : record.worktree
         pattern = project&.delivery&.branch
-        result = @publish_class.new(
+        publisher = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
           token: github_token(record.repository), branch_pattern: pattern,
           report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref
-        ).call
+        )
+        result = publisher.call
         @out.puts("serve: #{record.repository} — #{result}")
+        # **The brief is rendered once, here, and stored beside the delivery.** The site admin reads
+        # the bytes the pull request would carry rather than reimplementing `Publish#body` in Rails.
+        brief = publisher.respond_to?(:preview_body) ? publisher.preview_body : nil
         remember_delivery(record, result, root: root, pattern: pattern,
-          base_ref: project&.base_ref)
+          base_ref: project&.base_ref, brief: brief)
       end
 
       # **A connected account gets its own token; there is no deployment-wide customer credential
@@ -348,7 +354,7 @@ module AgentsFyi
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
-      def remember_delivery(record, result, root:, pattern:, base_ref: nil)
+      def remember_delivery(record, result, root:, pattern:, base_ref: nil, brief: nil)
         state = {
           "attempted" => true,
           "delivered" => delivered?(result, record.repository),
@@ -356,6 +362,9 @@ module AgentsFyi
           "commit" => result.commit,
           "pull_request" => result.pull_request,
           "reason" => result.reason,
+          # The rendered review brief is evidence a person reads, not a second renderer in the
+          # service. It is kept with the delivery because that is where the branch and PR are.
+          "brief" => brief.to_s,
           "root" => root.to_s,
           "branch_pattern" => pattern.to_s,
           "base_ref" => base_ref.to_s
@@ -401,13 +410,14 @@ module AgentsFyi
           project = project_for(entry.repo)
           base_ref = delivery["base_ref"].to_s
           base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
-          result = @publish_class.new(
+          publisher = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
             out: @out, token: github_token(entry.repo),
             branch_pattern: delivery["branch_pattern"],
             report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref
-          ).call
+          )
+          result = publisher.call
           @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
           state = delivery.merge(
             "attempted" => true,
@@ -415,7 +425,8 @@ module AgentsFyi
             "branch" => result.branch,
             "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
             "pull_request" => result.pull_request,
-            "reason" => result.reason
+            "reason" => result.reason,
+            "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : delivery["brief"].to_s
           )
           @ledger.deliver(
             repo: entry.repo, commit: entry.commit,
@@ -560,12 +571,29 @@ module AgentsFyi
 
         if record.passed?
           commit = Checkpoint.commit(root, from: record.from_version, to: record.to_version, out: @out)
+          # The passed head is the next rung's base. Persisting it here — and only here — is what
+          # lets `prepare` tell a settled tree from a killed step that happens to be clean.
+          Checkpoint.remember_base(root, commit)
           @out.puts("serve: #{record.repository} — the step is committed as #{commit.to_s[0, 8]}, " \
                     "so the next cycle plans from #{record.to_version}")
         else
-          Checkpoint.reset(root)
-          @out.puts("serve: #{record.repository} — #{record.verdict} advances nothing, so the tree " \
-                    "is back at its base commit")
+          # **Back to the commit the rung started from, not merely to a clean worktree.** A failed
+          # step may have committed its preflight, rules or pin before the suite went red; those
+          # commits are this step's, and a clean tree at their head would still be a half-move the
+          # next cycle would plan from.
+          base = Checkpoint.base(root) || record.commit
+          if Checkpoint.resolvable?(root, base)
+            Checkpoint.reset(root, to: base)
+            @out.puts("serve: #{record.repository} — #{record.verdict} advances nothing, so the " \
+                      "tree is back at its base commit")
+          else
+            # A base this copy does not hold is a label, not an object. Resetting to HEAD is the
+            # only safe move left, and saying so is better than claiming a base that was never
+            # reached.
+            Checkpoint.reset(root)
+            @out.puts("serve: #{record.repository} — #{record.verdict} advances nothing, so the " \
+                      "tree is back at HEAD; the recorded base #{base.to_s[0, 8]} is not in this tree")
+          end
         end
       end
 

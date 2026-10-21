@@ -116,13 +116,12 @@ class DeployConfigTest < Minitest::Test
     refute_includes entrypoint, "step --repo",
       "the service runs one mode; a step is the loop's business"
 
-    # The list is only passed when there is one. Expanded unconditionally, an empty
-    # `${UPGRADER_REPOS}` would leave `--repos` with nothing to take and the flag after it
-    # would be read as its value — a service that starts, reports healthy, and has been
-    # told a repository called `--interval`. The same rule now covers the flags `--walk`,
-    # `--rungs` and `--publish`, each appended to the same positional list.
-    assert_match(/if \[ -n "\$\{UPGRADER_REPOS\}" \]; then/, entrypoint)
-    assert_includes entrypoint, 'set -- "$@" --repos ${UPGRADER_REPOS}'
+    # **`UPGRADER_REPOS` is retired.** The service's queue is the deployment's source of work; a
+    # list in the entrypoint would be a second, quieter order. `--repos` stays a manual flag.
+    refute_match(/\$\{UPGRADER_REPOS\}/, entrypoint,
+      "the retired repository list is still read by the entrypoint")
+    refute_match(/set -- "\$@" --repos/, entrypoint,
+      "the entrypoint still passes the retired repository list")
     %w[UPGRADER_WALK UPGRADER_RUNGS UPGRADER_PUBLISH].each do |setting|
       assert_match(/if \[ -n "\$\{#{setting}\}" \]; then/, entrypoint,
         "#{setting} is not checked before its flag is passed")
@@ -403,7 +402,7 @@ class DeployConfigTest < Minitest::Test
     # should have caught: the entrypoint read it, passed it as `--log-level`, and the CLI
     # accepts no such flag — so the container refused to start. It is asserted *absent*
     # below, by the test that reads both sides of the flag contract.
-    %w[API_BASE_URL UPGRADER_TO UPGRADER_REPOS UPGRADER_INTERVAL UPGRADER_STEP_TIMEOUT].each do |name|
+    %w[API_BASE_URL UPGRADER_TO UPGRADER_INTERVAL UPGRADER_STEP_TIMEOUT].each do |name|
       assert_includes config("upgrader"), "#{name}:", "the service does not set #{name}"
       # The prefix only: the entrypoint reads each name with a default (`:=` plus the
       # value that is a decision), which is what an operator relies on when they set
@@ -411,6 +410,8 @@ class DeployConfigTest < Minitest::Test
       # here and in the entrypoint at once, and the value belongs in the entrypoint.
       assert_includes entrypoint, "${#{name}:=", "the entrypoint does not read #{name}"
     end
+    refute_match(/UPGRADER_REPOS:/, config("upgrader"),
+      "the retired repository list is still a deployment setting")
   end
 
   # The bug this exists for, and it is the log level's one rung over.
@@ -476,7 +477,7 @@ class DeployConfigTest < Minitest::Test
   def test_the_env_example_documents_what_the_service_sets_and_no_log_level
     documented = env_example
 
-    assert_includes documented, "UPGRADER_REPOS=", ".env.example does not name the loop's list"
+    refute_includes documented, "UPGRADER_REPOS=", ".env.example still names the retired list"
     assert_includes documented, "UPGRADER_API_BASE_URL="
     assert_includes documented, "UPGRADER_API_KEY=", ".env.example does not name the client's key"
     assert_includes documented, "UPGRADER_INTERVAL="

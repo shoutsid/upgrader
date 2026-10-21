@@ -123,4 +123,32 @@ class CheckpointTest < Minitest::Test
     assert_equal "agents-fyi upgrader: the 7.1.0 -> 7.2.0 step, as this tool made it",
       Checkpoint.message(from: "7.1.0", to: "7.2.0")
   end
+
+  # **A failed step's concern commits are the step's too.** A step that commits its pin and then
+  # fails the suite has moved HEAD; a reset that only cleans the worktree leaves the next cycle
+  # planning from the half-move. `reset(to:)` puts HEAD back at the commit the rung started from,
+  # and still leaves the ignored bundle/tmp where it is.
+  def test_reset_to_the_base_discards_the_step_s_commits_and_keeps_ignored_files
+    base = git("rev-parse", "HEAD").strip
+    File.write(File.join(@dir, "Gemfile"), %(gem "rails", "5.0.0"\n))
+    File.write(File.join(@dir, "config_moved.rb"), "# app:update's addition\n")
+    moved = Checkpoint.commit(@dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+    refute_equal base, moved
+
+    Checkpoint.reset(@dir, to: base)
+
+    assert_equal base, git("rev-parse", "HEAD").strip, "HEAD is still the step's commit"
+    assert_equal %(gem "rails", "4.2.11"\n), File.read(File.join(@dir, "Gemfile"))
+    refute File.exist?(File.join(@dir, "config_moved.rb")), "the step's added file survived"
+    assert File.exist?(File.join(@dir, "tmp", "cache", "expensive")),
+      "an ignored file was removed by the reset"
+  end
+
+  # **A concern is a commit a reviewer can read on its own.** The default message is still the whole
+  # step, and a step that commits as it goes passes the concern so `git log` reads as a sequence of
+  # concerns rather than one opaque commit.
+  def test_a_concern_is_named_in_the_message
+    assert_equal "agents-fyi upgrader: the 7.1.0 -> 7.2.0 step — pin Rails and move gems",
+      Checkpoint.message(from: "7.1.0", to: "7.2.0", concern: "pin Rails and move gems")
+  end
 end

@@ -80,7 +80,7 @@ module AgentsFyi
       #   made", and it is a field rather than a trick inside each pattern because it is the same
       #   question every appending rule asks.
       Rule = Struct.new(:family, :subject, :pattern, :replace, :context, :scaffold, :already, :file,
-        :all, :rung, :skip, keyword_init: true) do
+        :all, :rung, :skip, :filter, keyword_init: true) do
         # The line with this rule applied, or nil when it does not match or changes nothing.
         #
         # The match runs against the *masked* line (strings and comments blanked) and the write
@@ -325,7 +325,8 @@ module AgentsFyi
       # `receiver` is a pattern the key has to hang off, and it is what makes the json direction safe: a
       # column's accessor is *provably* the column when the receiver is `self` and the same file declares the
       # `store_accessor`, while a bare name could be a local. `context` is where that second half is asked.
-      def self.key_respelled(subject:, to:, receiver: nil, context: nil, all: false, file: nil)
+      def self.key_respelled(subject:, to:, receiver: nil, context: nil, all: false, file: nil,
+        filter: nil)
         key =
           if to == :symbol
             /(?<head>\[\s*)["'](?<name>[^"']*)["'](?<tail>\s*\])/
@@ -336,7 +337,7 @@ module AgentsFyi
         # pattern has no such group, and a rule that reads its own replacement is the wrong place to find out.
         prefix = receiver ? "(?<receiver>#{receiver})\\s*" : "(?<receiver>)"
         Rule.new(family: :key_respelled, subject: subject, context: context, all: all, file: file,
-          pattern: Regexp.new("#{prefix}#{key.source}"),
+          filter: filter, pattern: Regexp.new("#{prefix}#{key.source}"),
           replace: lambda do |match|
             name = match[:name].to_s
             written =
@@ -1660,6 +1661,67 @@ module AgentsFyi
       # than a file.
       SOURCE_LIMIT = 64
 
+      # **A rule names a scope, not an application's directories.** `<source_roots>` expands to the
+      # roots the project declares (`Project#source_roots`); a rule that used to say
+      # `lib/diaspora/signature.rb` now says "every Ruby file under the application's own source",
+      # and the project supplies which directories those are.
+      SOURCE_ROOTS_TOKEN = "<source_roots>"
+
+      # The roots a Rails application has when the declaration says nothing. `components` and
+      # `engines` are included because a modular monolith and an engine application are both Rails;
+      # a directory that does not exist makes `Dir.glob` answer nothing, so the wide list costs a
+      # handful of failed globs rather than a read of the checkout.
+      DEFAULT_SOURCE_ROOTS = %w[app lib config components engines].freeze
+
+      # **The files the rules read for themselves, bounded and filtered.** A rule with a `filter`
+      # is tried only against files whose text contains it, which is what makes a broad scope
+      # (`<source_roots>/**/*.rb`) affordable: `serialize` reads the files that mention
+      # `serialize`, not every Ruby file in the application. The bound is on the *matching* files,
+      # because a glob that matched a thousand and a filter that kept four has not read a thousand.
+      #
+      # Returns `[files, truncated]`: `files` is path → lines, the shape `Rewrites.apply` and a
+      # rule's `context` already take; `truncated` names every glob the limit cut, so a rule cannot
+      # report "no call sites here" after reading a slice.
+      def self.source_files(root:, source_roots: [], rules: RULES, limit: SOURCE_LIMIT)
+        base = File.expand_path(root)
+        files = {}
+        truncated = []
+        rules.select(&:file).group_by { |rule| [rule.file, rule.filter] }.each_key do |glob, filter|
+          paths = glob_paths(glob, source_roots).flat_map { |pattern| Dir.glob(pattern, base: base) }
+            .uniq.sort
+          matched = paths.select do |path|
+            full = File.join(base, path)
+            next false unless File.file?(full)
+
+            next true if filter.nil?
+
+            text = File.binread(full).force_encoding("UTF-8").scrub
+            filter.is_a?(Regexp) ? filter.match?(text) : text.include?(filter.to_s)
+          end
+          if matched.size > limit
+            truncated << "#{glob} (#{matched.size} file(s), first #{limit} read)"
+          end
+          matched.first(limit).each do |path|
+            next if files.key?(path)
+
+            full = File.join(base, path)
+            files[path] = File.binread(full).force_encoding("UTF-8").scrub.lines.map(&:chomp)
+          end
+        end
+        [files, truncated]
+      end
+
+      # The glob a rule names, expanded over the project's own source roots when it asks for them.
+      # An empty list falls back to the Rails roots (`DEFAULT_SOURCE_ROOTS`), which is what a
+      # declaration written before `source_roots` existed means.
+      def self.glob_paths(glob, source_roots)
+        return [glob] unless glob.include?(SOURCE_ROOTS_TOKEN)
+
+        roots = Array(source_roots).map(&:to_s).reject(&:empty?)
+        roots = DEFAULT_SOURCE_ROOTS if roots.empty?
+        roots.map { |root| glob.gsub(SOURCE_ROOTS_TOKEN, root) }
+      end
+
       # **A package name that moved under a scope**, in `package.json`. The file is not Ruby, so the rule
       # matches its raw lines; the closing quote and the colon are part of the match because the write
       # re-matches the region, and a trailing lookahead would have nothing to look at.
@@ -1672,8 +1734,8 @@ module AgentsFyi
       # **A JavaScript call the release moved or renamed.** The scan does not read JavaScript, so the rule
       # finds its own lines — and it matches the raw line, because there is no Ruby string here whose
       # contents the mask should hide.
-      def self.javascript_moved(subject:, file:, from:, to:)
-        Rule.new(family: :name_moved, subject: subject, file: file,
+      def self.javascript_moved(subject:, file:, from:, to:, filter: nil)
+        Rule.new(family: :name_moved, subject: subject, file: file, filter: filter,
           pattern: Regexp.new(from.to_s), replace: to)
       end
 
@@ -1706,7 +1768,7 @@ module AgentsFyi
       # already failed on it.
       def self.alias_attribute_parent
         Rule.new(family: :line_replaced, subject: "alias_attribute parent",
-          file: "app/models/**/*.rb", rung: "7.1.0",
+          file: "<source_roots>/**/*.rb", filter: /alias_attribute\s+:parent/, rung: "7.1.0",
           pattern: /^(?<indent>\s*)alias_attribute\s+:parent,\s*:(?<association>[a-z_]\w*)\s*$/,
           replace: lambda do |match|
             indent = match[:indent]
@@ -1724,7 +1786,7 @@ module AgentsFyi
       # `alias_method` as the replacement. The alias generated a setter too, so both halves move.
       def self.alias_attribute_method
         Rule.new(family: :line_replaced, subject: "alias_attribute",
-          file: "app/models/**/*.rb", rung: "7.2.0",
+          file: "<source_roots>/**/*.rb", filter: /alias_attribute\s+:/, rung: "7.2.0",
           pattern: /^(?<indent>\s*)alias_attribute\s+:(?<alias>[a-z_]\w*),\s*:(?<target>[a-z_]\w*)\s*$/,
           replace: lambda do |match|
             indent = match[:indent]
@@ -1741,7 +1803,7 @@ module AgentsFyi
       # ladder has no entry for a constant the framework stopped exporting.
       def self.null_relation_predicate
         Rule.new(family: :call_replaced, subject: "ActiveRecord::NullRelation",
-          file: "app/models/**/*.rb", rung: "7.1.0",
+          file: "<source_roots>/**/*.rb", filter: /ActiveRecord::NullRelation/, rung: "7.1.0",
           pattern: /(?<receiver>\b[a-z_]\w*)\.is_a\?\(\s*ActiveRecord::NullRelation\s*\)/,
           replace: "\\k<receiver>.null_relation?",
           already: /\.null_relation\?/)
@@ -1751,12 +1813,14 @@ module AgentsFyi
       # forms: a class is `type:` and a coder is `coder:`. The app's first boot fails on
       # `serialize :hidden_shareables, Hash`, and the other four lines are the same shape.
       def self.serialize_options
-        # **The scan's 156-file budget stops before two of the five lines.** `user.rb` and
-        # `signature.rb` are the files it did not send, so the rule reads exactly those; the other
-        # two are manual entries the scan already located. A broad `app/models/**/*.rb` glob would
-        # cross `SOURCE_LIMIT` at this application's size and read a slice.
+        # **The scan's budget is not the rule's scope.** The scan sends a bounded slice of the
+        # application, and the files it stops before are exactly where a `serialize` line can live.
+        # The rule reads the application's own source roots instead — `app/models`, `lib`, a
+        # component's models, an engine — and `filter` makes that affordable: only files that
+        # mention `serialize` with a class/coder argument are read.
         Rule.new(family: :line_replaced, subject: "serialize", rung: "7.2.0",
-          file: "{app/models/user.rb,lib/diaspora/signature.rb}",
+          file: "<source_roots>/**/*.rb",
+          filter: /^\s*serialize\s+.*,\s*[A-Z]/,
           pattern: /^(?<indent>\s*)serialize\s+(?<attribute>[^,]+),\s*(?<argument>[A-Z][A-Za-z0-9_:]*)\s*$/,
           replace: lambda do |match|
             kind = %w[Hash Array].include?(match[:argument]) ? "type" : "coder"
@@ -1772,11 +1836,10 @@ module AgentsFyi
       # **A modular monolith's models are one directory down.** `app/models/**/*.rb` alone left
       # `components/ollama/app/models/ollama/consumed_message.rb` unedited at
       # rails_modular_monolith's 8.0 boot, after the scan had located its enum: the application's
-      # model root is both the classic one and each component's. The brace is the same shape the
-      # serialize rule uses for files the bounded scan skips.
+      # model root is both the classic one and each component's, and the project declares both.
       def self.enum_keyword_arguments
         Rule.new(family: :line_replaced, subject: "enum keyword arguments",
-          file: "{app/models/**/*.rb,components/*/app/models/**/*.rb}", rung: "8.0.0",
+          file: "<source_roots>/**/*.rb", filter: /^\s*enum\s+[a-z_]\w*:/, rung: "8.0.0",
           pattern: /^(?<indent>\s*)enum\s+(?<name>[a-z_]\w*):\s*(?<rest>.+)$/,
           replace: ->(match) { "#{match[:indent]}enum :#{match[:name]}, #{match[:rest]}" },
           already: /^\s*enum\s+:[a-z_]\w*,\s*/)
@@ -1787,7 +1850,7 @@ module AgentsFyi
       # users edit page renders. The helper's question is "which objects have errors", so ask that.
       def self.error_messages_false_object
         Rule.new(family: :line_replaced, subject: "error_messages_for false object",
-          file: "app/helpers/error_messages_helper.rb", rung: "7.2.0",
+          file: "<source_roots>/**/*.rb", filter: /objects\.compact\.map/, rung: "7.2.0",
           pattern: /^(?<indent>\s*)messages = objects\.compact\.map \{ \|o\| o\.errors\.full_messages \}\.flatten$/,
           replace: lambda do |match|
             "#{match[:indent]}messages = objects.compact.select { |o| o.respond_to?(:errors) }" \
@@ -1802,7 +1865,8 @@ module AgentsFyi
       # the 7.2 baseline it is about to leave.
       def self.parameter_missing_wording
         Rule.new(family: :line_replaced, subject: "ParameterMissing wording",
-          file: "spec/integration/api/search_controller_spec.rb", rung: "8.0.0",
+          file: "{spec,test}/**/*.rb", filter: /param is missing or the value is empty/,
+          rung: "8.0.0",
           pattern: /param is missing or the value is empty: (?<name>tag|query)/,
           replace: ->(match) { "param is missing or the value is empty or invalid: #{match[:name]}" },
           already: /param is missing or the value is empty or invalid:/)
@@ -2030,16 +2094,16 @@ module AgentsFyi
         # became `ActionCable.logger.enabled`." Four instances, one per name the note gives — and the
         # file is JavaScript, which the scan does not read at all.
         javascript_moved(subject: "ActionCable JavaScript adapters",
-          file: "app/{assets/javascripts,javascript}/**/*.js",
+          file: "<source_roots>/**/*.js", filter: /ActionCable/,
           from: 'ActionCable\.WebSocket\b', to: "ActionCable.adapters.WebSocket"),
         javascript_moved(subject: "ActionCable JavaScript adapters",
-          file: "app/{assets/javascripts,javascript}/**/*.js",
+          file: "<source_roots>/**/*.js", filter: /ActionCable/,
           from: 'ActionCable\.logger(?<tail>\s*=)', to: "ActionCable.logger.enabled\\k<tail>"),
         javascript_moved(subject: "ActionCable JavaScript adapters",
-          file: "app/{assets/javascripts,javascript}/**/*.js",
+          file: "<source_roots>/**/*.js", filter: /ActionCable/,
           from: 'ActionCable\.startDebugging\(\)', to: "ActionCable.logger.enabled = true"),
         javascript_moved(subject: "ActionCable JavaScript adapters",
-          file: "app/{assets/javascripts,javascript}/**/*.js",
+          file: "<source_roots>/**/*.js", filter: /ActionCable/,
           from: 'ActionCable\.stopDebugging\(\)', to: "ActionCable.logger.enabled = false"),
 
         # "Nested keys in secrets.yml are loaded as symbols now, so `secrets[:smtp]["address"]` raises or
@@ -2062,7 +2126,7 @@ module AgentsFyi
         # holding any hash. A bare name is left as a decision, and the survey beside this rule names those
         # lines.
         key_respelled(subject: "json and hstore columns", to: :string,
-          file: "app/models/**/*.rb", receiver: /\bself\.\w+/,
+          file: "<source_roots>/**/*.rb", filter: /store_accessor/, receiver: /\bself\.\w+/,
           context: lambda do |lines, found, _raw, _tree|
             column = found[:receiver].to_s.split(".").last
             lines.any? { |line| line.match?(/store_accessor\s+:#{Regexp.escape(column)}\b/) }

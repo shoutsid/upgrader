@@ -271,17 +271,32 @@ class RewritesTest < Minitest::Test
     ], result.edits.map { |edit| edit["after"] }
   end
 
-  # **The scan's budget is not the rule's.** The rule's own glob has to name the files the scan
-  # stops before, or the rung's boot fails on a line the rule was written for.
-  def test_the_serialize_rule_reads_the_two_files_the_scan_stops_before
+  # **The scan's budget is not the rule's, and the rule's scope is the project's.** The serialize
+  # rule used to name two files from one application (`app/models/user.rb` and
+  # `lib/diaspora/signature.rb`); the scope is now every source root the project declares, and the
+  # filter keeps the read to files that can contain the line. A second application with its models
+  # in a component and its declaration in `lib` is the same rule.
+  def test_the_serialize_rule_reads_every_declared_source_root_and_filters_the_files
     Dir.mktmpdir do |root|
-      %w[app/models/user.rb lib/diaspora/signature.rb].each do |path|
+      files = {
+        "app/models/user.rb" => "  serialize :preferences, Hash\n",
+        "lib/diaspora/signature.rb" => "  serialize :data, JSON\n",
+        "components/ollama/app/models/thing.rb" => "  serialize :payload, Array\n",
+        "app/models/plain.rb" => "class Plain\nend\n"
+      }
+      files.each do |path, text|
         FileUtils.mkdir_p(File.dirname(File.join(root, path)))
-        File.write(File.join(root, path), "")
+        File.write(File.join(root, path), text)
       end
 
-      assert_equal %w[app/models/user.rb lib/diaspora/signature.rb],
-        Dir.glob(Rewrites.serialize_options.file, base: root).sort
+      found, truncated = Rewrites.source_files(root: root,
+        source_roots: %w[app lib components], rules: [Rewrites.serialize_options])
+
+      assert_equal %w[app/models/user.rb components/ollama/app/models/thing.rb
+        lib/diaspora/signature.rb].sort, found.keys.sort
+      assert_empty truncated
+      refute_includes found.keys, "app/models/plain.rb",
+        "the filter read a file that cannot contain a serialize declaration"
     end
   end
 

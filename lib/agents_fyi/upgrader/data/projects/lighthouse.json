@@ -13,6 +13,11 @@
     "postgres",
     "redis"
   ],
+  "source_roots": [
+    "app",
+    "lib",
+    "config"
+  ],
   "env_names": [
     "RAILS_SECRET_TOKEN"
   ],

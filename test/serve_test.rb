@@ -206,6 +206,8 @@ class ServeTest < Minitest::Test
         base: "main", commit: "9f2c1ab8", pull_request: "https://github.com/acme/storefront/pull/1",
         reason: "")
     end
+
+    def preview_body = "## What moved\n\n5.0.0 → 5.1.0\n"
   end
 
   def setup
@@ -264,7 +266,13 @@ class ServeTest < Minitest::Test
         "slug" => "account", "repo" => "acme/account", "base_ref" => "main",
         "from" => "7.1.0", "to" => "8.1.0", "stack" => "rails",
         "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
-        "delivery" => { "provider" => "none" }
+        "source_roots" => ["app", "components"],
+        "checks" => [{ "id" => "lint", "kind" => "lint", "command" => "bundle exec rubocop" }],
+        "toolchain" => { "ruby" => "3.3.12" },
+        "style" => { "format" => "bundle exec rubocop -A" },
+        "app_update" => { "framework_defaults" => "step" },
+        "delivery" => { "provider" => "none" },
+        "account" => "Team"
       }] }
     end
 
@@ -275,6 +283,10 @@ class ServeTest < Minitest::Test
     assert_equal "8.1.0", call[:to], "the step walked the deployment target instead of the account's"
     assert_equal "account", call[:project].slug
     assert_equal "bundle exec rspec", call[:project].suite_command
+    assert_equal %w[app components], call[:project].source_roots
+    assert_equal "lint", call[:project].checks.first.id
+    assert_equal "3.3.12", call[:project].toolchain.ruby
+    assert call[:project].app_update.step_defaults?
   end
 
   # **A finished target is not work.** The loop used to knock on the queue's `done` row every ten
@@ -706,6 +718,10 @@ class ServeTest < Minitest::Test
     assert_equal true, entry["delivered"]
     assert_equal "https://github.com/acme/storefront/pull/1", entry["pull_request"]
     assert_equal "9f2c1ab8", entry["commit"]
+    # **The brief is rendered once by the engine**, not rebuilt by the service; the feed is where
+    # the site admin reads it beside the branch and PR.
+    assert_includes entry["brief"], "## What moved"
+    assert_includes entry["brief"], "5.0.0 → 5.1.0"
   end
 
   # **A queue row finds its own declaration.** The loop is not told which project a repository is;

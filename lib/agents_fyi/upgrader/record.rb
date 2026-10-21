@@ -90,8 +90,17 @@ module AgentsFyi
       DECLARATIONS = "declarations"
       PIN = "pin"
       RAILS_UPDATE = "rails:update"
+      # **The formatter, and it is part of the step rather than a commit somebody makes afterwards.**
+      # A style commit added after the suite has passed is a change the suite never saw; running the
+      # formatter before the suite is what makes "the branch is the run's own head" true.
+      STYLE = "style"
       BOOT = "boot"
       SUITE = "suite"
+      # **One command from the application's own gate.** A check result is structured (`Checks`),
+      # and this label is how the same command appears in the record's command list. It is not in
+      # `REQUIRED`: a failed check is named by `verdict`, so the sentence says *which* check failed
+      # rather than "a check stage did not succeed".
+      CHECK = "check"
 
       # The stages a step cannot continue past, in the order they happen. Three absences are
       # deliberate.
@@ -182,12 +191,29 @@ module AgentsFyi
         REQUIRED.filter_map { |stage| last[stage] }.reject(&:ok?)
       end
 
-      def self.verdict(baseline:, suite:, stages:)
+      def self.verdict(baseline:, suite:, stages:, checks: [])
         failed = failed_stages(stages)
         unless failed.empty?
           first = failed.first
           return [FAILED, "#{first.stage} did not succeed: `#{first.command}` " \
                           "#{first.ran ? "exited #{first.exit_code}" : 'did not run'}#{database_note(stages)}"]
+        end
+
+        # **The formatter has the same three answers as every other command.** A formatter that
+        # ran and failed is a failed rung; one that is not installed established nothing, and
+        # `unverified` is the verdict that says so rather than blaming the application.
+        style = stages.find { |stage| stage.stage == STYLE }
+        if style
+          if style.ran && !style.ok?
+            outcome = style.exit_code.nil? ? "was killed before it finished" :
+              "exited #{style.exit_code}"
+            return [FAILED, "the style formatter `#{style.command}` #{outcome}" \
+                            "#{database_note(stages)}"]
+          end
+          unless style.ran
+            return [UNVERIFIED, "the style formatter `#{style.command}` did not run, so the " \
+                                "application's formatting was not measured#{database_note(stages)}"]
+          end
         end
 
         if suite.nil?
@@ -209,6 +235,23 @@ module AgentsFyi
         end
 
         if suite.ok?
+          # **The suite is one check, not the gate.** A green suite with a red lint or packwerk
+          # check has not established the rung, and the PR must not say it did. The failure names
+          # the check and its exit code; an external check never reaches this branch, because this
+          # walk did not run it.
+          failed_check = Array(checks).find(&:blocking_failure?)
+          if failed_check
+            return [FAILED, "the suite passed, and the #{failed_check.label} check failed " \
+                            "(#{failed_check.reason})"]
+          end
+
+          absent_check = Array(checks).find(&:blocking_absence?)
+          if absent_check
+            return [UNVERIFIED, "the suite passed, and the #{absent_check.label} check did not " \
+                                "run (#{absent_check.reason}), so the application's gate was not " \
+                                "measured"]
+          end
+
           repairs = stages.count { |stage| stage.stage == REPAIR && stage.ran }
           return [PASSED, "the suite was green before this step and green after it" \
                           "#{baseline_repair_note(stages)}"] if repairs.zero?
@@ -266,13 +309,19 @@ module AgentsFyi
 
       attr_reader :repository, :commit, :worktree, :from_version, :to_version, :name,
         :requires_ruby, :interpreter, :image, :machine, :era, :stages, :applied, :refused,
-        :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief, :repairs
+        :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief, :repairs,
+        :checks, :commits, :accepted_decisions, :app_update, :toolchain, :project
+      # The corpus's id for the run, learned after the record is written and used by the pull
+      # request to link the run's page. It is an accessor rather than a constructor argument
+      # because the record is the local artifact and the id is the service's answer.
+      attr_accessor :run_id
 
       def initialize(repository:, from_version:, to_version:, verdict:, why:, commit: nil,
                      worktree: nil, name: nil, requires_ruby: nil, interpreter: nil, image: nil,
                      machine: nil, era: nil, stages: [], applied: [], refused: [], decisions: [],
                      patch: "", baseline: nil, suite: nil, recorded_at: nil, brief: nil,
-                     repairs: [])
+                     repairs: [], checks: [], commits: [], accepted_decisions: [], app_update: nil,
+                     toolchain: nil, project: nil)
         @repository = repository
         @commit = commit
         @worktree = worktree
@@ -305,6 +354,29 @@ module AgentsFyi
         # apart from the patch because the patch is what the rung *is*, and a repair is what made it
         # pass — the distinction the corpus's reports are filed on.
         @repairs = repairs
+        # **The rest of the application's gate**, as `Checks::Result` values. The suite is not in
+        # this list: it is `baseline`/`suite`, and the PR renders it as the first check.
+        @checks = checks
+        # **The concern-sized commits this step made**, in order. The tree's HEAD is the delivered
+        # head, and this list is what lets the PR say which commit is which concern instead of one
+        # "as this tool made it" commit a reviewer has to read whole.
+        @commits = commits
+        # The accepted decisions the tree was walked with (`Project#decisions`), rendered in the PR
+        # as question/answer/why rather than as a list of line patches.
+        @accepted_decisions = accepted_decisions
+        # What `app:update` did: adopted files, conflicts, policy skips and the framework-default
+        # state. Its own field because a reviewer asks about it separately from "what changed".
+        @app_update = app_update
+        # The application's declared build facts. The run quotes them beside the interpreter that
+        # actually executed it, so a Ruby the declaration names and a Ruby the matrix chose are
+        # visibly two answers rather than one.
+        @toolchain = toolchain
+        # **The declaration the walk read, quoted into the record.** The project profile is a
+        # reviewable artifact even when it lives on the walker's volume: a PR that carries the
+        # profile it was walked from can be checked against the application without opening a
+        # second system, which is the whole point of making the profile data.
+        @project = project
+        @run_id = nil
       end
 
       # A refusal is a record too, and this is how one is built: nothing ran, and the
@@ -358,6 +430,13 @@ module AgentsFyi
           "why" => @why,
           "brief" => @brief&.to_h,
           "repairs" => @repairs.map(&:to_h),
+          "checks" => @checks.map(&:to_h),
+          "commits" => @commits,
+          "accepted_decisions" => @accepted_decisions.map(&:to_h),
+          "app_update" => @app_update,
+          "toolchain" => @toolchain,
+          "project" => @project,
+          "run_id" => @run_id,
           "baseline" => @baseline&.to_h,
           "suite" => @suite&.to_h,
           "stages" => @stages.map(&:to_h),
@@ -403,6 +482,218 @@ module AgentsFyi
 
       def to_json(*args)
         JSON.generate(to_h, *args)
+      end
+
+      # **The inverse of `to_h`, so a run can be replayed without re-walking it.** A dry-run
+      # review of a stored record needs the same objects the PR renderer reads; rebuilding them
+      # from the JSON is what makes "replay the three applications" a command over their records
+      # rather than a second walk.
+      def self.from_h(hash)
+        raise ArgumentError, "a record is an object, not #{hash.class}" unless hash.is_a?(Hash)
+
+        hash = normalize(hash)
+        %w[repository from_version to_version verdict].each do |field|
+          if hash[field].to_s.strip.empty?
+            raise ArgumentError, "the record has no #{field}, so there is nothing to preview"
+          end
+        end
+        unless [PASSED, FAILED, REFUSED, UNVERIFIED].include?(hash["verdict"].to_s)
+          raise ArgumentError, "the record's verdict is #{hash["verdict"].to_s.inspect}; known: " \
+                               "#{PASSED}, #{FAILED}, #{REFUSED}, #{UNVERIFIED}"
+        end
+        %w[app_update toolchain project].each do |field|
+          value = hash[field]
+          unless value.nil? || value.is_a?(Hash)
+            raise ArgumentError, "the record's #{field} is not an object"
+          end
+        end
+
+        stages = commands_from(hash["stages"])
+        # **The stage list is the fallback for the two commands a preview reads most.** A record
+        # written before the dedicated fields, or a service envelope whose commands were normalised,
+        # still has the baseline and suite among its stages; absence of the field is not absence of
+        # the evidence.
+        baseline = command_from(hash["baseline"]) || stages.find { |stage| stage.stage == BASELINE }
+        suite = command_from(hash["suite"]) || stages.find { |stage| stage.stage == SUITE }
+        record = new(
+          repository: hash["repository"], commit: hash["commit"], worktree: hash["worktree"],
+          from_version: hash["from_version"], to_version: hash["to_version"], name: hash["name"],
+          requires_ruby: hash["requires_ruby"], interpreter: hash["interpreter"],
+          image: hash["image"], machine: hash["machine"], era: hash["era"],
+          stages: stages,
+          applied: applied_from(hash["applied"]),
+          refused: refusals_from(hash["refused"]),
+          decisions: decisions_from(hash["decisions"]),
+          patch: hash["patch"].to_s,
+          baseline: baseline, suite: suite,
+          verdict: hash["verdict"], why: hash["why"], recorded_at: hash["recorded_at"],
+          brief: brief_from(hash["brief"]), repairs: repairs_from(hash["repairs"]),
+          checks: checks_from(hash["checks"]),
+          commits: list_of(hash["commits"], "commits"),
+          accepted_decisions: list_of(hash["accepted_decisions"], "accepted_decisions"),
+          app_update: hash["app_update"], toolchain: hash["toolchain"],
+          project: hash["project"]
+        )
+        record.run_id = hash["run_id"]
+        record
+      end
+
+      # **Two shapes, one record.** `step --record` writes the local record (`repository`, `stages`,
+      # `baseline`, `suite`); the service's `GET /api/upgrades/runs/{id}` answers a run envelope
+      # (`repo_url`, `commands`, `refusals`). A preview should read either, and silently treating the
+      # service's shape as an empty local record would render "suite not declared" and "risk: low"
+      # over a run that says `failed`. Normalising here is what keeps the two honest.
+      def self.normalize(hash)
+        return hash unless service_shape?(hash)
+
+        run = hash["run"].is_a?(Hash) ? hash["run"] : hash
+        commands = hash["commands"].is_a?(Array) ? hash["commands"] : []
+        stages = commands.filter_map { |command| service_command(command) }
+        {
+          "repository" => run["repo_url"],
+          "commit" => run["commit"],
+          "from_version" => run["from_version"],
+          "to_version" => run["to_version"],
+          "verdict" => run["verdict"],
+          "why" => run["note"],
+          "image" => run["image"],
+          "recorded_at" => run["recorded_at"] || run["finished_at"],
+          "stages" => stages,
+          "baseline" => stages.find { |stage| stage["stage"] == BASELINE },
+          "suite" => stages.find { |stage| stage["stage"] == SUITE },
+          "refused" => Array(hash["refusals"]).map { |refusal| service_refusal(refusal) },
+          "patch" => hash["patch"].to_s
+        }
+      end
+
+      def self.service_shape?(hash)
+        hash.key?("run") || (hash.key?("repo_url") && !hash.key?("repository"))
+      end
+
+      def self.service_command(command)
+        return nil unless command.is_a?(Hash)
+
+        argv = command["argv"] || command["command"]
+        argv = argv.join(" ") if argv.is_a?(Array)
+        output = [command["stdout_tail"], command["stderr_tail"]].compact.reject(&:empty?).join("\n")
+        {
+          "stage" => command["stage"], "command" => argv.to_s, "display" => argv.to_s,
+          "ran" => !command["exit_code"].nil?, "exit_code" => command["exit_code"],
+          "seconds" => command["duration_ms"].to_f / 1000.0, "output_tail" => output
+        }
+      end
+
+      def self.service_refusal(refusal)
+        return {} unless refusal.is_a?(Hash)
+
+        {
+          "path" => refusal["path"], "line" => refusal["line"],
+          "text" => nil, "found" => nil,
+          "reason" => refusal["note"].to_s.empty? ? "recorded by the service" : refusal["note"],
+          "subject" => refusal["subject"], "kind" => refusal["kind"],
+          "replacement" => refusal["replacement"], "source" => refusal["source"],
+          "note" => refusal["note"]
+        }
+      end
+
+      def self.command_from(hash)
+        return nil if hash.nil?
+        return hash if hash.is_a?(Command)
+        raise ArgumentError, "a stage is not an object" unless hash.is_a?(Hash)
+        raise ArgumentError, "a stage has no name" if hash["stage"].to_s.empty?
+
+        Command.new(stage: hash["stage"], command: hash["command"], display: hash["display"],
+          ran: hash["ran"], exit_code: hash["exit_code"],
+          seconds: hash["seconds"].nil? ? 0.0 : hash["seconds"].to_f,
+          output_tail: hash["output_tail"])
+      end
+
+      def self.commands_from(list)
+        list_of(list, "stages").map { |item| command_from(item) }
+      end
+
+      def self.applied_from(list)
+        list_of(list, "applied").map do |edit|
+          Applier::Applied.new(path: edit["path"], line: edit["line"], text: edit["text"],
+            after: edit["after"], subject: edit["subject"], origin: edit["origin"],
+            note: edit["note"])
+        end
+      end
+
+      def self.refusals_from(list)
+        list_of(list, "refused").map do |edit|
+          Applier::Refused.new(path: edit["path"], line: edit["line"], text: edit["text"],
+            found: edit["found"], reason: edit["reason"], subject: edit["subject"],
+            kind: edit["kind"], replacement: edit["replacement"], source: edit["source"],
+            note: edit["note"])
+        end
+      end
+
+      def self.decisions_from(list)
+        list_of(list, "decisions").map do |change|
+          Decision.new(path: change["path"], line: change["line"], subject: change["subject"],
+            reason: change["reason"], kind: change["kind"],
+            replacement: change["replacement"], source: change["source"])
+        end
+      end
+
+      def self.checks_from(list)
+        return [] if list.nil?
+        raise ArgumentError, "the record's checks is not a list" unless list.is_a?(Array)
+
+        list.map do |check|
+          next check if check.is_a?(Checks::Result)
+          raise ArgumentError, "the record's checks carries an item that is not an object" unless
+            check.is_a?(Hash)
+          raise ArgumentError, "a check has no status" if check["status"].to_s.empty?
+
+          Checks::Result.new(id: check["id"], name: check["name"], kind: check["kind"],
+            command: check["command"], required: check["required"], external: check["external"],
+            environment: check["environment"], status: check["status"], ran: check["ran"],
+            exit_code: check["exit_code"], seconds: check["seconds"],
+            output_tail: check["output_tail"], reason: check["reason"])
+        end
+      end
+
+      def self.list_of(list, field)
+        return [] if list.nil?
+        raise ArgumentError, "the record's #{field} is not a list" unless list.is_a?(Array)
+
+        list.each do |item|
+          raise ArgumentError, "the record's #{field} carries an item that is not an object" unless
+            item.is_a?(Hash)
+        end
+        list
+      end
+
+      def self.brief_from(hash)
+        return nil if hash.nil?
+        return hash if hash.is_a?(Brief::Result)
+        raise ArgumentError, "the record's brief is not an object" unless hash.is_a?(Hash)
+
+        sections = list_of(hash["sections"], "brief.sections").map do |section|
+          Brief::Section.new(key: section["key"], title: section["title"],
+            question: section["question"], state: section["state"], note: section["note"],
+            total: section["total"], items: items_from(section["items"]))
+        end
+        Brief::Result.new(sections: sections, asked: hash["asked"],
+          truncated: hash["truncated"], unavailable: hash["unavailable"])
+      end
+
+      def self.items_from(list)
+        list_of(list, "brief.items").map do |item|
+          Brief::Item.new(id: item["id"], title: item["title"], library: item["library"],
+            version: item["version"], status: item["status"], trust: item["trust"],
+            rank: item["rank"], match: item["match"], fix: item["fix"])
+        end
+      end
+
+      def self.repairs_from(list)
+        list_of(list, "repairs").map do |repair|
+          Repair::Outcome.new(failure: repair["failure"], suite: repair["suite"],
+            attempts: repair["attempts"], files: repair["files"], diff: repair["diff"],
+            before_the_move: repair["before_the_move"])
+        end
       end
 
       # Written where an operator asked for it, and only there: the tool keeps no
@@ -460,6 +751,10 @@ module AgentsFyi
         lines << "   #{by_rule} of those edit(s) were made by this tool's own rules" if by_rule.positive?
         lines << "   #{by_companion} of those edit(s) were made by a gem's own upgrade" if
           by_companion.positive?
+        unless @checks.empty?
+          lines << "   checks: #{@checks.map { |check| "#{check.id} #{check.status}" }.join(", ")}"
+        end
+        lines << "   commits: #{@commits.length} concern(s)" if @commits.any?
         @refused.first(5).each { |edit| lines << "     refused: #{edit.path}:#{edit.line} — #{edit.reason}" }
         @decisions.first(5).each { |change| lines << "     decide: #{change.subject} — #{change.reason}" }
         lines << "   patch: #{@patch.empty? ? "no diff" : "#{@patch.lines.size} line(s)"}"

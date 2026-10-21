@@ -22,7 +22,7 @@ module AgentsFyi
       # typo is a setting that silently does nothing, and a walk that ignores a setting its operator
       # believes is in force is the failure this class exists to prevent.
       FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery
-        decisions].freeze
+        decisions source_roots checks toolchain style app_update].freeze
 
       # The fields one accepted decision carries in a declaration. It is the site admin's rendering of
       # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
@@ -39,6 +39,27 @@ module AgentsFyi
       # Where a passed rung is delivered. `none` is a repository the walk may still commit to but has
       # nowhere to open a request for — the patch and the record are then the product.
       PROVIDERS = %w[github none].freeze
+
+      # **A check is one thing the application's own gate runs, and the suite is only one of them.**
+      # Measured on the first walks, a green `bundle exec rspec` was treated as the whole gate while
+      # the application's CI also ran packwerk, rubocop and a JavaScript build. A check that is not
+      # declared is not therefore green; the PR says which checks were not run.
+      CHECK_KINDS = %w[test lint static build prepare external].freeze
+
+      # The environments a check can name. `ci` is deliberately not "the same as test": it says the
+      # command is the application's CI command and this machine cannot reproduce that environment.
+      CHECK_ENVIRONMENTS = %w[test development ci].freeze
+
+      # What an `app_update` policy may say. `added_only` is the only adoption rule this build
+      # implements: a file the application already owns keeps the application's version and the
+      # conflict is recorded, because overwriting it is a decision and not a safeguard.
+      APP_UPDATE_ADOPTS = %w[added_only].freeze
+
+      # How new framework defaults are treated: `off` means `app:update` writes the initializer and
+      # the walk leaves `config.load_defaults` alone; `step` lets `UPGRADER_DEFAULT_STEPS` spend a
+      # suite run per toggle, exactly as before. The declaration is the policy; the environment is
+      # the budget.
+      FRAMEWORK_DEFAULTS = %w[off step].freeze
 
       # The default destination of a branch a rung is published on. `<release>` is the rung's target
       # release, which is what makes one branch per rung the default shape rather than a convention.
@@ -73,8 +94,63 @@ module AgentsFyi
         def to_h = { "provider" => provider, "branch" => branch, "chain" => chain }
       end
 
+      # One command in the application's gate. `external` is the honest answer for a check this
+      # walker cannot run — the application's GitHub Actions job is the case that produced it — and
+      # an external check must say *where* it runs, because "not run here" without a reason is
+      # indistinguishable from a check somebody forgot to declare.
+      Check = Struct.new(:id, :name, :kind, :command, :required, :external, :environment, :reason,
+        keyword_init: true) do
+        def external? = external
+
+        def local? = !external
+
+        def label = name.to_s.empty? ? id : name
+
+        def to_h
+          { "id" => id, "name" => name, "kind" => kind, "command" => command,
+            "required" => required, "external" => external, "environment" => environment,
+            "reason" => reason }.compact
+        end
+      end
+
+      # The application's build facts. They are carried and quoted now; the overlay image that
+      # spends them is a later phase, and a field that is declared but not yet consumed is still a
+      # fact a reviewer can check against the application's CI.
+      Toolchain = Struct.new(:ruby, :node, :postgres, :extensions, :apt, :native,
+        keyword_init: true) do
+        def to_h
+          { "ruby" => ruby, "node" => node, "postgres" => postgres,
+            "extensions" => extensions, "apt" => apt, "native" => native }.compact
+        end
+      end
+
+      # What the walk may do with the files `app:update` generates, and whether it may turn a
+      # framework default on. The two are separate on purpose: adopting a generated file is a fact
+      # about the application's configuration, and flipping a default is a change the suite must
+      # judge one at a time.
+      AppUpdate = Struct.new(:adopt, :skip, :skip_unused_engines, :framework_defaults,
+        keyword_init: true) do
+        def skip?(path)
+          skip.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME) }
+        end
+
+        def step_defaults? = framework_defaults == "step"
+
+        def to_h
+          { "adopt" => adopt, "skip" => skip, "skip_unused_engines" => skip_unused_engines,
+            "framework_defaults" => framework_defaults }
+        end
+      end
+
+      # The formatter and the check that verifies it. `format` may write; `check` is the same
+      # question asked without writing, and it is added to the gate as a check when it is declared.
+      Style = Struct.new(:format, :check, keyword_init: true) do
+        def to_h = { "format" => format, "check" => check }.compact
+      end
+
       attr_reader :slug, :repo, :base_ref, :from, :to, :stack, :suite, :services, :env_names,
-        :eras, :delivery, :decisions, :path
+        :eras, :delivery, :decisions, :source_roots, :checks, :toolchain, :style, :app_update,
+        :path
 
       # The declaration named by a slug, from the projects directory.
       #
@@ -171,6 +247,11 @@ module AgentsFyi
         @eras = read_eras(fields["eras"])
         @delivery = read_delivery(fields["delivery"])
         @decisions = read_decisions(fields["decisions"])
+        @source_roots = read_source_roots(fields["source_roots"])
+        @checks = read_checks(fields["checks"])
+        @toolchain = read_toolchain(fields["toolchain"])
+        @style = read_style(fields["style"])
+        @app_update = read_app_update(fields["app_update"])
       end
 
       # The declaration as it would be written back — what the site admin edits and what a record quotes.
@@ -179,7 +260,9 @@ module AgentsFyi
           "slug" => slug, "repo" => repo, "base_ref" => base_ref, "from" => from, "to" => to,
           "stack" => stack, "suite" => suite.to_h, "services" => services,
           "env_names" => env_names, "eras" => eras, "delivery" => delivery.to_h,
-          "decisions" => decisions
+          "decisions" => decisions, "source_roots" => source_roots,
+          "checks" => checks.map(&:to_h), "toolchain" => toolchain&.to_h,
+          "style" => style&.to_h, "app_update" => app_update.to_h
         }.compact
       end
 
@@ -207,6 +290,20 @@ module AgentsFyi
 
         text = value.to_s.strip
         text.empty? ? nil : text
+      end
+
+      # **A boolean is a boolean.** `"required": "false"` used to make a required check optional,
+      # because `"false" == true` is false — a typo that silently weakened the gate. The declaration
+      # refuses anything but true/false, like every other key it does not understand.
+      def boolean_field(fields, name, default, where)
+        return default unless fields.key?(name)
+
+        value = fields[name]
+        unless value == true || value == false
+          raise Invalid, "#{where}.#{name} is #{value.inspect}; it is true or false, not a string " \
+                         "or a null"
+        end
+        value
       end
 
       def read_suite(value)
@@ -304,6 +401,177 @@ module AgentsFyi
 
           decision
         end
+      end
+
+      # **Where the application's own source lives, and the one place a rule may look outside it.**
+      # A modular monolith keeps models under `components/*/app/models`, and an engine under
+      # `engines/`; a rule whose glob names `app/models` is a fact about one application, not about
+      # Rails. The walker scopes the scan and the rules to these roots, and an absent list keeps the
+      # old repository-wide read, so a declaration written before the field existed means what it
+      # meant.
+      def read_source_roots(value)
+        return [] if value.nil?
+
+        roots = read_names(value, "source_roots")
+        roots.each do |root|
+          if root.start_with?("/") || root.split("/").include?("..")
+            raise Invalid, "source_roots carries #{root.inspect}: a root is a relative directory " \
+                           "inside the application, never an absolute path or one that leaves it"
+          end
+        end
+        roots
+      end
+
+      # **The rest of the application's gate.** The suite is declared separately and is always the
+      # test check; this list is what the suite alone was hiding. An empty list is a real answer —
+      # the suite is the gate — and the PR says so rather than implying checks that do not exist.
+      def read_checks(value)
+        return [] if value.nil?
+
+        unless value.is_a?(Array)
+          raise Invalid, "checks must be a list of check objects, not #{value.class}"
+        end
+
+        seen = {}
+        value.each_with_index.map do |check, index|
+          unless check.is_a?(Hash)
+            raise Invalid, "check #{index} is not an object"
+          end
+
+          unknown = check.keys - %w[id name kind command required external environment reason]
+          unless unknown.empty?
+            raise Invalid, "unknown field(s) in check #{index}: #{unknown.sort.join(", ")}"
+          end
+
+          id = check["id"].to_s.strip
+          raise Invalid, "check #{index} has no `id`, so no record could name it" if id.empty?
+          if seen[id]
+            raise Invalid, "two checks are called #{id.inspect}; an id names one result"
+          end
+          seen[id] = true
+
+          kind = check["kind"].to_s.strip
+          unless CHECK_KINDS.include?(kind)
+            raise Invalid, "check #{id}'s kind is #{kind.inspect}; known: #{CHECK_KINDS.join(", ")}"
+          end
+
+          external = boolean_field(check, "external", false, "check #{id}") || kind == "external"
+          required = boolean_field(check, "required", true, "check #{id}")
+          command = check["command"].to_s.strip
+          reason = check["reason"].to_s.strip
+          if external
+            if reason.empty?
+              raise Invalid, "check #{id} is external and has no `reason`: say where it runs, or " \
+                             "the record reads as a check somebody forgot"
+            end
+          elsif command.empty?
+            raise Invalid, "check #{id} has no `command`: a local check is a command this walk runs"
+          end
+
+          environment = check["environment"].to_s.strip
+          if !environment.empty? && !CHECK_ENVIRONMENTS.include?(environment)
+            raise Invalid, "check #{id}'s environment is #{environment.inspect}; known: " \
+                           "#{CHECK_ENVIRONMENTS.join(", ")}"
+          end
+          if environment == "ci" && !external
+            raise Invalid, "check #{id} names environment `ci` but is not external: this walk " \
+                           "cannot reproduce the application's CI environment, so a command it " \
+                           "runs here is not that check"
+          end
+
+          Check.new(id: id, name: check["name"].to_s.strip.empty? ? nil : check["name"].to_s.strip,
+            kind: kind, command: command.empty? ? nil : command, required: required,
+            external: external, environment: environment.empty? ? nil : environment,
+            reason: reason.empty? ? nil : reason)
+        end
+      end
+
+      # The build facts the application's CI assumes. They are optional because a declaration that
+      # does not know them is still walkable; they become load-bearing when the overlay image and the
+      # parity check arrive.
+      def read_toolchain(value)
+        return nil if value.nil?
+
+        unless value.is_a?(Hash)
+          raise Invalid, "toolchain must be an object, not #{value.class}"
+        end
+
+        unknown = value.keys - %w[ruby node postgres extensions apt native]
+        raise Invalid, "unknown toolchain field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        Toolchain.new(
+          ruby: optional_text(value, "ruby"), node: optional_text(value, "node"),
+          postgres: optional_text(value, "postgres"),
+          extensions: read_names(value["extensions"] || [], "toolchain.extensions"),
+          apt: read_names(value["apt"] || [], "toolchain.apt"),
+          native: read_names(value["native"] || [], "toolchain.native")
+        )
+      end
+
+      def read_style(value)
+        return nil if value.nil?
+
+        unless value.is_a?(Hash)
+          raise Invalid, "style must be an object with format and check, not #{value.class}"
+        end
+
+        unknown = value.keys - %w[format check]
+        raise Invalid, "unknown style field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        format = optional_text(value, "format")
+        check = optional_text(value, "check")
+        if format.nil? && check.nil?
+          raise Invalid, "style declares neither `format` nor `check`, so it asks for nothing"
+        end
+
+        Style.new(format: format, check: check)
+      end
+
+      # **What `app:update` may do.** The defaults are the walk's current behaviour, stated rather
+      # than implied: adopt only files the application did not have, skip an engine's migration when
+      # the application does not use that engine, record every conflict, and leave
+      # `config.load_defaults` alone unless the declaration says `step`.
+      def read_app_update(value)
+        defaults = { "adopt" => "added_only", "skip" => [], "skip_unused_engines" => true,
+                     "framework_defaults" => "off" }
+        return AppUpdate.new(**symbolize(defaults)) if value.nil?
+
+        unless value.is_a?(Hash)
+          raise Invalid, "app_update must be an object, not #{value.class}"
+        end
+
+        unknown = value.keys - defaults.keys
+        raise Invalid, "unknown app_update field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        merged = defaults.merge(value)
+        adopt = merged["adopt"].to_s
+        unless APP_UPDATE_ADOPTS.include?(adopt)
+          raise Invalid, "app_update.adopt is #{adopt.inspect}; this build knows " \
+                         "#{APP_UPDATE_ADOPTS.join(", ")} — overwriting a file the application " \
+                         "owns is a decision, not a policy this walk will take"
+        end
+
+        skip = read_names(merged["skip"] || [], "app_update.skip")
+        skip.each do |pattern|
+          if pattern.start_with?("/") || pattern.split("/").include?("..")
+            raise Invalid, "app_update.skip carries #{pattern.inspect}: a skip is a relative glob " \
+                           "inside the application"
+          end
+        end
+
+        framework = merged["framework_defaults"].to_s
+        unless FRAMEWORK_DEFAULTS.include?(framework)
+          raise Invalid, "app_update.framework_defaults is #{framework.inspect}; known: " \
+                         "#{FRAMEWORK_DEFAULTS.join(", ")}"
+        end
+
+        AppUpdate.new(adopt: adopt, skip: skip,
+          skip_unused_engines: boolean_field(merged, "skip_unused_engines", true, "app_update"),
+          framework_defaults: framework)
+      end
+
+      def symbolize(hash)
+        hash.transform_keys(&:to_sym)
       end
 
       def read_delivery(value)

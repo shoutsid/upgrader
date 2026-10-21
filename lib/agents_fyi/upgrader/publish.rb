@@ -130,10 +130,12 @@ module AgentsFyi
         # is an API to call.
         unless github?
           commit = publish_commit
+          @publishing_commit = commit
+          @base = base_branch
           pushed, pushed_why = push(commit)
           return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
-          return Result.new(pushed: true, branch: branch, base: base_branch, commit: commit, reason:
+          return Result.new(pushed: true, branch: branch, base: @base, commit: commit, reason:
             "#{@repository} is not a github.com repository, so there is nowhere to open a pull " \
             "request: the branch is on origin, and the patch and the record are the product " \
             "for anything else")
@@ -146,19 +148,25 @@ module AgentsFyi
         end
 
         commit = publish_commit
+        @publishing_commit = commit
         pushed, pushed_why = push(commit)
         return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
-        base = base_branch
+        @base = base_branch
         request = request_pull_request(
-          owner: owner, name: name, head: branch, base: base,
+          owner: owner, name: name, head: branch, base: @base,
           title: title, body: body
         )
-        Result.new(pushed: true, branch: branch, base: base, commit: commit,
+        Result.new(pushed: true, branch: branch, base: @base, commit: commit,
           pull_request: request, reason: "")
       rescue GitHub::Refused => e
         Result.new(pushed: false, branch: branch, reason: redact(e.message))
       end
+
+      # **The body without a push.** `Preview` is the caller: a stored record is already the whole
+      # evidence, and rendering it should not need a checkout or a token. The method is public so a
+      # dry run is an ordinary call rather than a test's `send`.
+      def preview_body = body
 
       private
 
@@ -308,101 +316,187 @@ module AgentsFyi
         "Upgrade Rails to #{@to_version} (agents-fyi)"
       end
 
-      # What a reviewer needs and nothing else: what moved, what established that it works,
-      # and what still needs a person. Composed from the record, so the request cannot say
-      # something the record does not — and the record is what the corpus holds.
+      # **The review brief, not a run log.** A reviewer's questions are: what moved, what established
+      # it, what is different in *this* application, what did the tool decide, what is left for me,
+      # and is it safe to merge. The run record is below, collapsed, because it is the evidence and
+      # not the first thing a person should have to read. Every line is composed from the record, so
+      # the request cannot say something the record does not.
       def body
+        sections = [moved_section]
+        sections << checks_section
+        sections << brief_section if @record&.brief
+        sections << changed_section if @record
+        sections << decisions_section if @record
+        sections << app_update_section if @record
+        sections << manual_section if @record
+        sections << merge_section
+        sections << record_section if @record
+        sections.join("\n\n")
+      end
+
+      def moved_section
         lines = ["## What moved", ""]
         lines << "`agents-fyi` walked one rung of the Rails ladder: **#{@from_version} → #{@to_version}**."
-        unless @commit.empty?
+        if @record
+          lines << ""
+          lines << "The step's own verdict: `#{@record.verdict}` — #{@record.why}"
+        end
+        lines << ""
+        lines << "- base commit: `#{short(base_commit)}`" unless base_commit.empty?
+        lines << "- base branch: `#{@base}`" unless @base.to_s.empty?
+        lines << "- delivered head: `#{short(delivered_head)}`" unless delivered_head.to_s.empty?
+        unless @commit.empty? || @publishing_commit == @commit
           lines << ""
           lines << "This branch is the rung's recorded commit `#{@commit[0, 8]}`: the first delivery " \
                    "attempt could not reach the remote, and the rung was not re-walked."
         end
-        if @record&.brief
-          lines << ""
-          lines << "## What the corpus already knew"
-          lines << ""
-          lines << @record.brief.to_markdown(base: @report_base.empty? ? nil : @report_base)
+        lines.join("\n")
+      end
+
+      # The gate, one row per check. **An external check is never green here**: the walk did not run
+      # it, and the application's CI owns the answer. The suite is the first row because it is the
+      # test check; `checks` is what the suite alone was hiding.
+      def checks_section
+        unless @record
+          return "## Checks\n\nThe run record is not available on this delivery retry, so no check " \
+                 "result is claimed here. The branch carries the commit the first attempt produced."
         end
 
-        if @record
-          lines << ""
-          lines << "The step's own verdict: `#{@record.verdict}` — #{@record.why}"
-          lines << ""
-          lines << "## What established it"
-          lines << ""
-          evidence.each { |line| lines << "- #{line}" }
+        lines = ["## Checks", "", "| Check | Result | What ran |", "|---|---|---|"]
+        lines << suite_row
+        style_row = style_check_row
+        lines << style_row if style_row
+        @record.checks.each do |check|
+          result = check.external? ? "external — not run here" : check.status.tr("_", " ")
+          what = check.external? ? check.reason.to_s : "`#{check.command}`"
+          required = check.required ? "" : " (optional)"
+          lines << "| #{check.label}#{required} | #{result} | #{escape_cell(what)} |"
         end
-
-        # **An accepted decision is not a "needs a decision".** It was answered before the rung ran,
-        # its effects were applied before the baseline, and the suite that establishes the rung ran
-        # with them in place — so it belongs to what the rung *is*, not to what is still owed. The
-        # origin (`decision:<id>`) is the only place that attribution survives into the record.
-        if @record
-          decided = @record.applied.select do |edit|
-            edit.respond_to?(:origin) && edit.origin.to_s.start_with?("decision:")
-          end
-          unless decided.empty?
-            lines << ""
-            lines << "## Decisions in force"
-            lines << ""
-            lines << "These edits come from accepted decisions, applied before the baseline, and the"
-            lines << "suite ran with them in place:"
-            lines << ""
-            decided.group_by(&:origin).each do |origin, edits|
-              lines << "### `#{origin}`"
-              edits.each do |edit|
-                lines << "- `#{edit.path}`:#{edit.line} `#{edit.text.to_s.strip}` → " \
-                         "`#{edit.after.to_s.strip}`"
-              end
-            end
+        if @record.checks.empty? && style_row.nil?
+          if @record.project.nil?
+            lines << "| other checks | not recorded | this record carries no check results; the " \
+                     "suite is the only gate it names |"
+          else
+            lines << "| other checks | none declared | the suite is the gate the project declares |"
           end
         end
+        external = @record.checks.count(&:external?)
+        if external.positive?
+          lines << ""
+          lines << "**#{external} check(s) are external and were not run by this walk.** They are " \
+                   "listed with where they run; this pull request does not report them as green."
+        end
+        toolchain = toolchain_note
+        lines << "" << toolchain if toolchain
+        lines << ""
+        lines << "## What established it"
+        lines << ""
+        evidence.each { |line| lines << "- #{line}" }
+        lines.join("\n")
+      end
 
-        if @record && !@record.refused.empty?
-          lines << ""
-          lines << "## Edits the tool could not write"
-          lines << ""
-          lines << "The line did not match what the scan read, so nothing was written:"
-          lines << ""
-          @record.refused.first(12).each do |refusal|
-            lines << "- `#{refusal.path}`:#{refusal.line} — #{refusal.reason}"
+      def suite_row
+        result =
+          if @record.suite.nil?
+            @record.project.nil? ? "not recorded" : "not declared"
+          elsif !@record.suite.ran
+            "did not run"
+          elsif @record.suite.ok? && @record.baseline&.ok?
+            "passed"
+          elsif !@record.baseline&.ok?
+            "unverified — the baseline was not green"
+          else
+            "failed"
           end
-          if @record.refused.length > 12
-            lines << "- …and #{@record.refused.length - 12} more on the run's page"
+        what =
+          if @record.suite
+            "`#{@record.suite.command}` (baseline: #{status_word(@record.baseline)}; " \
+              "after: #{status_word(@record.suite)})"
+          elsif @record.project.nil?
+            "the record does not carry a suite stage"
+          else
+            "no suite was found"
           end
+        "| suite | #{result} | #{escape_cell(what)} |"
+      end
+
+      def style_check_row
+        stage = @record.stages.find { |entry| entry.stage == Record::STYLE }
+        return nil if stage.nil?
+
+        result = stage.ok? ? "passed" : (stage.ran ? "failed" : "did not run")
+        "| style | #{result} | #{escape_cell("`#{stage.readable}`")} |"
+      end
+
+      def status_word(command)
+        return "not run" if command.nil?
+        return "did not run" unless command.ran
+
+        command.ok? ? "exit 0" : "exit #{command.exit_code}"
+      end
+
+      # **The declared toolchain beside the one that ran.** Ruby is measurable here — the record
+      # carries the interpreter — and a mismatch is a parity failure a reviewer should see. Node,
+      # PostgreSQL, extensions and native libraries are declared facts; this record does not
+      # measure them, and it says so rather than implying they were checked.
+      def toolchain_note
+        facts = @record.toolchain
+        return nil if facts.nil? || facts.empty?
+
+        parts = []
+        parts << "Ruby `#{facts["ruby"]}`" unless facts["ruby"].to_s.empty?
+        parts << "Node `#{facts["node"]}`" unless facts["node"].to_s.empty?
+        parts << "PostgreSQL `#{facts["postgres"]}`" unless facts["postgres"].to_s.empty?
+        parts << "extensions #{Array(facts["extensions"]).join(", ")}" if Array(facts["extensions"]).any?
+        parts << "apt #{Array(facts["apt"]).join(", ")}" if Array(facts["apt"]).any?
+        return nil if parts.empty?
+
+        note = "Declared toolchain: #{parts.join(", ")}."
+        declared_ruby = facts["ruby"].to_s
+        if !declared_ruby.empty? && !@record.interpreter.to_s.include?(declared_ruby)
+          note += " This run executed on `#{@record.interpreter}`, which is not the declared Ruby: " \
+                  "the record cannot claim the application's CI parity."
+        end
+        note += " The non-Ruby facts are declarations, not measurements of this run."
+        note
+      end
+
+      def brief_section
+        lines = ["## What the corpus already knew", ""]
+        lines << @record.brief.to_markdown(base: @report_base.empty? ? nil : @report_base)
+        lines.join("\n")
+      end
+
+      # What changed, by concern. The commits are made where the tree changes, so this list is the
+      # branch's own review order; the diff is still the whole rung against the base.
+      def changed_section
+        lines = ["## What changed", ""]
+        if @record.commits.any?
+          lines << "The branch is a series of concern-sized commits:"
+          lines << ""
+          @record.commits.each do |commit|
+            lines << "- `#{short(commit["commit"])}` — #{commit["message"]}"
+          end
+        elsif delivered_head.to_s != @commit.to_s
+          lines << "- the rung's changes are in `#{short(delivered_head)}`"
+        else
+          lines << "- this record does not carry a concern-commit series"
         end
 
-        # **The body is a summary; the diff and the run page are the record.** A rung that a gem's
-        # own upgrade touched a hundred times produced a hundred bullets here, which is a diff pasted
-        # into prose. The manual changes are split the way the site admin splits them: a call site this
-        # application has is work, and a change the rung carries that it does not use is not.
-        if @record && !@record.decisions.empty?
-          located = @record.decisions.reject { |decision| decision.path.to_s.empty? }
-          carried = @record.decisions.length - located.length
-          unless located.empty?
-            lines << ""
-            lines << "## Manual changes found in this application"
-            lines << ""
-            located.first(20).each do |decision|
-              where = [decision.path, decision.line].compact.join(":")
-              lines << "- `#{where}` — #{decision.subject}: #{decision.reason}"
-            end
-            if located.length > 20
-              lines << "- …and #{located.length - 20} more on the run's page"
-            end
-          end
-          if carried.positive?
-            lines << ""
-            lines << "## Manual changes the rung carries"
-            lines << ""
-            lines << "#{carried} change(s) this rung documents that this application does not use. " \
-                     "They need no edit; the run's page lists them."
-          end
+        pin = @record.stages.find { |stage| stage.stage == Record::PIN }
+        if pin
+          lines << "- Rails pin: `#{public_stage_command(pin)}` — " \
+                   "#{pin.ok? ? "exit 0" : "exit #{pin.exit_code}"}"
         end
 
-        if @record && !@record.applied.empty?
+        if @record.app_update
+          update = @record.app_update
+          lines << "- `app:update`: #{Array(update["adopted"]).length} file(s) adopted, " \
+                   "#{Array(update["conflicts"]).length} conflict(s), " \
+                   "#{Array(update["skipped"]).length} skipped by policy"
+        end
+
+        if @record.applied.any?
           counts = Hash.new(0)
           @record.applied.each do |edit|
             origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
@@ -415,22 +509,373 @@ module AgentsFyi
           parts << "#{counts['companion']} from gems' own upgrades" if counts["companion"].positive?
           parts << "#{counts['']} from the service's scan" if counts[""].positive?
           lines << ""
-          lines << "## What the tool wrote"
-          lines << ""
+          # **This sentence is kept word for word**: it is what a reader uses to tell a mechanical
+          # rung from one an accepted decision shaped, and the tests hold it.
           lines << "The tool wrote #{@record.applied.length} edit(s): #{parts.join(", ")}. The diff " \
                    "is the complete record; every edit and its reason is on the run's page."
         end
-
-        lines << ""
-        lines << "---"
-        lines << ""
-        lines << "Written by `agents-fyi`'s upgrader: the ladder is the service's, every command"
-        lines << "and its exit code are in the run's record, and the test suite ran green both"
-        lines << "before and after the step (or the record says why it did not). Review the diff"
-        lines << "the way you would review a colleague's: the mechanical half is applied, and the"
-        lines << "decisions and manual changes above are what a machine would not decide."
         lines.join("\n")
       end
+
+      # **An accepted decision is not a "needs a decision".** It was answered before the rung ran,
+      # its effects were applied before the baseline, and the suite that establishes the rung ran
+      # with them in place — so it belongs to what the rung *is*, not to what is still owed. The
+      # question and answer are what a reviewer reads; the patch is the implementation.
+      def decisions_section
+        decided = @record.applied.select do |edit|
+          edit.respond_to?(:origin) && edit.origin.to_s.start_with?("decision:")
+        end
+        return "" if @record.accepted_decisions.empty? && decided.empty?
+
+        lines = ["## Decisions in force", ""]
+        @record.accepted_decisions.each do |decision|
+          lines << "### `#{decision["id"]}` — #{decision["question"]}"
+          lines << ""
+          lines << "**Answer.** #{decision["answer"]}"
+          lines << ""
+          lines << "Accepted by `#{decision["accepted_by"]}`; " \
+                   "#{Array(decision["effects"]).length} effect(s) in force. " \
+                   "The suite ran with them in place."
+          lines << ""
+        end
+        unless decided.empty?
+          lines << "The edits these decisions made:"
+          lines << ""
+          decided.group_by(&:origin).each do |origin, edits|
+            lines << "### `#{origin}`"
+            edits.each do |edit|
+              lines << "- `#{edit.path}`:#{edit.line} `#{edit.text.to_s.strip}` → " \
+                       "`#{edit.after.to_s.strip}`"
+            end
+          end
+        end
+        lines.join("\n")
+      end
+
+      # `app:update` gets its own section because it is the stage a reviewer asks about separately:
+      # which generated files arrived, which were kept as the application's own, and whether the
+      # framework defaults were adopted or left alone.
+      def app_update_section
+        update = @record.app_update
+        if update.nil?
+          return "## app:update\n\nThis record does not carry an `app:update` section — it was " \
+                 "written before that section existed, or by a client that did not send one. " \
+                 "That is not the same as saying the stage did not run."
+        end
+
+        defaults = update["load_defaults"].to_s.empty? ? "" :
+          " (the application declares `config.load_defaults #{update["load_defaults"]}`)"
+        lines = ["## app:update", "",
+          "- adoption: `#{update["adopt"]}` — a file the application already owns keeps its version",
+          "- framework defaults: `#{update["framework_defaults"]}`#{defaults}"]
+        adopted = Array(update["adopted"])
+        unless adopted.empty?
+          lines << ""
+          lines << "### Files adopted"
+          lines << ""
+          adopted.first(15).each { |path| lines << "- `#{path}`" }
+          lines << "- …and #{adopted.length - 15} more in the run record" if adopted.length > 15
+        end
+        conflicts = Array(update["conflicts"])
+        unless conflicts.empty?
+          lines << ""
+          lines << "### Conflicts kept as the application's own"
+          lines << ""
+          conflicts.first(15).each { |path| lines << "- `#{path}`" }
+          lines << "- …and #{conflicts.length - 15} more in the run record" if conflicts.length > 15
+        end
+        skipped = Array(update["skipped"])
+        unless skipped.empty?
+          lines << ""
+          lines << "### Skipped by the project's policy"
+          lines << ""
+          skipped.first(15).each do |entry|
+            lines << "- `#{entry["path"]}` — #{entry["reason"]}"
+          end
+          lines << "- …and #{skipped.length - 15} more in the run record" if skipped.length > 15
+        end
+        lines.join("\n")
+      end
+
+      # **Only what is new for this rung.** The carried guide entries are a number, not a list; the
+      # call sites this application has are the work. The full list is in the record below.
+      def manual_section
+        lines = []
+        # **A call site an earlier rung already located is not new work.** The service says so in
+        # the decision's own reason, and the count is carried rather than the list: a 4.x
+        # application at 5.1 has dozens of `belongs_to` rows that are the 5.0 rung's work, and a
+        # reviewer who reads them as this rung's debt has been given the wrong list.
+        earlier = @record.decisions.select { |decision| carried_earlier?(decision) }
+        located = @record.decisions.reject do |decision|
+          decision.path.to_s.empty? || carried_earlier?(decision)
+        end
+        carried = @record.decisions.count { |decision| decision.path.to_s.empty? }
+        unless located.empty?
+          lines << "## Manual changes found in this application"
+          lines << ""
+          located.first(20).each do |decision|
+            where = [decision.path, decision.line].compact.join(":")
+            lines << "- `#{where}` — #{decision.subject}: #{decision.reason}"
+          end
+          lines << "- …and #{located.length - 20} more in the run record" if located.length > 20
+          lines << ""
+        end
+        if carried.positive?
+          lines << "## Manual changes the rung carries"
+          lines << ""
+          lines << "#{carried} change(s) this rung documents that this application does not use. " \
+                   "They need no edit; the run's page lists them."
+          lines << ""
+        end
+        if earlier.any?
+          lines << "## Earlier-rung call sites"
+          lines << ""
+          lines << "#{earlier.length} call site(s) this application has were already located by an " \
+                   "earlier rung. They are not this rung's new work; the full run record carries them."
+          lines << ""
+        end
+        unless @record.refused.empty?
+          lines << "## Edits the tool could not write"
+          lines << ""
+          lines << "The line did not match what the scan read, so nothing was written:"
+          lines << ""
+          @record.refused.first(12).each do |refusal|
+            lines << "- `#{refusal.path}`:#{refusal.line} — #{refusal.reason}"
+          end
+          if @record.refused.length > 12
+            lines << "- …and #{@record.refused.length - 12} more in the run record"
+          end
+          lines << ""
+        end
+        lines << "Nothing else is left for a person on this rung." if lines.empty?
+        lines.join("\n").strip
+      end
+
+      # The reviewer's last question: is it safe, how do I undo it, and what merges first.
+      def merge_section
+        lines = ["## Review and merge", ""]
+        lines << "- **Risk:** #{risk}"
+        lines << "- **Rollback:** #{rollback}"
+        lines << "- **Merge order:** #{merge_order}"
+        url = run_url
+        lines << "- **Run record:** #{url}" if url
+        lines.join("\n")
+      end
+
+      def risk
+        unless @record
+          return "the run record is not available on this retry; review the commit the first " \
+                 "attempt produced"
+        end
+        unless @record.verdict == Record::PASSED
+          return "the rung is `#{@record.verdict}` — #{@record.why}. The record's own verdict is " \
+                 "the risk statement; read the sections above before treating it as a merge signal"
+        end
+        if @record.suite.nil?
+          return "the record does not carry a suite result, so this preview cannot claim the gate " \
+                 "passed; read the commands and the refusals before trusting the verdict"
+        end
+        if @record.baseline.nil?
+          return "the record does not carry a baseline, so the suite's green cannot be attributed " \
+                 "to the move; read the commands before treating the verdict as a merge signal"
+        end
+        unless @record.suite.ok? && @record.baseline.ok?
+          return "the record's suite and baseline disagree with its `#{@record.verdict}` verdict; " \
+                 "read the checks above before treating it as a merge signal"
+        end
+
+        located = @record.decisions.count do |decision|
+          !decision.path.to_s.empty? && !carried_earlier?(decision)
+        end
+        earlier = @record.decisions.count { |decision| carried_earlier?(decision) }
+        external = @record.checks.count(&:external?)
+        parts = []
+        if located.positive?
+          parts << "#{located} new manual change(s) found in this application and not applied"
+        end
+        parts << "#{earlier} earlier-rung call site(s) still open" if earlier.positive?
+        unless @record.refused.empty?
+          parts << "#{@record.refused.length} edit(s) refused because the line moved"
+        end
+        parts << "#{external} external check(s) that this walk did not run" if external.positive?
+        if parts.empty?
+          "low — the suite and every declared required check passed, and no manual change was " \
+            "found in this application"
+        else
+          "medium — #{parts.join("; ")}. The diff is the mechanical half; read the sections above " \
+            "before merging"
+        end
+      end
+
+      def rollback
+        base = base_commit
+        head = delivered_head.to_s
+        if !base.empty? && !head.empty? && base != head
+          "before merge, `git reset --hard #{short(base)}` discards the rung; after merge, " \
+            "`git revert --no-commit #{short(base)}..#{short(head)} && git commit` reverts every " \
+            "concern commit in one revert"
+        elsif !head.empty?
+          "`git revert #{short(head)}`"
+        else
+          "revert the branch's commit, or reset the branch to its base"
+        end
+      end
+
+      def merge_order
+        base =
+          if !@base.to_s.empty?
+            "`#{@base}`"
+          elsif !@base_ref.to_s.empty?
+            "`#{@base_ref}` (the declared starting point)"
+          else
+            "the repository's default branch"
+          end
+        if @record&.commits.to_a.length > 1
+          "this request targets #{base}; merge it after that branch, and keep the concern commits " \
+            "in the order listed above"
+        else
+          "this request targets #{base}; merge that branch first"
+        end
+      end
+
+      def run_url
+        return nil if @report_base.empty?
+
+        id = @record&.run_id.to_s
+        if id.empty?
+          "#{@report_base}/site_admin/upgrade_runs"
+        else
+          "#{@report_base}/site_admin/upgrade_runs/#{id}"
+        end
+      end
+
+      # **The evidence, collapsed.** A reviewer who wants it can read every stage, every command and
+      # the full check list; the brief above is what a person needs first. The patch is deliberately
+      # left out: the pull request's diff is the patch, and pasting it into the body would be a
+      # second copy that can disagree.
+      def record_section
+        json = JSON.pretty_generate(scrubbed(public_record))
+        if json.length > 24_000
+          json = "#{json[0, 24_000]}\n… (truncated; the run's page has the whole record)"
+        end
+        lines = ["<details>", "<summary>Full run record</summary>", "",
+          "The patch is this pull request's diff and is omitted here. Command and check output,",
+          "repair attempt output and repair diffs are omitted from this body — the run's page",
+          "has them, and a public pull request does not need to carry a suite's environment.",
+          "", "```json", json, "```",
+          "", "</details>"]
+        lines.join("\n")
+      end
+
+      # **The record as a public page may carry it.** A stage's `command` is the machine's wrapper
+      # and can contain `-e RAILS_SECRET_TOKEN=…`; its `output_tail` can contain whatever the suite
+      # printed. The logical command (`display`) and the exit code are the evidence a reviewer needs,
+      # and the run's page is where the wrapper and the output live. This is a filter, not a promise
+      # that the record is safe in general: a project's own values never enter the body.
+      def public_record
+        record = @record.to_h.reject { |key, _| key == "patch" }
+        record["stages"] = Array(record["stages"]).map { |stage| public_command(stage) }
+        %w[baseline suite].each do |key|
+          record[key] = public_command(record[key]) if record[key].is_a?(Hash)
+        end
+        # **A check's output is command output too.** `Checks::Result#to_h` carries the tail, and a
+        # failing suite's tail is exactly where the application's environment shows up.
+        record["checks"] = Array(record["checks"]).map do |check|
+          check.is_a?(Hash) ? check.reject { |key, _| key == "output_tail" } : check
+        end
+        record["repairs"] = public_repairs(record["repairs"])
+        record
+      end
+
+      # A repair's attempts are the failing suite's output and a diff of the fix. The body says a
+      # repair happened; the run's page has the evidence. Keeping the attempt count and the files
+      # is enough for a reviewer, and it cannot leak a suite's environment.
+      def public_repairs(repairs)
+        Array(repairs).map do |repair|
+          next repair unless repair.is_a?(Hash)
+
+          copy = repair.dup
+          # The failure is the failing suite's output (`Repair::Outcome#failure` is
+          # `subject.output_tail`), so it is command output like the attempts' tails.
+          copy.delete("failure")
+          copy.delete("diff")
+          # A real outcome carries an attempt *count*; a hand-built or older record may carry the
+          # attempt objects. Keep the count as it is, and sanitize only the list form.
+          if repair["attempts"].is_a?(Array)
+            copy["attempts"] = repair["attempts"].map do |attempt|
+              if attempt.respond_to?(:to_h)
+                # A `Struct#to_h` has symbol keys; the JSON that follows has strings. Compare the
+                # name, not the key's class, or the tail survives the filter under `:output_tail`.
+                attempt.to_h.reject { |key, _| %w[output_tail diff].include?(key.to_s) }
+              else
+                # An attempt that came back through JSON is a string (a Struct is not a hash), and
+                # that string is the Struct's inspect form — which contains the tail. Drop it rather
+                # than publish it.
+                "[attempt output omitted]"
+              end
+            end
+          end
+          copy
+        end
+      end
+
+      def public_command(command)
+        copy = command.dup
+        copy["command"] =
+          if copy["display"].to_s != ""
+            copy["display"]
+          else
+            redact_environment(copy["command"])
+          end
+        copy.delete("output_tail")
+        copy
+      end
+
+      # A stage's command as a public body may print it: the application's own argv when the record
+      # kept one, and otherwise the recorded command with every `-e KEY=VALUE` value removed. The
+      # suite's environment is the case this exists for; a container id is not a secret.
+      def public_stage_command(stage)
+        display = stage.respond_to?(:display) ? stage.display.to_s : ""
+        return display unless display.empty?
+
+        redact_environment(stage.respond_to?(:command) ? stage.command : stage.to_s)
+      end
+
+      def redact_environment(command)
+        command.to_s.gsub(/(?<=\s)-e\s+([A-Z][A-Z0-9_]*)=\S+/, '-e \1=***')
+      end
+
+      def scrubbed(value)
+        case value
+        when String then value.scrub
+        when Hash then value.transform_values { |item| scrubbed(item) }
+        when Array then value.map { |item| scrubbed(item) }
+        else value
+        end
+      end
+
+      def delivered_head
+        @publishing_commit.to_s.empty? ? @commit.to_s : @publishing_commit.to_s
+      end
+
+      # The commit the rung arrived at. A delivery retry has no record and no base it can name —
+      # the branch is already the produced commit — so it says nothing rather than calling the
+      # head the base.
+      def base_commit
+        @record.nil? ? "" : @record.commit.to_s
+      end
+
+      def short(commit) = commit.to_s[0, 8]
+
+      # The service writes this sentence into a decision it located for a rung this application has
+      # not crossed. It is the only field that separates "this rung's work" from "the residue of an
+      # earlier one", and the PR must not present the second as the first.
+      def carried_earlier?(decision)
+        decision.reason.to_s.include?("carried by an earlier rung")
+      end
+
+      # A markdown table cell cannot carry an unescaped pipe; a command with one would split the row.
+      def escape_cell(text) = text.to_s.gsub("|", "\\|")
 
       # The evidence lines, from the stages the record actually ran. A line per thing a
       # reviewer would otherwise have to take on trust.
@@ -444,8 +889,9 @@ module AgentsFyi
 
           # **The logical command, not the machine's wrapper.** `display` is the application's own
           # argv; `command` carries the container, the environment and — for the suite — the
-          # application's secret. A pull request is public, so the body reads `readable`.
-          found << "#{stage.stage}: `#{stage.readable}` — " +
+          # application's secret. A pull request is public, so the body reads the display, and an
+          # old record without one still gets its `-e KEY=VALUE` pairs redacted.
+          found << "#{stage.stage}: `#{public_stage_command(stage)}` — " +
             (stage.ran ? "exit #{stage.exit_code} in #{stage.seconds.round(1)}s" : "did not run")
         end
         found.empty? ? ["no stage evidence was recorded"] : found

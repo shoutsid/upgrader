@@ -215,6 +215,104 @@ class RecordTest < Minitest::Test
     assert_includes record.to_s, "2 need(s) a decision (1 located, 1 carried)"
   end
 
+  # **A run can be replayed from its JSON.** The record is the durable artifact; a dry-run review
+  # reads it back into the same objects the PR renderer uses, without a checkout or a second walk.
+  def test_a_record_round_trips_through_its_json_for_replay
+    record = AgentsFyi::Upgrader::Record.new(
+      repository: "acme/storefront", commit: "abc12345", from_version: "4.2.11",
+      to_version: "5.0.0", verdict: "passed", why: "green before and after",
+      stages: [command(stage: "pin")],
+      applied: [AgentsFyi::Upgrader::Applier::Applied.new(
+        path: "Gemfile", line: 2, text: %(gem "rails", "4.2.11"), after: %(gem "rails", "5.0.0"),
+        subject: "pin", origin: "rule", note: nil
+      )],
+      refused: [AgentsFyi::Upgrader::Applier::Refused.new(
+        path: "app/models/item.rb", line: 3, text: "old", found: "new",
+        reason: "the line moved", subject: "serialize", kind: "changed",
+        replacement: "new", source: "7.2", note: "why"
+      )],
+      decisions: [AgentsFyi::Upgrader::Record::Decision.new(
+        path: "app/models/item.rb", line: 4, subject: "button_to", reason: "needs a person"
+      )],
+      checks: [AgentsFyi::Upgrader::Checks::Result.new(
+        id: "lint", name: "lint", kind: "lint", command: "bundle exec rubocop",
+        required: true, external: false, environment: nil, status: "passed", ran: true,
+        exit_code: 0, seconds: 1.0, output_tail: "no offenses"
+      )],
+      commits: [{ "concern" => "pin Rails and move gems", "commit" => "b" * 40,
+                  "message" => "the pin" }],
+      accepted_decisions: [{ "id" => "d1", "question" => "Remove it?", "answer" => "yes",
+                             "accepted_by" => "operator:9f2c", "effects" => [] }],
+      app_update: { "adopt" => "added_only", "adopted" => [], "conflicts" => [],
+                    "skipped" => [], "framework_defaults" => "off", "load_defaults" => nil },
+      toolchain: { "ruby" => "3.3.12" },
+      project: { "slug" => "storefront", "source_roots" => ["app"] }
+    )
+
+    again = AgentsFyi::Upgrader::Record.from_h(JSON.parse(record.to_json))
+
+    assert_equal record.to_h, again.to_h
+    assert_equal "lint", again.checks.first.id
+    assert_equal "pin Rails and move gems", again.commits.first["concern"]
+  end
+
+  # **A formatter that ran and failed is a failed rung; one that did not run is unverified.** The
+  # formatter is a command like any other, and the third answer is the one that must not be read as
+  # a finding about the application.
+  def test_a_failed_formatter_fails_the_rung_and_a_missing_one_leaves_it_unverified
+    failed = command(stage: "style", exit_code: 2)
+    word, why = AgentsFyi::Upgrader::Record.verdict(baseline: suite, suite: suite,
+      stages: stages(failed))
+    assert_equal "failed", word
+    assert_includes why, "formatter"
+
+    absent = command(stage: "style", ran: false, exit_code: nil)
+    word, why = AgentsFyi::Upgrader::Record.verdict(baseline: suite, suite: suite,
+      stages: stages(absent))
+    assert_equal "unverified", word
+    assert_includes why, "did not run"
+  end
+
+  # **The suite is one check, not the gate.** A green suite with a red lint check has not
+  # established the rung, and the sentence names the check that failed rather than a generic stage.
+  def test_a_required_check_that_failed_turns_a_green_suite_into_a_failed_rung
+    result = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+      command: "bundle exec rubocop", required: true, external: false, status: "failed",
+      ran: true, exit_code: 8, seconds: 1.0, reason: "exited 8")
+    word, why = AgentsFyi::Upgrader::Record.verdict(baseline: suite, suite: suite,
+      stages: stages, checks: [result])
+
+    assert_equal "failed", word
+    assert_includes why, "lint"
+    assert_includes why, "8"
+  end
+
+  # A check that did not run is the third answer: the gate was not measured, and the rung is
+  # unverified rather than failed.
+  def test_a_required_check_that_did_not_run_leaves_the_rung_unverified
+    result = AgentsFyi::Upgrader::Checks::Result.new(id: "packwerk", kind: "static",
+      command: "bundle exec packwerk check", required: true, external: false,
+      status: "not_run", ran: false, reason: "did not run (exit 127)")
+    word, why = AgentsFyi::Upgrader::Record.verdict(baseline: suite, suite: suite,
+      stages: stages, checks: [result])
+
+    assert_equal "unverified", word
+    assert_includes why, "packwerk"
+    assert_includes why, "did not run"
+  end
+
+  # **An external check never decides the verdict.** The walk did not run it; the application's CI
+  # owns that answer, and the record says where it runs rather than calling it green.
+  def test_an_external_check_is_carried_without_a_vote
+    result = AgentsFyi::Upgrader::Checks::Result.new(id: "ci", kind: "external",
+      required: true, external: true, status: "external", ran: false,
+      reason: "the application's GitHub Actions test job")
+    word, why = AgentsFyi::Upgrader::Record.verdict(baseline: suite, suite: suite,
+      stages: stages, checks: [result])
+
+    assert_equal "passed", word, why
+  end
+
   # An edit this tool's own rules made is legible as one: a reviewer reading the patch can tell the
   # service's mechanical rewrites from the walker's own (`Rewrites`), which the service deliberately
   # does not make.

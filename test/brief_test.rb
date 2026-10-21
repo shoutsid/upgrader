@@ -177,4 +177,24 @@ class BriefTest < Minitest::Test
     assert_equal "nothing recorded", decisions.state
     assert_includes result.to_h.keys, "sections"
   end
+
+  # **An accepted decision is part of what the rung knew before it ran.** It carries the question,
+  # the answer and the kinds of effects the walk will apply; the brief does not re-derive them.
+  def test_accepted_decisions_are_rendered_in_the_decisions_section
+    result = brief_for(FakeCorpus.new).call(from: "4.0.0", to: "4.1.0",
+      decisions: [{
+        "id" => "d1", "question" => "Should the row keep a Show link?",
+        "answer" => "remove it", "accepted_by" => "operator:1",
+        "effects" => [{ "kind" => "patch", "payload" => {} },
+                      { "kind" => "gem", "payload" => { "name" => "x" } }]
+      }])
+
+    section = result.sections.find { |candidate| candidate.key == "decisions" }
+    assert_equal "answers", section.state
+    item = section.items.first
+    assert_equal "Should the row keep a Show link?", item.title
+    assert_equal "remove it", item.status
+    assert_includes item.fix, "patch"
+    assert_includes result.to_markdown, "remove it"
+  end
 end

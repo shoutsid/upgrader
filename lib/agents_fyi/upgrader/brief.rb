@@ -210,8 +210,11 @@ module AgentsFyi
           state: entries.empty? ? "nothing recorded" : "answers",
           note: entries.empty? ? "no decision has been answered for this walk yet" : nil,
           items: entries.map { |decision|
+                   effects = Array(decision["effects"]).filter_map { |effect| effect["kind"] if effect.is_a?(Hash) }
                    Item.new(title: decision["question"] || decision["subject"],
-                     status: decision["answer"], fix: decision["effect"], rank: nil, match: "decision") },
+                     status: decision["answer"],
+                     fix: decision["effect"] || (effects.any? ? "#{effects.uniq.join(", ")} effect(s)" : nil),
+                     rank: nil, match: "decision") },
           total: entries.length)
       end
 

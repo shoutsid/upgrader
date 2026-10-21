@@ -33,6 +33,7 @@ class ProjectTest < Minitest::Test
     assert_equal "rspec", project.suite.kind
     assert_equal "bundle exec rspec", project.suite_command
     assert_equal %w[postgres redis], project.services
+    assert_equal %w[app lib config], project.source_roots
     assert_equal %w[RAILS_SECRET_TOKEN], project.env_names
     assert_equal "auto", project.eras
     assert project.delivery.github?
@@ -124,6 +125,131 @@ class ProjectTest < Minitest::Test
     # lines that are no longer there — and the corpus's decision rows were reset with the upgrade
     # evidence. The capability is what this test drives above, with a declaration written here.
     assert_empty lighthouse.decisions
+  end
+
+  # **The application's complete contract is a declaration, not a convention.** The suite, the source
+  # roots, the other checks, the toolchain, the formatter and the app:update policy are all facts
+  # about *this* application, and each one is checked here rather than discovered by a walk.
+  def test_a_declaration_carries_the_checks_source_roots_toolchain_style_and_update_policy
+    project = PROJECT.parse(minimal.merge(
+      "source_roots" => ["app", "lib", "components"],
+      "checks" => [
+        { "id" => "lint", "kind" => "lint", "command" => "bundle exec rubocop" },
+        { "id" => "packwerk", "kind" => "static",
+          "command" => "bundle exec packwerk validate && bundle exec packwerk check" },
+        { "id" => "ci", "kind" => "external", "name" => "GitHub Actions: test",
+          "reason" => "the application's CI runs it, and this walker does not" }
+      ],
+      "toolchain" => { "ruby" => "3.3.12", "node" => "20", "postgres" => "pgvector/pgvector:pg16",
+                       "extensions" => ["pgvector"], "apt" => ["libvips"] },
+      "style" => { "format" => "bundle exec rubocop -A", "check" => "bundle exec rubocop" },
+      "app_update" => { "skip" => ["config/storage.yml"],
+                        "skip_unused_engines" => false,
+                        "framework_defaults" => "step" }
+    ).to_json)
+
+    assert_equal %w[app lib components], project.source_roots
+    assert_equal %w[lint packwerk ci], project.checks.map(&:id)
+    assert project.checks.last.external?
+    assert_equal "GitHub Actions: test", project.checks.last.name
+    assert_equal "pgvector/pgvector:pg16", project.toolchain.postgres
+    assert_equal %w[pgvector], project.toolchain.extensions
+    assert_equal "bundle exec rubocop -A", project.style.format
+    assert_equal "bundle exec rubocop", project.style.check
+    assert project.app_update.skip?("config/storage.yml")
+    refute project.app_update.skip?("config/application.rb")
+    refute project.app_update.skip_unused_engines
+    assert project.app_update.step_defaults?
+    assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
+  end
+
+  def test_a_check_with_no_command_is_refused_because_it_could_not_be_run
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [{ "id" => "lint", "kind" => "lint" }]).to_json)
+    end
+
+    assert_includes error.message, "lint"
+    assert_includes error.message, "no `command`"
+  end
+
+  # **An external check has to say where it runs.** "Not run here" with no reason is
+  # indistinguishable from a check somebody forgot to declare.
+  def test_an_external_check_without_a_reason_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [
+        { "id" => "ci", "kind" => "external" }
+      ]).to_json)
+    end
+
+    assert_includes error.message, "external"
+    assert_includes error.message, "`reason`"
+  end
+
+  def test_a_check_kind_or_environment_the_engine_does_not_know_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [
+        { "id" => "typo", "kind" => "linter", "command" => "true" }
+      ]).to_json)
+    end
+    assert_includes error.message, "known:"
+
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [
+        { "id" => "lint", "kind" => "lint", "command" => "true", "environment" => "staging" }
+      ]).to_json)
+    end
+    assert_includes error.message, "environment"
+  end
+
+  # **A boolean is not a string.** `"required": "false"` used to make a required check optional,
+  # because a string is not `true`; a typo must not weaken the gate.
+  def test_a_check_boolean_that_is_not_a_boolean_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [
+        { "id" => "lint", "kind" => "lint", "command" => "true", "required" => "false" }
+      ]).to_json)
+    end
+
+    assert_includes error.message, "required"
+    assert_includes error.message, "true or false"
+  end
+
+  # A local check cannot be the application's CI job. `environment: "ci"` without `external` used
+  # to run the command here and call it CI; it is refused instead.
+  def test_a_local_check_cannot_claim_the_ci_environment
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("checks" => [
+        { "id" => "ci", "kind" => "lint", "command" => "true", "environment" => "ci" }
+      ]).to_json)
+    end
+
+    assert_includes error.message, "cannot reproduce"
+  end
+
+  def test_a_source_root_that_leaves_the_application_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("source_roots" => ["../somewhere"]).to_json)
+    end
+
+    assert_includes error.message, "source_roots"
+    assert_includes error.message, "leaves it"
+  end
+
+  def test_a_style_block_that_asks_for_nothing_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("style" => {}).to_json)
+    end
+
+    assert_includes error.message, "neither"
+  end
+
+  def test_an_app_update_adoption_this_build_does_not_implement_is_refused
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("app_update" => { "adopt" => "all" }).to_json)
+    end
+
+    assert_includes error.message, "app_update.adopt"
+    assert_includes error.message, "decision"
   end
 
   def test_an_unknown_field_in_a_decision_is_refused

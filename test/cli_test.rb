@@ -137,6 +137,48 @@ class CliTest < Minitest::Test
     end
   end
 
+  # **A stored record is enough to review a rung.** `preview` renders the same body a pull request
+  # would carry, with no service, no checkout and no token — the dry-run seam over the record.
+  def test_preview_renders_a_stored_record_without_a_service_or_a_repository
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "run.json")
+      File.write(path, JSON.generate(
+        "repository" => "https://github.com/acme/storefront", "commit" => "abc12345",
+        "from_version" => "5.2.0", "to_version" => "6.0.0", "verdict" => "passed",
+        "why" => "the suite was green before this step and green after it",
+        "interpreter" => "ruby 3.3.12",
+        "stages" => [
+          { "stage" => "baseline", "command" => "bundle exec rspec", "ran" => true,
+            "exit_code" => 0, "seconds" => 1.0, "output_tail" => "ok" },
+          { "stage" => "suite", "command" => "bundle exec rspec", "ran" => true,
+            "exit_code" => 0, "seconds" => 1.0, "output_tail" => "ok" }
+        ],
+        "checks" => [{ "id" => "lint", "kind" => "lint", "command" => "bundle exec rubocop",
+                       "required" => true, "external" => false, "status" => "passed",
+                       "ran" => true, "exit_code" => 0, "seconds" => 0.5 }]
+      ))
+
+      code, out, err = run_cli(["preview", "--from", path, "--base-ref", "main"])
+
+      assert_equal 0, code, err
+      assert_includes out, "## What moved"
+      assert_includes out, "5.2.0 → 6.0.0"
+      assert_includes out, "## Checks"
+      assert_includes out, "bundle exec rubocop"
+      assert_includes out, "## Review and merge"
+    end
+  end
+
+  def test_preview_refuses_a_record_it_cannot_read
+    code, _out, err = run_cli(["preview", "--from", "/no/such/record.json"])
+    assert_equal 1, code
+    assert_includes err, "could not be read"
+
+    code, _out, err = run_cli(["preview", "--from", "/tmp"])
+    assert_equal 1, code
+    assert_includes err, "could not be read"
+  end
+
   # **A killed run leaves its container running, and `prune` is the look that removes it.**
   # `--rm` ends a container whose own process exits; this one never does, so the owner's pid
   # travels on the container and this pass removes only the ones whose owner is gone.
@@ -351,8 +393,9 @@ class CliTest < Minitest::Test
     flags = AgentsFyi::Upgrader::CLI::USAGE.scan(/--[a-z-]+/).uniq
     assert_operator flags.length, :>, 5, "the usage text names no flags"
 
-    valued = %w[--repo --ref --to --api --project --record --work --home --heartbeat --interval
-                --step-timeout --cycles --rungs --repos --suite-env]
+    valued = %w[--repo --ref --to --api --project --record --from --base-ref --report-base
+                --work --home --heartbeat --interval --step-timeout --cycles --rungs --repos
+                --suite-env]
     flags.each do |flag|
       argv = ["serve", flag]
       argv << "1" if valued.include?(flag)

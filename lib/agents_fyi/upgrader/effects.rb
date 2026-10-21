@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+
 module AgentsFyi
   module Upgrader
     # **An accepted decision's effects, applied to the working tree — before anything is scanned.**
@@ -34,21 +36,29 @@ module AgentsFyi
     class Effects
       # The kinds the schema declares (`Decision::EFFECT_KINDS`), read here as strings because a
       # declaration is JSON.
-      KINDS = %w[patch config rule].freeze
+      KINDS = %w[patch config gem file delete chmod rule].freeze
 
       # **The order effects are applied in, and it is a decision.** A config change goes first because
-      # it is the least specific — a config file that enables a feature should be right before a patch
-      # touches the code that reads it — and a patch after it, so a patch's `find` sees the file the
-      # config change left rather than the one it replaced. Ties keep the declaration's order.
-      ORDER = %w[config patch rule].freeze
+      # it is the least specific; a gem move before a file/delete/chmod; a patch last of the tree
+      # edits, so its `find` sees the file the earlier effects left rather than the one it replaced.
+      # Ties keep the declaration's order.
+      ORDER = %w[config gem file delete chmod patch rule].freeze
 
       # The `applies_when` keys this build honours. A version comparison is `Gem::Version`'s, the same
       # rule the corpus orders releases by, so `6.0.0` and `6.0.0.rc1` are not one rung.
       CONDITIONS = %w[rung_gte rung_lt].freeze
 
-      # What an effect's own fields may be called. An unknown key is a refusal: a declaration whose
-      # `replac` is a typo would otherwise apply nothing and look applied.
-      FIELDS = %w[path find replace].freeze
+      # **Each kind reads its own payload.** A typo in a field is refused with the vocabulary for that
+      # kind rather than with a union of every field, so an operator is told which key the effect
+      # actually understands.
+      FIELDS = {
+        "patch" => %w[path find replace],
+        "config" => %w[path find replace],
+        "gem" => %w[name requirement action path],
+        "file" => %w[path content mode],
+        "delete" => %w[path],
+        "chmod" => %w[path mode]
+      }.freeze
 
       Effect = Struct.new(:decision, :question, :answer, :kind, :payload, :applies_when, :order,
         keyword_init: true)
@@ -107,6 +117,10 @@ module AgentsFyi
 
           case effect.kind
           when "patch", "config" then apply_text(effect, applied, refused)
+          when "gem" then apply_gem(effect, applied, refused)
+          when "file" then apply_file(effect, applied, refused)
+          when "delete" then apply_delete(effect, applied, refused)
+          when "chmod" then apply_chmod(effect, applied, refused)
           else
             # `rule` is deliberately not a tree edit: a rule changes what the walk *does*, and this
             # build has no vocabulary for one. Refused by name rather than dropped, because an effect
@@ -135,15 +149,16 @@ module AgentsFyi
 
         payload = effect["payload"]
         payload = {} unless payload.is_a?(Hash)
-        # A tree effect's payload is located by text, so its keys are checked against that vocabulary.
-        # A `rule`'s payload describes the walk rather than a file, and this build applies no rules, so
-        # its keys are the rule's business and the refusal names the kind instead.
-        unless kind == "rule"
-          unknown = payload.keys - FIELDS
+        # A tree effect's payload is read by its own kind; a `rule`'s payload describes the walk
+        # rather than a file, and this build applies no rules, so its keys are the rule's business and
+        # the refusal names the kind instead.
+        allowed = FIELDS[kind]
+        if kind != "rule"
+          unknown = payload.keys - allowed
           unless unknown.empty?
             return refusal(decision, nil,
               "`#{decision["id"]}`'s #{kind} effect carries #{unknown.sort.join(", ")}, which this " \
-              "build does not read (known: #{FIELDS.join(", ")})")
+              "build does not read (known: #{allowed.join(", ")})")
           end
         end
 
@@ -220,9 +235,187 @@ module AgentsFyi
           note: effect.answer.to_s)
       end
 
+      # **A gem decision is an operation, not a text diff.** `add` appends, `remove` deletes the
+      # declaration, and `update` rewrites one line; a name that is already there (for add), absent
+      # (for remove/update) or declared more than once (for update) is refused rather than guessed.
+      def apply_gem(effect, applied, refused)
+        payload = effect.payload
+        name = payload["name"].to_s.strip
+        return refused << refusal(effect.decision, effect,
+          "`#{effect.decision["id"]}` is a gem effect with no `name`, so there is nothing to change") if name.empty?
+
+        action = payload["action"].to_s.strip
+        action = "add" if action.empty?
+        unless %w[add remove update].include?(action)
+          return refused << refusal(effect.decision, effect,
+            "`#{effect.decision["id"]}`'s gem effect asks to #{action.inspect}; known actions: add, remove, update")
+        end
+
+        path = payload["path"].to_s.strip
+        path = "Gemfile" if path.empty?
+        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        unless File.file?(full)
+          return refused << refusal(effect.decision, effect,
+            "#{path} is not a file in this working copy")
+        end
+
+        lines = File.binread(full).lines
+        matcher = /^\s*gem\s+["']#{Regexp.escape(name)}["']/
+        indexes = lines.each_index.select { |index| lines[index].match?(matcher) }
+        requirement = payload["requirement"].to_s.strip
+        old = nil
+        fresh = nil
+        line_number = nil
+
+        case action
+        when "add"
+          unless indexes.empty?
+            return refused << refusal(effect.decision, effect,
+              "#{path} already declares the gem #{name}, so adding it would declare it twice")
+          end
+          lines << "\n" if !lines.empty? && !lines.last.end_with?("\n")
+          line = requirement.empty? ? %(gem "#{name}") : %(gem "#{name}", "#{requirement}")
+          lines << "#{line}\n"
+          fresh = line
+          line_number = lines.length
+        when "remove"
+          if indexes.empty?
+            return refused << refusal(effect.decision, effect,
+              "#{path} does not declare the gem #{name}, so there is nothing to remove")
+          end
+          old = indexes.map { |index| lines[index] }.join
+          indexes.reverse_each { |index| lines.delete_at(index) }
+          line_number = indexes.first + 1
+        when "update"
+          if indexes.length != 1
+            return refused << refusal(effect.decision, effect,
+              "#{path} declares the gem #{name} #{indexes.length} time(s), and an update needs exactly one")
+          end
+          if requirement.empty?
+            return refused << refusal(effect.decision, effect,
+              "updating the gem #{name} needs a `requirement`")
+          end
+          index = indexes.first
+          indent = lines[index][/^\s*/]
+          old = lines[index]
+          fresh = %(#{indent}gem "#{name}", "#{requirement}"\n)
+          lines[index] = fresh
+          line_number = index + 1
+        end
+
+        File.binwrite(full, lines.join)
+        applied << Applier::Applied.new(path: path, line: line_number, text: old.to_s,
+          after: fresh.to_s, subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          note: effect.answer.to_s)
+      end
+
+      # A new file is its own effect because it has no `find`; an existing path is refused so a
+      # decision cannot silently overwrite the application's own file.
+      def apply_file(effect, applied, refused)
+        payload = effect.payload
+        path = payload["path"].to_s
+        return refused << refusal(effect.decision, effect,
+          "`#{effect.decision["id"]}` is a file effect with no `path`") if path.empty?
+
+        full, unsafe = safe_create_path(path)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        if File.exist?(full)
+          return refused << refusal(effect.decision, effect,
+            "#{path} already exists; a file effect creates a new file, and an existing one is a patch")
+        end
+
+        content = payload["content"].to_s
+        FileUtils.mkdir_p(File.dirname(full))
+        # Resolve once more after creating the directories: a symlink in the parent chain is the
+        # escape `Sealed` exists for, and the first check may only have reached the nearest ancestor.
+        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+
+        File.binwrite(full, content)
+        mode = payload["mode"].to_s
+        File.chmod(Integer(mode, 8), full) unless mode.empty?
+        applied << Applier::Applied.new(path: path, line: 1, text: "", after: content,
+          subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          note: effect.answer.to_s)
+      rescue ArgumentError
+        refused << refusal(effect.decision, effect,
+          "#{path} has mode #{effect.payload["mode"].inspect}, which is not an octal mode")
+      end
+
+      def apply_delete(effect, applied, refused)
+        path = effect.payload["path"].to_s
+        return refused << refusal(effect.decision, effect,
+          "`#{effect.decision["id"]}` is a delete effect with no `path`") if path.empty?
+
+        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        unless File.file?(full)
+          return refused << refusal(effect.decision, effect,
+            "#{path} is not a file in this working copy, so there is nothing to delete")
+        end
+
+        File.delete(full)
+        applied << Applier::Applied.new(path: path, line: nil, text: "(deleted file)", after: "",
+          subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          note: effect.answer.to_s)
+      end
+
+      def apply_chmod(effect, applied, refused)
+        payload = effect.payload
+        path = payload["path"].to_s
+        return refused << refusal(effect.decision, effect,
+          "`#{effect.decision["id"]}` is a chmod effect with no `path`") if path.empty?
+
+        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        unless File.file?(full)
+          return refused << refusal(effect.decision, effect,
+            "#{path} is not a file in this working copy")
+        end
+
+        mode = Integer(payload["mode"].to_s, 8)
+        unless mode.between?(0, 0o7777)
+          return refused << refusal(effect.decision, effect,
+            "mode #{payload["mode"].inspect} is outside 0000..7777")
+        end
+        before = format("%04o", File.stat(full).mode & 0o7777)
+        File.chmod(mode, full)
+        applied << Applier::Applied.new(path: path, line: nil, text: "mode #{before}",
+          after: "mode #{format("%04o", mode)}", subject: effect.question.to_s,
+          origin: "decision:#{effect.decision["id"]}", note: effect.answer.to_s)
+      rescue ArgumentError
+        refused << refusal(effect.decision, effect,
+          "#{path} has mode #{payload["mode"].inspect}, which is not an octal mode")
+      end
+
+      # A file effect creates a path whose parent may not exist yet, which `Sealed.path` cannot
+      # resolve. Check the spelling and the nearest existing ancestor *before* creating anything;
+      # `apply_file` resolves again after `mkdir_p`.
+      def safe_create_path(path)
+        full = File.expand_path(path, @root)
+        unless full.start_with?("#{@root}#{File::SEPARATOR}")
+          return [nil, "#{path} resolves outside the working copy"]
+        end
+        return [nil, "#{path} is the working copy itself, not a file in it"] if full == @root
+
+        ancestor = File.dirname(full)
+        ancestor = File.dirname(ancestor) until File.exist?(ancestor) || ancestor == File.dirname(ancestor)
+        real = File.realpath(ancestor)
+        unless Sealed.inside?(@root_real, real)
+          return [nil, "#{path} is under #{real}, which is outside the working copy"]
+        end
+
+        [full, nil]
+      rescue SystemCallError => e
+        [nil, "#{path} could not be resolved (#{e.class}: #{e.message})"]
+      end
+
       def refusal(decision, effect, reason)
+        path = effect&.payload&.fetch("path", nil)
+        path = "Gemfile" if path.to_s.empty? && effect&.kind == "gem"
         Applier::Refused.new(
-          path: effect&.payload&.fetch("path", nil),
+          path: path,
           line: nil, text: nil, found: nil, reason: reason,
           subject: (decision["question"] || decision["id"]).to_s,
           kind: effect&.kind, replacement: nil, source: "an accepted decision",

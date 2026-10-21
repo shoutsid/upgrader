@@ -16,18 +16,6 @@ set -eu
 
 : "${API_BASE_URL:=http://service:8001}"
 : "${UPGRADER_HOME:=/home/upgrader/.cache/agents-fyi-upgrader}"
-# The repository list, as `owner/name@ref` entries separated by spaces.
-#
-# Empty is a legitimate configuration and it is the default: a deployment that has not
-# chosen its targets must not start upgrading somebody's application by accident. The
-# loop says so and idles rather than exiting, so an operator who sets this and restarts
-# the container does not have to know why it had stopped.
-#
-# The *service* owns the order a queue would carry and exposes no repository queue yet. So the
-# operator names the work here for now, and **this line is what that queue replaces**: when
-# the service hands out targets, the list stops being a deployment setting and an empty one
-# stops being meaningful.
-: "${UPGRADER_REPOS:=}"
 # The Rails release each move ends at, and the reason it has no default.
 #
 # The ladder lives in the service and nowhere else, so a this-tool default would be a second
@@ -151,28 +139,15 @@ if [ -z "${UPGRADER_TO}" ] && [ -z "${UPGRADER_WALK}" ]; then
     echo "upgrader: UPGRADER_TO is empty, so this loop will not walk anything —" \
         "set it to the Rails release the move ends at (for example 7.1.0), or set" \
         "UPGRADER_WALK=1 to walk each repository to the top of the ladder" >&2
-elif [ -z "${UPGRADER_REPOS}" ]; then
-    # With no target the loop walks nothing whatever the list says, so this is only worth
-    # saying once the operator has got the target right: two warnings at once, one of
-    # which is moot, is how the real one stops being read.
-    echo "upgrader: UPGRADER_REPOS is empty, so this loop has nothing to walk —" \
-        "the service's queue is used instead when the client has a key" >&2
 fi
 
-# The repository list is several arguments rather than one, so it goes through the
-# positional parameters — and only when there *is* a list. Passed unconditionally, an
-# empty `${UPGRADER_REPOS}` would leave `--repos` with nothing to take and the next flag
-# (`--interval`) would be read as its value: a service that starts, reports healthy and
-# has been told a repository called `--interval`. Building the arguments is where that
-# is prevented, rather than in the list's own default.
+# **`UPGRADER_REPOS` is retired.** The service's queue says which repositories to walk and in what
+# order; a deployment that still sets a list would be a second, quieter source of truth. The CLI's
+# `--repos` remains for a one-off manual `serve`, but this entrypoint never passes it.
 # Each flag is appended to the same positional list, and only when its setting is
 # non-empty: passed unconditionally, `--rungs ""` would leave `--rungs` with nothing to take
 # and the next flag would be read as its value.
-# shellcheck disable=SC2086
 set --
-if [ -n "${UPGRADER_REPOS}" ]; then
-    set -- "$@" --repos ${UPGRADER_REPOS}
-fi
 if [ -n "${UPGRADER_WALK}" ]; then
     set -- "$@" --walk
 fi

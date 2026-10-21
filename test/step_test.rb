@@ -161,6 +161,7 @@ class StepTest < Minitest::Test
       @gem_requests = []
       @asked_routes = []
       @asked_scans = []
+      @asked_files = []
     end
 
     # The routing answer, as the service writes it: no moves unless the test says otherwise,
@@ -210,6 +211,7 @@ class StepTest < Minitest::Test
 
     def scan(from:, to:, files:)
       @asked_scans << [from, to]
+      @asked_files << files.map(&:first)
       { "edits" => @edits, "manual" => @manual,
         "counts" => { "files" => files.size, "automatic" => @edits.size, "manual" => @manual.size },
         "next_step" => "this window's documented changes are all defaults with no call site" }
@@ -226,6 +228,8 @@ class StepTest < Minitest::Test
     end
 
     def asked_scans = @asked_scans
+
+    def asked_files = @asked_files
   end
 
   class FakeTests
@@ -1371,6 +1375,30 @@ class StepTest < Minitest::Test
     refute File.exist?(File.join(dir, "config_moved.rb")), "the interrupted step's file survived"
   end
 
+  # **A clean tree is not proof a step finished.** Concern commits move HEAD, so a process killed
+  # after one leaves a clean tree on a half-move; the marker is what puts it back. Without this,
+  # the next cycle would read the half-moved Gemfile.lock and plan the rung after a rung nobody
+  # established.
+  def test_a_clean_kept_tree_on_a_concern_commit_is_reset_to_its_marker
+    dir = track(app)
+    base = AgentsFyi::Upgrader::Checkpoint.head(dir).first.to_s
+    File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "6.0.0"\n))
+    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "6.0.0",
+      out: StringIO.new, concern: "pin Rails and move gems")
+    refute AgentsFyi::Upgrader::Checkpoint.dirty?(dir), "the tree is dirty, so this proves nothing"
+    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, base)
+
+    out = StringIO.new
+    record = step(dir, reuse: true, out: out).run
+
+    assert_equal "4.2.11", record.from_version,
+      "the step read the half-move commit instead of the marker's base"
+    assert_equal base, record.commit,
+      "the record named the half-move commit as its base"
+    assert_includes out.string, "reset to", "the reset was silent"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
+  end
+
   # A hand-run step never resets anything: it takes a fresh copy per run (the fake source
   # hands back the fixture itself, so a reset here would eat the test's own files), and
   # the flag is threaded all the way to the source rather than assumed.
@@ -1619,6 +1647,27 @@ class StepTest < Minitest::Test
     payload = AgentsFyi::Upgrader::Step.run_payload(record)
     assert_equal record.brief.asked, payload.dig("brief", "asked")
     assert_equal gem_section.key, payload.dig("brief", "sections").map { |s| s["key"] }.find { |k| k == gem_section.key }
+  end
+
+  # **The run body carries the review brief's internal sections.** The service stores them for the
+  # site admin; the public run response stays frozen.
+  def test_the_run_body_carries_the_gate_the_commits_and_the_update
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "checks" => [{ "id" => "lint", "kind" => "lint", "command" => "ruby -e 'exit 0'" }],
+      "toolchain" => { "ruby" => "3.3.12", "postgres" => "pgvector/pgvector:pg16" },
+      "app_update" => { "framework_defaults" => "step" }
+    }.to_json)
+
+    record = step(track(app), project: project).run
+    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+
+    assert_equal ["lint"], payload["checks"].map { |check| check["id"] }
+    assert_includes payload["commits"].map { |commit| commit["concern"] }, "pin Rails and move gems"
+    assert_equal "step", payload["app_update"]["framework_defaults"]
+    assert_equal "3.3.12", payload["toolchain"]["ruby"]
+    assert_includes payload["interpreter"], "ruby"
   end
 
   # **The service refuses a body larger than its own bound rather than clipping it.** A real
@@ -2350,9 +2399,10 @@ class StepTest < Minitest::Test
   def test_a_rule_glob_that_matched_more_files_than_it_read_says_so
     dir = track(app)
     with_source(dir, "app/models/item.rb", "class Item\nend\n")
-    # The JavaScript glob is the only one in the rule table, so it is the one to overflow.
+    # The JavaScript glob is the only one in the rule table, so it is the one to overflow — and
+    # its `filter` means the files have to mention ActionCable to be candidates at all.
     (AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT + 1).times do |index|
-      with_source(dir, "app/assets/javascripts/file_#{index}.js", "// nothing\n")
+      with_source(dir, "app/assets/javascripts/file_#{index}.js", "// ActionCable\n")
     end
 
     record = step(dir, corpus: FakeCorpus.new(payload: plan), applier: AgentsFyi::Upgrader::Applier).run
@@ -2401,6 +2451,173 @@ class StepTest < Minitest::Test
     assert_includes out.string, "scan: nothing to apply here",
       "a scan with nothing in it reported only its counts"
     assert_includes out.string, "no call site"
+  end
+
+  # **The application's gate is a list, and a failed check fails the rung even when the suite is
+  # green.** The style formatter runs first, because a style commit after the suite would be a change
+  # the suite never saw, and its check is the same question asked without writing.
+  def test_a_declared_check_and_formatter_run_and_a_failed_check_fails_the_rung
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "source_roots" => ["app"],
+      "checks" => [{ "id" => "lint", "kind" => "lint",
+                     "command" => "ruby -e 'STDERR.puts \"lint says no\"; exit 1'" }],
+      "style" => { "format" => "ruby -e 'exit 0'", "check" => "ruby -e 'exit 0'" }
+    }.to_json)
+
+    out = StringIO.new
+    record = step(dir, project: project, out: out).run
+
+    refute record.passed?, record.why
+    assert record.failed?, record.why
+    assert_includes record.why, "lint"
+    assert_equal %w[lint style], record.checks.map(&:id).sort
+    assert_equal "failed", record.checks.find { |check| check.id == "lint" }.status
+    assert_equal "passed", record.checks.find { |check| check.id == "style" }.status
+    assert record.stages.any? { |stage| stage.stage == "style" },
+      "the formatter is a stage, not a commit somebody makes afterwards"
+    assert_includes out.string, "lint says no",
+      "a failed check's output was not printed as the reason the rung stopped"
+  end
+
+  # **A prepare check runs before the baseline, not after the suite.** The application's CI prepares
+  # its database and its JavaScript before it tests; a walker that ran the same command afterwards
+  # would be preparing a tree the suite had already judged.
+  def test_a_prepare_check_runs_before_the_baseline
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "checks" => [{ "id" => "prepare", "kind" => "prepare",
+                     "command" => "ruby -e 'exit 0'" }]
+    }.to_json)
+
+    record = step(dir, project: project).run
+
+    stages = record.stages.map(&:stage)
+    assert_operator stages.index("check"), :<, stages.index("baseline"),
+      "the prepare check ran after the baseline"
+    assert_equal "passed", record.checks.first.status
+  end
+
+  # **An external check is recorded, not run and not green.** The rung can still pass on what the
+  # walk measured, and the record says the application's CI owns the other answer.
+  def test_an_external_check_is_carried_and_does_not_turn_a_green_rung_red
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "checks" => [{ "id" => "ci", "kind" => "external",
+                     "reason" => "the application's GitHub Actions test job" }]
+    }.to_json)
+
+    record = step(dir, project: project).run
+
+    assert record.passed?, record.why
+    check = record.checks.first
+    assert_equal "external", check.status
+    assert check.external?
+    assert_includes check.reason, "GitHub Actions"
+    refute record.to_h["checks"].first.key?("exit_code")
+  end
+
+  # **The branch is a series of concerns, and the patch is still the whole rung.** A reviewer reads
+  # the pin commit beside the app:update commit, and the diff they apply is `base..head`.
+  def test_the_step_commits_its_concerns_and_the_patch_is_the_whole_move
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    }.to_json)
+
+    record = step(dir, project: project).run
+
+    assert record.passed?, record.why
+    refute_empty record.commits, "the step made no concern commit"
+    messages = record.commits.map { |commit| commit["message"] }
+    assert_includes messages.join("\n"), "pin Rails and move gems"
+    assert_includes record.patch, %(gem "rails", "5.0.0")
+    head = record.commits.last["commit"]
+    assert_equal head, AgentsFyi::Upgrader::Checkpoint.head(dir).first,
+      "the last concern commit is the tree's head"
+  end
+
+  # **The project's app:update policy is applied after the added-only rule.** A generated file the
+  # project does not want is removed, and the record says which policy skipped it — an absent file
+  # with no sentence is the shape that reads as a generator that did nothing.
+  # **The PR names the decisions that were in force, not every decision the project ever made.**
+  # An accepted answer scoped to a later rung is not part of this rung's story; the applied edit's
+  # origin is the evidence, and the record carries the question and answer beside it.
+  def test_the_record_carries_the_accepted_decisions_whose_effects_applied
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "ITEM = 1\n")
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "decisions" => [{
+        "id" => "d1", "question" => "Use the new constant?", "answer" => "yes",
+        "accepted_by" => "operator:9f2c",
+        "effects" => [{ "kind" => "patch",
+                        "payload" => { "path" => "app/models/item.rb", "find" => "ITEM = 1",
+                                       "replace" => "ITEM = 2" } }]
+      }, {
+        "id" => "d2", "question" => "Later rung?", "answer" => "not yet",
+        "accepted_by" => "operator:9f2c",
+        "effects" => [{ "kind" => "patch",
+                        "payload" => { "path" => "app/models/item.rb", "find" => "ITEM = 2",
+                                       "replace" => "ITEM = 3" },
+                        "applies_when" => { "rung_gte" => "7.0.0" } }]
+      }]
+    }.to_json)
+
+    record = step(dir, project: project).run
+
+    assert_equal ["d1"], record.accepted_decisions.map { |decision| decision["id"] }
+    assert_includes record.to_h["accepted_decisions"].first["question"], "new constant"
+    assert_equal "ITEM = 2\n", File.read(File.join(dir, "app/models/item.rb"))
+  end
+
+  # **The scan reads the application's source roots, not the whole checkout.** A project that keeps
+  # its code under `app` and `lib` does not send its specs, its vendor tree or its CI configuration;
+  # a modular monolith that keeps models under `components` declares that root and does.
+  def test_the_scan_is_scoped_to_the_declared_source_roots
+    dir = track(app)
+    with_source(dir, "app/models/item.rb", "class Item\nend\n")
+    with_source(dir, "spec/models/item_spec.rb", "describe Item do\nend\n")
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "source_roots" => ["app", "lib"]
+    }.to_json)
+    corpus = FakeCorpus.new(payload: plan)
+
+    step(dir, project: project, corpus: corpus).run
+
+    sent = corpus.asked_files.first
+    assert_includes sent, "app/models/item.rb"
+    refute_includes sent, "spec/models/item_spec.rb"
+  end
+
+  def test_an_app_update_file_the_project_skips_is_removed_and_recorded
+    dir = track(app)
+    runner = MigratingRunner.new(dir, path: "config/storage.yml")
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "app_update" => { "skip" => ["config/storage.yml"] }
+    }.to_json)
+
+    record = step(dir, project: project, runner: runner,
+      applier: AgentsFyi::Upgrader::Applier).run
+
+    refute File.exist?(File.join(dir, "config/storage.yml")),
+      "the policy skipped the file, so it is not in the tree"
+    skipped = record.app_update["skipped"]
+    assert_equal ["config/storage.yml"], skipped.map { |entry| entry["path"] }
+    assert_includes skipped.first["reason"], "app_update policy"
+    assert_empty record.app_update["adopted"]
   end
 
   def test_the_pin_rewrite_touches_one_line_and_leaves_the_rest_alone
