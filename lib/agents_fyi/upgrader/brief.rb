@@ -208,7 +208,12 @@ module AgentsFyi
         unmatched = Array(plan["observed_unmatched"])
         rules = Array(plan["rules"])
         changes = Array(plan["changes"])
-        items = observed.map { |row| item_from_observed(row) } +
+        # `observed_unmatched` is a subset of `observed` (the plan keeps the flat list for the
+        # public response), so the brief splits it once rather than showing and counting the same
+        # report twice.
+        unmatched_ids = unmatched.map { |row| row["report_id"].to_s }
+        matched = observed.reject { |row| unmatched_ids.include?(row["report_id"].to_s) }
+        items = matched.map { |row| item_from_observed(row) } +
           unmatched.map { |row| item_from_observed(row, match: "unmatched") } +
           rules.map { |rule| item_from_rule(rule) }
         counts = plan["counts"].is_a?(Hash) ? plan["counts"] : {}
@@ -216,7 +221,7 @@ module AgentsFyi
         note = if items.empty?
           "the plan joins no report and no rule to this step's #{changes.length} documented change(s)"
         else
-          parts = ["#{changes.length} documented change(s)", "#{observed.length} observed",
+          parts = ["#{changes.length} documented change(s)", "#{matched.length} observed",
                    "#{unmatched.length} unmatched", "#{rules.length} rule(s)"]
           parts << "#{unclassified} report(s) not recorded as changes" if unclassified.positive?
           parts.join(", ")

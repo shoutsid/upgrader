@@ -115,6 +115,28 @@ class BriefTest < Minitest::Test
     assert_empty corpus.upgrade_calls, "the plan was already fetched and the brief asked the window again"
   end
 
+  # The plan keeps the flat `observed` list and also lists the unmatched subset; the brief must not
+  # show or count the same report twice.
+  def test_an_unmatched_report_in_observed_is_shown_once
+    plan = {
+      "changes" => [{ "subject" => "before_filter", "change_key" => "ruby|actionpack|before_filter" }],
+      "observed" => [{ "report_id" => "r2", "title" => "a report nobody documented",
+                       "library" => "rails", "broken_in" => "6.0.0",
+                       "status" => "open", "change_key" => "ruby|rails|unknown" }],
+      "observed_unmatched" => [{ "report_id" => "r2", "title" => "a report nobody documented",
+                                 "library" => "rails", "broken_in" => "6.0.0",
+                                 "status" => "open", "change_key" => "ruby|rails|unknown" }],
+      "rules" => [],
+      "counts" => {}
+    }
+
+    section = brief_for(FakeCorpus.new).call(from: "5.0.0", to: "6.0.0", plan: plan).sections.first
+
+    assert_equal ["r2"], section.items.map(&:id)
+    assert_includes section.note, "0 observed"
+    assert_includes section.note, "1 unmatched"
+  end
+
   # A plan that could not read a corpus (`observed` is null) is not a corpus with nothing to say,
   # so the brief falls back to the route rather than turning an unasked question into an empty one.
   def test_a_plan_with_no_corpus_falls_back_to_the_window_read
