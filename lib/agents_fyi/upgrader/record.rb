@@ -138,7 +138,8 @@ module AgentsFyi
       # only when the scan found the change in this application, and the change travels
       # either way.
       Decision = Struct.new(
-        :path, :line, :subject, :reason, :kind, :replacement, :source, keyword_init: true
+        :path, :line, :subject, :reason, :kind, :replacement, :source, :component, :change_key,
+        keyword_init: true
       )
 
       # One thing that ran, and what it said. `ran` and `passed` are separate because
@@ -312,7 +313,8 @@ module AgentsFyi
       attr_reader :repository, :commit, :worktree, :from_version, :to_version, :name,
         :requires_ruby, :interpreter, :image, :machine, :era, :stages, :applied, :refused,
         :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief, :repairs,
-        :checks, :commits, :accepted_decisions, :app_update, :toolchain, :project
+        :checks, :commits, :accepted_decisions, :app_update, :toolchain, :project, :changes,
+        :expected, :fired_rules
       # The corpus's id for the run, learned after the record is written and used by the pull
       # request to link the run's page. It is an accessor rather than a constructor argument
       # because the record is the local artifact and the id is the service's answer.
@@ -323,7 +325,7 @@ module AgentsFyi
                      machine: nil, era: nil, stages: [], applied: [], refused: [], decisions: [],
                      patch: "", baseline: nil, suite: nil, recorded_at: nil, brief: nil,
                      repairs: [], checks: [], commits: [], accepted_decisions: [], app_update: nil,
-                     toolchain: nil, project: nil)
+                     toolchain: nil, project: nil, changes: [], expected: [], fired_rules: [])
         @repository = repository
         @commit = commit
         @worktree = worktree
@@ -378,6 +380,18 @@ module AgentsFyi
         # profile it was walked from can be checked against the application without opening a
         # second system, which is the whole point of making the profile data.
         @project = project
+        # **The rung's documented changes, as the plan gave them.** A failed step is filed
+        # against the change it names (`Filing`), and the change's component, subject and
+        # replacement live in the plan rather than in the failure's prose — so the record
+        # carries them, and the report can join the corpus without guessing from a traceback.
+        @changes = changes
+        # **The rules the project declared that could apply here, and the ones that did.**
+        # `expected` is every accepted `expect` rule in force on this rung; `fired_rules` is
+        # the subset that actually did something (a skip, an applied rewrite, or an expected
+        # failure met). The run body sends their decision ids in its existing `decisions`
+        # field, which is how the service retires a rule a failed run falsified.
+        @expected = expected
+        @fired_rules = fired_rules
         @run_id = nil
       end
 
@@ -472,7 +486,12 @@ module AgentsFyi
                                                      "reason" => change.reason,
                                                      "kind" => change.kind,
                                                      "replacement" => change.replacement,
-                                                     "source" => change.source } },
+                                                     "source" => change.source,
+                                                     "component" => change.component,
+                                                     "change_key" => change.change_key } },
+          "changes" => @changes,
+          "expected" => @expected,
+          "fired_rules" => @fired_rules,
           "patch" => @patch,
           "recorded_at" => @recorded_at,
           # Always true, and worth carrying rather than assuming: this tool's whole
@@ -534,7 +553,9 @@ module AgentsFyi
           commits: list_of(hash["commits"], "commits"),
           accepted_decisions: list_of(hash["accepted_decisions"], "accepted_decisions"),
           app_update: hash["app_update"], toolchain: hash["toolchain"],
-          project: hash["project"]
+          project: hash["project"], changes: list_of(hash["changes"], "changes"),
+          expected: list_of(hash["expected"], "expected"),
+          fired_rules: list_of(hash["fired_rules"], "fired_rules")
         )
         record.run_id = hash["run_id"]
         record
@@ -635,7 +656,8 @@ module AgentsFyi
         list_of(list, "decisions").map do |change|
           Decision.new(path: change["path"], line: change["line"], subject: change["subject"],
             reason: change["reason"], kind: change["kind"],
-            replacement: change["replacement"], source: change["source"])
+            replacement: change["replacement"], source: change["source"],
+            component: change["component"], change_key: change["change_key"])
         end
       end
 
@@ -686,7 +708,9 @@ module AgentsFyi
         list_of(list, "brief.items").map do |item|
           Brief::Item.new(id: item["id"], title: item["title"], library: item["library"],
             version: item["version"], status: item["status"], trust: item["trust"],
-            rank: item["rank"], match: item["match"], fix: item["fix"])
+            rank: item["rank"], match: item["match"], fix: item["fix"],
+            change_key: item["change_key"], project: item["project"],
+            authority: item["authority"], effects: item["effects"])
         end
       end
 
@@ -787,6 +811,9 @@ module AgentsFyi
           lines << "   checks: #{@checks.map { |check| "#{check.id} #{check.status}" }.join(", ")}"
         end
         lines << "   commits: #{@commits.length} concern(s)" if @commits.any?
+        if @fired_rules.any?
+          lines << "   rules: #{@fired_rules.map { |rule| "#{rule["kind"]} #{rule["change_key"]}" }.join(", ")}"
+        end
         @refused.first(5).each { |edit| lines << "     refused: #{edit.path}:#{edit.line} — #{edit.reason}" }
         @decisions.first(5).each { |change| lines << "     decide: #{change.subject} — #{change.reason}" }
         lines << "   patch: #{@patch.empty? ? "no diff" : "#{@patch.lines.size} line(s)"}"

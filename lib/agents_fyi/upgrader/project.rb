@@ -28,7 +28,11 @@ module AgentsFyi
       # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
       # key nobody reads is a refusal here for the same reason every other unknown key is: a typo is
       # a setting that silently does nothing.
-      DECISION_FIELDS = %w[id question answer accepted_by effects verified_by_run_id].freeze
+      # `project` and `change_key` are how a decision from another application is recognisable in
+      # this one: the same key is the same change, and the project says whose answer it was. They
+      # are optional because a declaration written before the join existed has neither.
+      DECISION_FIELDS = %w[id project change_key question answer accepted_by effects
+        verified_by_run_id].freeze
       EFFECT_FIELDS = %w[kind payload applies_when].freeze
 
       # What a suite can be. `none` is a real answer, not a missing one: an application without a

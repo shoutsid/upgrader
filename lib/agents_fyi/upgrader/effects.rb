@@ -31,17 +31,27 @@ module AgentsFyi
     #   times the text occurs, because the two mistakes are different: absent is an application that
     #   moved on, twice is a patch that would have edited the wrong site.
     #
-    # `rule` effects are the walk's own behaviour rather than the tree's, and this build applies none
-    # of them: a rule is refused by name so it is visible in the run rather than quietly absent.
+    # **A `rule` effect is the walk's own behaviour, and it is typed.** `skip` and `expect` change
+    # what the walk does — leave a change alone, accept a known failure — while `rewrite`, `insert`
+    # and `config` are tree edits that go through the same line-checked applier as every other
+    # effect. The rule's payload names its `kind` and the `change_key` it belongs to, so a run that
+    # fails can be read against the decision that authorized it.
     class Effects
       # The kinds the schema declares (`Decision::EFFECT_KINDS`), read here as strings because a
       # declaration is JSON.
       KINDS = %w[patch config gem file delete chmod rule].freeze
 
+      # **A `rule` is a typed effect, and these are its five kinds** (ADR 0011). It is one effect
+      # kind in the schema because the schema's enum is frozen, and a `kind` in its payload is what
+      # says whether the walk skips a change, accepts a known failure, or makes one of the three
+      # tree edits. A rule that cannot say which is refused rather than guessed at.
+      RULE_KINDS = %w[rewrite insert config skip expect].freeze
+
       # **The order effects are applied in, and it is a decision.** A config change goes first because
       # it is the least specific; a gem move before a file/delete/chmod; a patch last of the tree
       # edits, so its `find` sees the file the earlier effects left rather than the one it replaced.
-      # Ties keep the declaration's order.
+      # Ties keep the declaration's order. A rule sorts by the edit it *is*: a rule config goes with
+      # config, a rule rewrite/insert goes with patch, and skip/expect touch no tree at all.
       ORDER = %w[config gem file delete chmod patch rule].freeze
 
       # The `applies_when` keys this build honours. A version comparison is `Gem::Version`'s, the same
@@ -50,7 +60,7 @@ module AgentsFyi
 
       # **Each kind reads its own payload.** A typo in a field is refused with the vocabulary for that
       # kind rather than with a union of every field, so an operator is told which key the effect
-      # actually understands.
+      # actually understands. A rule's payload is read one layer further, by its own `kind`.
       FIELDS = {
         "patch" => %w[path find replace],
         "config" => %w[path find replace],
@@ -60,22 +70,47 @@ module AgentsFyi
         "chmod" => %w[path mode]
       }.freeze
 
+      # **The service's rule shape, read as the service writes it.** A `rule` effect's payload is
+      # `{change_key, kind, payload, guard}` and the mechanism's own fields are the inner `payload`
+      # (`Decision::RuleEffect` is the one place that shape is decided). A flat declaration from
+      # before the nesting existed is read as an inner payload too, because a saved declaration
+      # must not become unreadable when the writer learns a new shape.
+      RULE_OUTER_FIELDS = %w[change_key kind payload guard action].freeze
+      RULE_FIELDS = {
+        "rewrite" => %w[old new],
+        "insert" => %w[path after text template],
+        "config" => %w[key file value path find replace],
+        "skip" => %w[change_key],
+        "expect" => %w[change_key failure]
+      }.freeze
+
+      # A rewrite reads the application's own Ruby source, and a rule that globbed a tree rather
+      # than a source would be an unbounded read on every rung. The bound is stated and the globs
+      # are the same roots `Rewrites` reads, so a project's `source_roots` scopes it too.
+      RULE_SOURCE_SUFFIXES = %w[.rb .rake .ru].freeze
+      MAX_RULE_FILES = 500
+
       Effect = Struct.new(:decision, :question, :answer, :kind, :payload, :applies_when, :order,
         keyword_init: true)
 
-      Result = Struct.new(:applied, :refused, keyword_init: true) do
-        def empty? = applied.empty? && refused.empty?
+      Result = Struct.new(:applied, :refused, :rules, keyword_init: true) do
+        def empty? = applied.empty? && refused.empty? && rules.empty?
 
         def to_s
           "#{applied.length} effect(s) applied" \
+            "#{rules.empty? ? "" : ", #{rules.length} rule(s) fired"}" \
             "#{refused.empty? ? "" : ", #{refused.length} refused"}"
         end
       end
 
-      def initialize(root:, rung: nil)
+      def initialize(root:, rung: nil, source_roots: [])
         @root = File.expand_path(root)
         @root_real = Sealed.resolved(@root)
         @rung = rung.to_s
+        # The project's own source roots, so a rewrite rule reads the same scope the scan and
+        # `Rewrites` read. Empty is the Rails defaults, which is what a declaration written before
+        # `source_roots` existed means.
+        @source_roots = Array(source_roots).map(&:to_s).reject(&:empty?)
       end
 
       # `decisions` is the declaration's list. Returns the edits this applied, in the shape the record
@@ -84,6 +119,7 @@ module AgentsFyi
       def apply(decisions)
         applied = []
         refused = []
+        fired = []
         effects = []
 
         Array(decisions).each_with_index do |decision, index|
@@ -106,7 +142,7 @@ module AgentsFyi
           end
         end
 
-        effects.sort_by { |effect| [ORDER.index(effect.kind), effect.order] }.each do |effect|
+        effects.sort_by { |effect| [sort_index(effect), effect.order] }.each do |effect|
           if conditions_refused?(effect)
             refused << refusal(effect.decision, effect,
               "`#{effect.decision["id"]}` applies when #{JSON.generate(effect.applies_when)}, which " \
@@ -121,17 +157,11 @@ module AgentsFyi
           when "file" then apply_file(effect, applied, refused)
           when "delete" then apply_delete(effect, applied, refused)
           when "chmod" then apply_chmod(effect, applied, refused)
-          else
-            # `rule` is deliberately not a tree edit: a rule changes what the walk *does*, and this
-            # build has no vocabulary for one. Refused by name rather than dropped, because an effect
-            # that vanishes is a decision nobody can see was ignored.
-            refused << refusal(effect.decision, effect,
-              "`#{effect.decision["id"]}` is a `rule` effect, and this build applies no rules — the " \
-              "walk's rules are its own, not a declaration's")
+          when "rule" then apply_rule(effect, applied, refused, fired)
           end
         end
 
-        Result.new(applied: applied, refused: refused)
+        Result.new(applied: applied, refused: refused, rules: fired)
       end
 
       private
@@ -149,11 +179,14 @@ module AgentsFyi
 
         payload = effect["payload"]
         payload = {} unless payload.is_a?(Hash)
-        # A tree effect's payload is read by its own kind; a `rule`'s payload describes the walk
-        # rather than a file, and this build applies no rules, so its keys are the rule's business and
-        # the refusal names the kind instead.
+        # A tree effect's payload is read by its own kind; a `rule`'s payload is read by its own
+        # `kind`, one layer down, and the refusal names that vocabulary rather than the outer one.
         allowed = FIELDS[kind]
-        if kind != "rule"
+        if kind == "rule"
+          normalized, problem = normalize_rule(decision, payload)
+          return problem if problem
+          payload = normalized
+        else
           unknown = payload.keys - allowed
           unless unknown.empty?
             return refusal(decision, nil,
@@ -167,6 +200,154 @@ module AgentsFyi
 
         Effect.new(decision: decision, question: decision["question"], answer: decision["answer"],
           kind: kind, payload: payload, applies_when: applies_when, order: order)
+      end
+
+      # **A rule says which of the five it is, and what change it is about.** The key is what joins
+      # the rule to the ladder change and the reports about it, so a rule without one is a rule
+      # nothing could retire or promote; the kind is what decides which payload the rest of the
+      # fields are, and an unknown one is refused rather than read as a tree edit.
+      #
+      # Returns `[normalized, nil]` or `[nil, refusal]`. The normalized shape is the service's:
+      # the outer fields, with the mechanism's own payload nested under `payload`, so the code
+      # that applies a rule and the code that records it read one shape.
+      def normalize_rule(decision, outer)
+        outer = {} unless outer.is_a?(Hash)
+        kind = (outer["kind"] || outer["action"]).to_s
+        unless RULE_KINDS.include?(kind)
+          return [nil, refusal(decision, nil,
+            "`#{decision["id"]}` carries a rule of kind #{kind.inspect}; known: #{RULE_KINDS.join(", ")}")]
+        end
+
+        nested = outer["payload"].is_a?(Hash)
+        if nested
+          unknown = outer.keys - RULE_OUTER_FIELDS
+          unless unknown.empty?
+            return [nil, refusal(decision, nil,
+              "`#{decision["id"]}`'s #{kind} rule carries #{unknown.sort.join(", ")}, which this " \
+              "build does not read (known: #{RULE_OUTER_FIELDS.join(", ")})")]
+          end
+          inner = outer["payload"]
+        else
+          # The flat shape: every mechanism field sits beside `change_key` and `kind`.
+          inner = outer.reject { |key, _| %w[change_key kind action guard].include?(key) }
+        end
+
+        allowed = RULE_FIELDS.fetch(kind)
+        unknown = inner.keys - allowed
+        unless unknown.empty?
+          return [nil, refusal(decision, nil,
+            "`#{decision["id"]}`'s #{kind} rule carries #{unknown.sort.join(", ")}, which this " \
+            "build does not read (known: #{allowed.join(", ")})")]
+        end
+
+        change_key = outer["change_key"].to_s.strip
+        if change_key.empty?
+          return [nil, refusal(decision, nil,
+            "`#{decision["id"]}`'s #{kind} rule has no `change_key`, so nothing could join it to a " \
+            "change or retire it when a run fails")]
+        end
+
+        problem = rule_payload_problem(kind, inner, change_key, decision)
+        return [nil, problem] if problem
+
+        # **A guard this build cannot read refuses rather than applies.** `applies_when` is the
+        # condition the walk understands; the service's rule shape also carries a `guard`, and a
+        # guard silently dropped would apply a rule outside the window its author scoped it to.
+        # An empty guard is no guard, the same way an empty `applies_when` is every rung.
+        guard = outer["guard"]
+        guard = nil if guard.is_a?(String) && guard.strip.empty?
+        guard = nil if guard.is_a?(Hash) && guard.empty?
+        unless guard.nil?
+          return [nil, refusal(decision, nil,
+            "`#{decision["id"]}`'s #{kind} rule carries a guard, and this build has no guard " \
+            "vocabulary — use `applies_when` for the rung window, or remove the guard")]
+        end
+
+        [{ "change_key" => change_key, "kind" => kind, "payload" => inner, "guard" => nil }, nil]
+      end
+
+      # The mechanism's own requirements, one case per kind. The inner `change_key` on skip/expect
+      # is the service's spelling of "this rule is about that change"; when it is present it must
+      # agree with the outer key, because two keys for one rule is two rules.
+      def rule_payload_problem(kind, inner, change_key, decision)
+        case kind
+        when "rewrite"
+          if inner["old"].to_s.strip.empty?
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s rewrite rule needs `old`, the whole token it replaces")
+          end
+          unless inner["new"].is_a?(String)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s rewrite rule needs `new`, the token it writes (use \"\" for a removal)")
+          end
+        when "insert"
+          if inner["path"].to_s.strip.empty?
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s insert rule needs `path`, the file the line goes into")
+          end
+          if inner["text"].nil? && inner["template"].nil?
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s insert rule needs `text` (the line to write) or `template`")
+          end
+          if inner["text"].nil? && !inner["template"].is_a?(String)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s insert rule's `template` must be a name")
+          end
+          if !inner["text"].nil? && !inner["text"].is_a?(String)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s insert rule's `text` must be a string")
+          end
+          after = inner["after"]
+          unless after.nil? || after.is_a?(String) || after.is_a?(Integer)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s insert rule's `after` must be a line or a line number")
+          end
+        when "config"
+          if inner.key?("key") || inner.key?("file")
+            if inner["key"].to_s.strip.empty? || inner["file"].to_s.strip.empty? || !inner.key?("value")
+              return refusal(decision, nil,
+                "`#{decision["id"]}`'s config rule needs `key`, `file` and `value`")
+            end
+          elsif inner["path"].to_s.strip.empty? || inner["find"].to_s.empty?
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s config rule needs `key`/`file`/`value`, or the `path`/`find` " \
+              "a config effect carries")
+          end
+        when "skip"
+          declared = inner["change_key"].to_s.strip
+          if !declared.empty? && declared != change_key
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s skip rule names #{declared.inspect} inside its payload and " \
+              "#{change_key.inspect} outside it; one rule cannot be about two changes")
+          end
+        when "expect"
+          declared = inner["change_key"].to_s.strip
+          if !declared.empty? && declared != change_key
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s expect rule names #{declared.inspect} inside its payload and " \
+              "#{change_key.inspect} outside it; one rule cannot be about two changes")
+          end
+          if inner["failure"].to_s.strip.empty?
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s expect rule has no `failure`, so it would accept every failure " \
+              "this rung produced")
+          end
+        end
+
+        nil
+      end
+
+      # The ORDER position of an effect, with a rule sorted by the edit it actually is. A rule
+      # config is a config edit, a rule rewrite/insert is a patch-shaped edit, and skip/expect
+      # touch no tree — so they stay last, where the old named `rule` refusal used to sit.
+      def sort_index(effect)
+        return ORDER.index(effect.kind) unless effect.kind == "rule"
+
+        case (effect.payload["kind"] || effect.payload["action"]).to_s
+        when "config" then ORDER.index("config")
+        when "rewrite", "insert" then ORDER.index("patch")
+        else ORDER.index("rule")
+        end
       end
 
       def conditions_refused?(effect)
@@ -191,6 +372,222 @@ module AgentsFyi
 
       def version(text)
         Gem::Version.new(text.to_s)
+      end
+
+      # **One rule effect, dispatched by its own kind.** `skip` and `expect` change what the walk
+      # does rather than the tree, so they are recorded as fired and the step reads them; the other
+      # three are edits and go through the same line-checked applier every mechanical edit does.
+      def apply_rule(effect, applied, refused, fired)
+        kind = effect.payload["kind"].to_s
+        case kind
+        when "skip", "expect"
+          fired << rule_entry(effect, kind)
+        when "rewrite" then apply_rule_rewrite(effect, applied, refused, fired)
+        when "insert" then apply_rule_insert(effect, applied, refused, fired)
+        when "config" then apply_rule_config(effect, applied, refused, fired)
+        end
+      end
+
+      # The mechanism's own payload, nested under the rule's outer fields.
+      def rule_inner(effect)
+        payload = effect.payload["payload"]
+        payload.is_a?(Hash) ? payload : {}
+      end
+
+      def rule_change_key(effect)
+        effect.payload["change_key"].to_s
+      end
+
+      # A literal whole-token rename, over the application's Ruby source. The token is matched in
+      # the *masked* line (strings and comments blanked) and written into the raw one at the same
+      # offsets — the service scanner's own rule, so a rule cannot rename a word inside a log
+      # message or a comment. The applier re-checks every line before it writes, as it does for the
+      # ladder's own rewrites.
+      def apply_rule_rewrite(effect, applied, refused, fired)
+        inner = rule_inner(effect)
+        old = inner["old"].to_s
+        new = inner["new"].to_s
+        rule = Rewrites::Rule.new(subject: rule_change_key(effect),
+          pattern: /\b#{Regexp.escape(old)}\b/, replace: new, all: true)
+        edits = source_files.flat_map do |path, lines|
+          lines.each_with_index.filter_map do |line, index|
+            after = rule.after(line, Rewrites.mask(line))
+            next if after.nil?
+
+            rule_edit(effect, path: path, line: index + 1, text: line, after: after)
+          end
+        end
+        return if edits.empty?
+
+        result = Applier.new(@root).apply(edits)
+        applied.concat(result.applied)
+        refused.concat(result.refused)
+        fired << rule_entry(effect, "rewrite") unless result.applied.empty?
+      end
+
+      # **An insertion is a replacement of the anchor line with itself plus the new text**, so it
+      # goes through the same line-checked applier rather than writing around it. The anchor is the
+      # text of a line, or a line number; absent or ambiguous is refused with the count, because
+      # "insert somewhere near here" is the guess this tool does not make.
+      def apply_rule_insert(effect, applied, refused, fired)
+        inner = rule_inner(effect)
+        path = inner["path"].to_s
+        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        unless File.file?(full)
+          return refused << refusal(effect.decision, effect,
+            "#{path} is not a file in this working copy, so there is no line to insert after")
+        end
+
+        text = inner["text"]
+        if text.nil?
+          return refused << refusal(effect.decision, effect,
+            "`#{effect.decision["id"]}`'s insert rule names the template #{inner["template"].inspect}, " \
+            "and this build carries no template vocabulary — write the line as `text`")
+        end
+
+        lines = File.binread(full).split("\n", -1).map { |line| line.delete_suffix("\r") }
+        anchor = inner["after"]
+        index = if anchor.nil?
+          # Append after the last real line, not after the empty string `split` leaves when the
+          # file ends in a newline — that would put a blank line before the inserted text.
+          lines.last == "" ? lines.size - 2 : lines.size - 1
+        elsif anchor.is_a?(Integer) || anchor.to_s.match?(/\A\d+\z/)
+          anchor.to_i - 1
+        else
+          found = lines.each_index.select { |position| lines[position].include?(anchor.to_s) }
+          if found.empty?
+            return refused << refusal(effect.decision, effect,
+              "#{path} does not contain the line this rule inserts after (#{anchor.to_s.inspect})")
+          end
+          if found.length > 1
+            return refused << refusal(effect.decision, effect,
+              "#{path} contains the line this rule inserts after more than once " \
+              "(#{found.length} times), so this tool will not guess which one it meant")
+          end
+
+          found.first
+        end
+        if index.negative? || index >= lines.size
+          return refused << refusal(effect.decision, effect,
+            "#{path} has #{lines.size} line(s), so line #{anchor} is not in it")
+        end
+
+        edit = rule_edit(effect, path: path, line: index + 1, text: lines[index],
+          after: "#{lines[index]}\n#{text}")
+        result = Applier.new(@root).apply([edit])
+        applied.concat(result.applied)
+        refused.concat(result.refused)
+        fired << rule_entry(effect, "insert") unless result.applied.empty?
+      end
+
+      # **A rule's config edit goes through the existing config path.** The service's rule shape
+      # names a setting (`key`/`file`/`value`); this turns the one line the setting is on into the
+      # same `find`/`replace` a config effect carries, so the exactly-once reader and the record
+      # are the ones every other config edit uses. A flat legacy payload already carries
+      # `path`/`find`/`replace`, and is passed through unchanged.
+      def apply_rule_config(effect, applied, refused, fired)
+        inner = rule_inner(effect)
+        temp = effect.dup
+        if inner.key?("key") || inner.key?("file")
+          path = inner["file"].to_s
+          full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+          return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+          unless File.file?(full)
+            return refused << refusal(effect.decision, effect,
+              "#{path} is not a file in this working copy, so the setting cannot be changed")
+          end
+
+          lines = File.binread(full).split("\n", -1).map { |line| line.delete_suffix("\r") }
+          key = inner["key"].to_s
+          pattern = /^\s*#{Regexp.escape(key)}(?:\s*=|:|\s|$)/
+          found = lines.each_index.select { |position| lines[position].match?(pattern) }
+          if found.empty?
+            return refused << refusal(effect.decision, effect,
+              "#{path} does not contain the setting #{key.inspect}")
+          end
+          if found.length > 1
+            return refused << refusal(effect.decision, effect,
+              "#{path} contains the setting #{key.inspect} more than once (#{found.length} times), " \
+              "so this tool will not guess which one it meant")
+          end
+
+          old = lines[found.first]
+          fresh = config_line(old, key, inner["value"])
+          return if fresh == old
+
+          temp.payload = { "path" => path, "find" => old, "replace" => fresh }
+        else
+          temp.payload = inner
+        end
+
+        before = applied.length
+        apply_text(temp, applied, refused)
+        fired << rule_entry(effect, "config") if applied.length > before
+      end
+
+      # The line with its setting's value replaced, preserving the indentation and the `=` or
+      # space the application already writes. A line that is only the key gains the value after a
+      # space; a line with a trailing comment keeps it, because the comment is the application's
+      # explanation of the setting and not part of the value.
+      def config_line(line, key, value)
+        # `Rewrites.comment_start` is quote-aware, so a `#` inside the value is not mistaken for
+        # the application's comment; the comment itself is the explanation of the setting and is
+        # kept, with one space before it.
+        stop = Rewrites.comment_start(line)
+        comment = stop ? line[stop..] : ""
+        body = stop ? line[0...stop].rstrip : line
+        written = if (found = body.match(/^(\s*#{Regexp.escape(key)}\s*=\s*)(.*)$/))
+          "#{found[1]}#{value}"
+        elsif (found = body.match(/^(\s*#{Regexp.escape(key)}\s+)(.*)$/))
+          "#{found[1]}#{value}"
+        else
+          "#{body} #{value}"
+        end
+        comment.empty? ? written : "#{written} #{comment}"
+      end
+
+      def rule_edit(effect, path:, line:, text:, after:)
+        {
+          "path" => path, "line" => line, "text" => text, "after" => after,
+          "automatic" => true, "origin" => "decision:#{effect.decision["id"]}",
+          "subject" => rule_change_key(effect), "kind" => "rule",
+          "replacement" => rule_inner(effect)["new"], "note" => effect.answer.to_s
+        }
+      end
+
+      # One fired rule, as the record and the run read it. The decision id is the field the service
+      # retires a rule by, and it is already in the run body's `decisions` list — no new public field.
+      def rule_entry(effect, kind)
+        {
+          "decision_id" => effect.decision["id"].to_s,
+          "change_key" => rule_change_key(effect),
+          "kind" => kind,
+          "payload" => rule_inner(effect),
+          "guard" => effect.payload["guard"],
+          "question" => effect.question.to_s,
+          "answer" => effect.answer.to_s
+        }
+      end
+
+      # The files a rewrite rule reads: the project's source roots (or the Rails defaults), the
+      # suffixes this walker scans, and a stated bound. A glob that matched more than the bound is
+      # truncated rather than silently read in part, and the rule's own applied count is the answer
+      # to "did it find anything".
+      def source_files
+        roots = @source_roots.empty? ? Rewrites::DEFAULT_SOURCE_ROOTS : @source_roots
+        patterns = roots.flat_map do |root|
+          RULE_SOURCE_SUFFIXES.map { |suffix| File.join(root, "**", "*#{suffix}") }
+        end
+        Dir.glob(patterns, base: @root).uniq.sort.first(MAX_RULE_FILES).filter_map do |path|
+          full = File.join(@root, path)
+          next unless File.file?(full)
+
+          lines = File.binread(full).force_encoding("UTF-8").scrub.lines.map(&:chomp)
+          [path, lines]
+        rescue SystemCallError
+          nil
+        end
       end
 
       def apply_text(effect, applied, refused)

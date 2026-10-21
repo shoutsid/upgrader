@@ -42,15 +42,18 @@ module AgentsFyi
       # One report, as the brief keeps it: enough to decide whether to open it, and the fix when the
       # corpus has one.
       Item = Struct.new(:id, :title, :library, :version, :status, :trust, :rank, :match, :fix,
-        keyword_init: true) do
+        :change_key, :project, :authority, :effects, keyword_init: true) do
         # A report whose match came through a stored symptom rather than words is the same failure
-        # often enough to be worth trying; one matched by words alone is a mention.
-        def identifying? = match.to_s != "fulltext"
+        # often enough to be worth trying; one matched by words alone is a mention. A rule and a
+        # decision are not reports at all, so they are not called a failure.
+        def identifying? = !%w[fulltext rule decision].include?(match.to_s)
 
         def to_h
           { "id" => id, "title" => title, "library" => library, "version" => version,
             "status" => status, "trust" => trust, "rank" => rank, "match" => match,
-            "identifying" => identifying?, "fix" => fix }.compact
+            "identifying" => identifying?, "fix" => fix, "change_key" => change_key,
+            "project" => project, "authority" => authority,
+            "effects" => effects }.compact
         end
       end
 
@@ -97,8 +100,12 @@ module AgentsFyi
             section.items.each do |item|
               title = item.title.to_s.strip
               title = "[#{title}](#{base}/api/reports/#{item.id})" if base && !item.id.to_s.empty?
-              line = "- #{item.identifying? ? "**same failure**" : "mention"} · #{title}"
+              label = item.match.to_s == "rule" ? "rule" : (item.identifying? ? "**same failure**" : "mention")
+              line = "- #{label} · #{title}"
               line += " — #{item.status}" unless item.status.to_s.empty?
+              line += " · change #{item.change_key}" unless item.change_key.to_s.empty?
+              line += " · project #{item.project}" unless item.project.to_s.empty?
+              line += " · #{item.authority} rule" unless item.authority.to_s.empty?
               line += " · fix: #{item.fix}" unless item.fix.to_s.empty?
               lines << line
             end
@@ -114,11 +121,15 @@ module AgentsFyi
       end
 
       # `gems` are the routing's moved gems (`name`, `version`, `to`); `subjects` are the changes the
-      # plan named (`subject`, `change_kind`), which are asked as search terms.
-      def call(rails: nil, from:, to:, gems: [], subjects: [], decisions: [])
+      # plan named (`subject`, `change_kind`), which are asked as search terms. `plan` is the step the
+      # plan already answered: when it carries the joined view, the framework section reads it rather
+      # than asking the corpus a second time for a library window — the plan knows which report is
+      # which change, and the window read does not.
+      def call(rails: nil, from:, to:, gems: [], subjects: [], decisions: [], plan: nil,
+        project: nil)
         @asked = 0
         sections = []
-        sections << ask { framework_section(from: from, to: to) }
+        sections << ask { framework_section(from: from, to: to, plan: plan) }
 
         Array(gems).map { |gem| gem.is_a?(Hash) ? gem : gem.to_h }
           .select { |gem| move?(gem) }
@@ -133,7 +144,7 @@ module AgentsFyi
         end
 
         sections.compact!
-        sections << decisions_section(decisions)
+        sections << decisions_section(decisions, project: project)
 
         Result.new(sections: sections, asked: @asked, truncated: @asked >= MAX_QUESTIONS,
           unavailable: sections.count { |section| section.state == "unavailable" })
@@ -164,7 +175,20 @@ module AgentsFyi
           items: [], total: 0)
       end
 
-      def framework_section(from:, to:)
+      # **The plan's joined view first, the window read only as the fallback.** The plan says which
+      # report is which documented change (`change_key`), which reports matched nothing
+      # (`observed_unmatched`) and which curated or promoted rules the walk may apply (`rules`). The
+      # old read could only say "this library has reports in this window", which is why the brief
+      # could not answer "what does the corpus know about *this* change".
+      #
+      # A plan with `observed: null` is a build that cannot read a corpus (`corpus_served: false`),
+      # not a corpus with nothing to say — so that case falls back to the route rather than turning
+      # an unasked question into an empty answer.
+      def framework_section(from:, to:, plan: nil)
+        if plan.is_a?(Hash) && !plan["observed"].nil?
+          return joined_framework_section(from: from, to: to, plan: plan)
+        end
+
         payload = @corpus.reports_upgrade(library: "rails", from_version: from, to_version: to)
         changes = Array(payload["changes"])
         items = changes.map { |change| item_from_change(change) }
@@ -173,6 +197,34 @@ module AgentsFyi
           state: changes.empty? ? "nothing recorded" : "answers",
           note: changes.empty? ? empty_move_note(payload) : nil,
           items: items, total: changes.length)
+      end
+
+      # One section over the plan's four joined arrays. The items stay one list because a reader is
+      # asking one question — what does this corpus know about this rung — and `match` says which
+      # half an item came from: an executed report joined to a change, a report that joined none, or
+      # a rule the walk may apply.
+      def joined_framework_section(from:, to:, plan:)
+        observed = Array(plan["observed"])
+        unmatched = Array(plan["observed_unmatched"])
+        rules = Array(plan["rules"])
+        changes = Array(plan["changes"])
+        items = observed.map { |row| item_from_observed(row) } +
+          unmatched.map { |row| item_from_observed(row, match: "unmatched") } +
+          rules.map { |rule| item_from_rule(rule) }
+        counts = plan["counts"].is_a?(Hash) ? plan["counts"] : {}
+        unclassified = counts["observed_unclassified"].to_i
+        note = if items.empty?
+          "the plan joins no report and no rule to this step's #{changes.length} documented change(s)"
+        else
+          parts = ["#{changes.length} documented change(s)", "#{observed.length} observed",
+                   "#{unmatched.length} unmatched", "#{rules.length} rule(s)"]
+          parts << "#{unclassified} report(s) not recorded as changes" if unclassified.positive?
+          parts.join(", ")
+        end
+        Section.new(key: "framework", title: "The framework move",
+          question: "what this plan joins to rails #{from} → #{to}, change by change",
+          state: items.empty? ? "nothing recorded" : "answers", note: note,
+          items: items, total: items.length)
       end
 
       def gem_section(gem)
@@ -200,35 +252,97 @@ module AgentsFyi
           items: items, total: payload["total"].to_i)
       end
 
-      # Our own earlier answers, as the walk recorded them. Empty until decisions are first-class
-      # (see `docs/design-notes.md`), and a section either way: a reader should see
-      # that the walk looked for its own past than infer that it did not.
-      def decisions_section(decisions)
+      # **The declaration's own decisions, including the ones other projects made about the same
+      # change.** The site admin writes them into the project declaration; there is no second route
+      # to ask, so this is the read. `change_key` is what makes a decision from another project
+      # recognisable here — same key, same change — and the project field says whose answer it was.
+      def decisions_section(decisions, project: nil)
         entries = Array(decisions)
         Section.new(key: "decisions", title: "What this walk decided before",
           question: "answers from earlier rungs and earlier applications",
           state: entries.empty? ? "nothing recorded" : "answers",
           note: entries.empty? ? "no decision has been answered for this walk yet" : nil,
           items: entries.map { |decision|
-                   effects = Array(decision["effects"]).filter_map { |effect| effect["kind"] if effect.is_a?(Hash) }
+                   effects = Array(decision["effects"]).grep(Hash)
                    Item.new(title: decision["question"] || decision["subject"],
-                     status: decision["answer"],
-                     fix: decision["effect"] || (effects.any? ? "#{effects.uniq.join(", ")} effect(s)" : nil),
+                     status: decision["answer"], project: decision["project"] || project,
+                     change_key: decision_change_key(decision),
+                     effects: effects.map { |effect| effect_summary(effect) },
+                     fix: decision["effect"] || effects_summary(effects),
                      rank: nil, match: "decision") },
           total: entries.length)
+      end
+
+      # The key a decision is about, from the decision itself or from a rule effect's payload.
+      # The declaration's decision row may not repeat it; the effect has to carry it for the walk
+      # to apply the rule, so the effect is the fallback rather than a second field to maintain.
+      def decision_change_key(decision)
+        declared = decision["change_key"].to_s
+        return declared unless declared.empty?
+
+        Array(decision["effects"]).grep(Hash).filter_map do |effect|
+          payload = effect["payload"]
+          payload["change_key"] if payload.is_a?(Hash)
+        end.first
+      end
+
+      # A decision's effects as a reviewer reads them, one line per effect. The brief is not the
+      # site admin's renderer, so this is a summary rather than a diff; the payload's path or rule
+      # kind is the part that says *what* the answer does.
+      def effect_summary(effect)
+        payload = effect["payload"].is_a?(Hash) ? effect["payload"] : {}
+        kind = effect["kind"].to_s
+        case kind
+        when "rule"
+          rule = payload["kind"].to_s
+          key = payload["change_key"].to_s
+          "rule #{rule}#{key.empty? ? "" : " on #{key}"}"
+        when "gem"
+          "#{kind} #{payload["name"]}"
+        when "file", "delete", "chmod", "patch", "config"
+          "#{kind} #{payload["path"]}"
+        else
+          kind
+        end
+      end
+
+      def effects_summary(effects)
+        summaries = Array(effects).map { |effect| effect_summary(effect) }.reject(&:empty?)
+        summaries.empty? ? nil : summaries.uniq.join(", ")
       end
 
       def item_from_change(change)
         Item.new(id: change["report_id"] || change["id"], title: change["title"],
           library: change["library"], version: change["version"], status: change["status"],
           trust: change["trust"], rank: change["rank"], match: change["change_kind"] || "change",
+          change_key: change["change_key"],
           fix: change["resolution"] || change["fix"] || change["replacement"])
+      end
+
+      # A report the plan joined to a documented change (`observed`) or could not (`unmatched`).
+      # The key travels even on an unmatched row: it is what says the report is about a change
+      # nobody documented, which is a different answer from a report with no change at all.
+      def item_from_observed(row, match: nil)
+        Item.new(id: row["report_id"] || row["id"], title: row["title"],
+          library: row["library"], version: row["broken_in"] || row["version"],
+          status: row["status"], trust: row["trust"], rank: row["rank"],
+          match: match || row["change_kind"] || "observed", change_key: row["change_key"],
+          fix: row["resolution"] || row["fix"] || row["replacement"])
+      end
+
+      # A rule is an artifact rather than a report: its title names the change it is about, its
+      # status is the authority that stands behind it, and it carries no id because the plan's
+      # anonymous answer deliberately omits the payload and the row id.
+      def item_from_rule(rule)
+        Item.new(title: "#{rule["kind"]} rule for #{rule["change_key"]}",
+          status: rule["authority"], match: "rule", change_key: rule["change_key"],
+          authority: rule["authority"])
       end
 
       def item_from_search(row)
         Item.new(id: row["id"], title: row["title"], library: row["library"], version: row["version"],
           status: row["status"], trust: row["trust"], rank: row["rank"],
-          match: row["match_type"] || "search",
+          match: row["match_type"] || "search", change_key: row["change_key"],
           fix: row["resolution"] || row["fix"] || row["replacement"])
       end
 

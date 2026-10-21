@@ -45,15 +45,22 @@ class FilingTest < Minitest::Test
   end
 
   def record_for(verdict:, stages: [], baseline: nil, suite: nil, worktree: nil, repairs: [],
-    checks: [])
+    checks: [], changes: [], expected: [], fired_rules: [])
     AgentsFyi::Upgrader::Record.new(
       repository: "https://github.com/acme/storefront.git", commit: "9f2c1ab8",
       worktree: worktree, from_version: "6.0.4.4", to_version: "7.1.0", verdict: verdict,
       why: "the suite failed after a green baseline", name: "Rails 7.1",
       interpreter: "ruby 3.3.12", image: "agents-fyi-upgrader:latest",
       stages: stages, baseline: baseline, suite: suite, applied: [1, 2], refused: [], decisions: [],
-      repairs: repairs, checks: checks
+      repairs: repairs, checks: checks, changes: changes, expected: expected, fired_rules: fired_rules
     )
+  end
+
+  def change(subject: "before_filter", kind: "renamed", component: "actionpack",
+    replacement: "before_action", change_key: nil)
+    { "component" => component, "subject" => subject, "kind" => kind,
+      "replacement" => replacement,
+      "change_key" => change_key || "ruby|#{component}|#{subject.downcase}" }
   end
 
   # **A check that failed with a green suite is the failure, not the green suite.** The report used
@@ -154,16 +161,17 @@ class FilingTest < Minitest::Test
 
   # The shape the pipeline produces when the suite fails and nothing before it did: every
   # required stage exited zero, the baseline was green, and the run's last command was not.
-  def suite_failed_record(worktree: nil)
+  def suite_failed_record(worktree: nil, changes: [], tail: nil, expected: [], fired_rules: [])
     # A real runner prints where the failure is, so the working copy's path is in the
     # output whenever one is being described. It has to be in the fixture for the test
     # below to be about anything.
     where = worktree ? "#{worktree}/app/models/store.rb:12:in `valid?'\n" : ""
-    tail = "#{where}Failure/Error: expect(Store.new).to be_valid\n" \
-           "NameError: uninitialized constant Store::TAX\n  " \
-           "0 examples, 1 failure"
+    tail ||= "#{where}Failure/Error: expect(Store.new).to be_valid\n" \
+             "NameError: uninitialized constant Store::TAX\n  " \
+             "0 examples, 1 failure"
     record_for(
-      verdict: Failed, worktree: worktree,
+      verdict: Failed, worktree: worktree, changes: changes, expected: expected,
+      fired_rules: fired_rules,
       baseline: command(stage: "baseline", command: "bundle exec rspec"),
       suite: command(stage: "suite", command: "bundle exec rspec", exit_code: 1, output_tail: tail),
       stages: [command(stage: "pin", command: "bundle update rails"),
@@ -218,7 +226,11 @@ class FilingTest < Minitest::Test
     assert_equal "7.1.0", payload["version"]
     assert_equal "6.0.4.4", payload["from_version"]
     assert_equal "ruby", payload["ecosystem"], "a gem filed as PyPI's is compared against the Python corpus"
-    assert_equal "package", payload["subject_kind"]
+    assert_equal "platform", payload["subject_kind"],
+      "a framework failure filed as a package lands in the gem half of the corpus"
+    assert_nil payload["subject"], "a rung with no documented change has no subject to claim"
+    assert_nil payload["change_kind"]
+    assert_nil payload["replacement"]
     assert_includes payload["title"], "rails 7.1.0"
     assert_includes payload["title"], "6.0.4.4 -> 7.1.0"
     assert_includes payload["problem"], "NameError: uninitialized constant Store::TAX"
@@ -232,6 +244,73 @@ class FilingTest < Minitest::Test
     assert_includes payload["environment"], "not an independent reproduction"
     assert_includes payload["environment"], "ruby 3.3.12"
     assert_includes payload["environment"], "9f2c1ab8"
+  end
+
+  # **A rung that carried one change names it, even when the failure's text does not.**
+  # There is only one documented change the step could have been about, and the report's
+  # library, subject, kind and replacement are the plan's facts rather than a traceback guess.
+  def test_a_failed_step_files_the_change_the_rung_names
+    payload = AgentsFyi::Upgrader::Filing.report_for(
+      record: suite_failed_record(changes: [change])
+    )
+
+    assert_equal "actionpack", payload["library"], "the report names the meta-gem, not the change's component"
+    assert_equal "before_filter", payload["subject"]
+    assert_equal "symbol_renamed", payload["change_kind"]
+    assert_equal "before_action", payload["replacement"]
+    assert_equal "platform", payload["subject_kind"]
+  end
+
+  # **A failure's own output is the first place to look.** With several changes on the rung, the
+  # one the output names is the one the report is about; the others are not evidence for it.
+  def test_a_failure_that_names_its_change_picks_that_change_from_several
+    record = suite_failed_record(
+      changes: [change(subject: "before_filter", component: "actionpack"),
+                change(subject: "update_attributes", component: "activerecord",
+                  replacement: "update", change_key: "ruby|activerecord|update_attributes")],
+      tail: "NoMethodError: undefined method `update_attributes` for Item\n"
+    )
+
+    payload = AgentsFyi::Upgrader::Filing.report_for(record: record)
+
+    assert_equal "activerecord", payload["library"]
+    assert_equal "update_attributes", payload["subject"]
+    assert_equal "symbol_renamed", payload["change_kind"]
+    assert_equal "update", payload["replacement"]
+  end
+
+  # **`default_changed` has no `change_kind` in the corpus's enum, and that is not a reason to
+  # drop the subject.** The key does not include the kind, so the report still joins the change;
+  # a guessed kind would put a default flip in the rename family.
+  def test_a_default_change_files_its_subject_with_no_change_kind
+    payload = AgentsFyi::Upgrader::Filing.report_for(
+      record: suite_failed_record(changes: [change(subject: "belongs_to", kind: "default_changed",
+        component: "activerecord", replacement: nil,
+        change_key: "ruby|activerecord|belongs_to")])
+    )
+
+    assert_equal "belongs_to", payload["subject"]
+    assert_nil payload["change_kind"]
+    assert_nil payload["replacement"]
+    assert_equal "activerecord", payload["library"]
+  end
+
+  # **A scan decision can name the change even when the plan did not.** The scan starts below the
+  # rung, so an earlier rung's call site is located here; one distinct subject is the change the
+  # failure is about, and its library falls back to `rails` because no component was declared.
+  def test_a_decision_names_the_change_when_the_plan_did_not
+    decision = AgentsFyi::Upgrader::Record::Decision.new(
+      subject: "find_all_by_name", reason: "located here", kind: "removed",
+      replacement: "where", source: "4.0", path: "app/models/item.rb", line: 3
+    )
+    record = suite_failed_record(changes: []).tap { |value| value.decisions << decision }
+
+    payload = AgentsFyi::Upgrader::Filing.report_for(record: record)
+
+    assert_equal "find_all_by_name", payload["subject"]
+    assert_equal "symbol_removed", payload["change_kind"]
+    assert_equal "where", payload["replacement"]
+    assert_equal "rails", payload["library"], "a change with no component was attributed to one"
   end
 
   # The working copy's path is different on every run, so a failure met in two checkouts
@@ -314,6 +393,52 @@ class FilingTest < Minitest::Test
     refute draft.key?("attempted")
     refute draft.key?("environment")
     assert_empty draft.keys - AgentsFyi::Upgrader::Filing::PRECHECK_FIELDS
+  end
+
+  # **The structured fields are in the draft as well as the write.** They do not move the
+  # comparison — the service reads title, library, version, problem, resolution and trace — but a
+  # draft that omitted them would describe the report by different fields than the write does.
+  def test_the_precheck_draft_carries_the_structured_change_fields_without_moving_the_verdict
+    payload = AgentsFyi::Upgrader::Filing.report_for(
+      record: suite_failed_record(changes: [change])
+    )
+    draft = AgentsFyi::Upgrader::Filing.precheck_payload(payload)
+
+    assert_equal "before_filter", draft["subject"]
+    assert_equal "symbol_renamed", draft["change_kind"]
+    assert_equal "before_action", draft["replacement"]
+    assert_equal "actionpack", draft["library"]
+    assert_equal "platform", draft["subject_kind"]
+  end
+
+  # **A failure an accepted `expect` rule named is not new evidence.** It is skipped rather than
+  # filed, and the reason names the rule's decision so the run's own record can be read against it.
+  def test_a_failure_a_rule_expected_is_not_filed_as_a_new_report
+    rule = { "decision_id" => "d-expect", "change_key" => "ruby|actionpack|before_filter",
+             "kind" => "expect", "payload" => { "failure" => "NameError: uninitialized constant Store::TAX" } }
+    record = suite_failed_record(changes: [change], fired_rules: [rule])
+    corpus = FakeCorpus.new
+
+    result = AgentsFyi::Upgrader::Filing.file(corpus: corpus, record: record)
+
+    assert_equal "skipped", result.action
+    assert_includes result.reason, "expected"
+    assert_includes result.reason, "d-expect"
+    assert_nil corpus.prechecked, "an expected failure was compared as if it were new"
+    assert_nil corpus.submitted
+  end
+
+  # A rule that names a different failure is still in force and has not fired; the report is filed.
+  def test_an_expect_rule_for_another_failure_does_not_suppress_this_one
+    rule = { "decision_id" => "d-expect", "change_key" => "ruby|actionpack|before_filter",
+             "kind" => "expect", "payload" => { "failure" => "a failure this run did not meet" } }
+    record = suite_failed_record(changes: [change], fired_rules: [rule])
+    corpus = FakeCorpus.new
+
+    result = AgentsFyi::Upgrader::Filing.file(corpus: corpus, record: record)
+
+    assert_equal "filed", result.action
+    refute_nil corpus.prechecked
   end
 
   def test_a_new_verdict_files_it

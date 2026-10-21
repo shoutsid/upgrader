@@ -1089,6 +1089,74 @@ class StepTest < Minitest::Test
     assert_equal ["layout-category-link"], AgentsFyi::Upgrader::Step.run_payload(record)["decisions"]
   end
 
+  # **A skip rule removes the change from the walk, and the decision id still reaches the run.** The
+  # scan is a window read with no change-key filter, so the skip is applied to what it returned: the
+  # plan change leaves the rule/survey lists, its located call site is dropped, and no decision asks
+  # a person to make it.
+  def test_a_skip_rule_keeps_the_change_out_of_the_scan_and_the_residue
+    dir = track(app)
+    with_source(dir, "app/controllers/items_controller.rb", "before_filter :authenticate\n")
+    skipped = change(subject: "before_filter", kind: "renamed")
+      .merge("component" => "actionpack",
+        "change_key" => "ruby|actionpack|before_filter")
+    manual = [{ "path" => "app/controllers/items_controller.rb", "line" => 1,
+                "subject" => "before_filter", "kind" => "renamed", "source" => "5.0",
+                "note" => "found here" }]
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "decisions" => [{
+        "id" => "skip-before-filter",
+        "question" => "Does this application need the old filter spelling?",
+        "answer" => "no, it is generated code",
+        "accepted_by" => "operator:9f2c1ab8",
+        "effects" => [{ "kind" => "rule",
+          "payload" => { "change_key" => "ruby|actionpack|before_filter", "kind" => "skip",
+                         "payload" => {} } }]
+      }]
+    }.to_json)
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [skipped]), manual: manual),
+      project: project).run
+
+    assert_empty record.decisions, "a skipped change came back as work for a person"
+    refute(record.applied.any? { |edit| edit.subject.to_s == "before_filter" },
+      "a skipped change was applied")
+    assert_equal ["skip-before-filter"], record.fired_rules.map { |rule| rule["decision_id"] }
+    assert_includes AgentsFyi::Upgrader::Step.run_payload(record)["decisions"], "skip-before-filter"
+    decisions_stage = record.stages.find { |stage| stage.stage == "decisions" }
+    assert_includes decisions_stage.output_tail, "rule skip ruby|actionpack|before_filter"
+  end
+
+  # **A known failure is not filed as new evidence.** The expect rule matches this run's own suite
+  # output, the run body names the decision so the service can retire it if the run falsified it,
+  # and the failure report is skipped. The run record is still written: it is the verification.
+  def test_an_expect_rule_suppresses_the_report_for_the_failure_it_names
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "decisions" => [{
+        "id" => "expect-suite-red",
+        "question" => "Is this suite failure the known one?",
+        "answer" => "yes, it is the fixture's missing database",
+        "accepted_by" => "operator:9f2c1ab8",
+        "effects" => [{ "kind" => "rule",
+          "payload" => { "change_key" => "ruby|actionpack|before_filter", "kind" => "expect",
+                         "payload" => { "failure" => "1 examples, 1 failure" } } }]
+      }]
+    }.to_json)
+    corpus = RecordingCorpus.new(payload: plan(changes: []))
+
+    record = step(dir, corpus: corpus, project: project,
+      tests: SequencedTests.new(results: [green, red]), contribute: true).run
+
+    assert_equal "failed", record.verdict
+    assert_equal ["expect-suite-red"], record.fired_rules.map { |rule| rule["decision_id"] }
+    assert_includes AgentsFyi::Upgrader::Step.run_payload(record)["decisions"], "expect-suite-red"
+    assert_empty corpus.calls_of(:precheck), "the expected failure was compared as if it were new"
+    assert_empty corpus.calls_of(:create_report)
+    refute_empty corpus.calls_of(:record_run), "the run itself was not recorded"
+  end
+
   def test_a_red_suite_after_a_green_baseline_is_repaired_and_the_suite_decides
     dir = track(app)
     record = step(dir, tests: SequencedTests.new(results: [green, red, green]),
@@ -1188,6 +1256,8 @@ class StepTest < Minitest::Test
     assert_equal "5.0.0", evidence[:to_version]
     assert_equal "bundle exec rspec", evidence[:suite_command]
     assert_includes evidence[:output_tail], "1 examples, 1 failure"
+    refute_nil evidence[:brief], "the repair stage did not receive the joined brief"
+    assert_equal "framework", evidence[:brief].sections.first.key
   end
 
   # **One default at a time, judged by the application's own suite.** `app:update` writes the file
@@ -1661,7 +1731,9 @@ class StepTest < Minitest::Test
   # and in the run body, so a reader of the pull request or the site admin sees what the walk knew before
   # it decided. A brief that lived only in the log is the failure the design notes name.
   def test_the_rung_is_briefed_before_it_acts_and_the_brief_travels_with_the_record
-    corpus = FakeCorpus.new(payload: plan(changes: [change]),
+    payload = plan(changes: [change])
+    payload["steps"].first["observed"] = []
+    corpus = FakeCorpus.new(payload: payload,
       route: { "ruby" => "2.2.2", "rails" => "5.0.0", "gems_read" => 1,
                "counts" => { "keep" => 0, "move" => 1, "replace" => 0, "remove" => 0, "blocked" => 0,
                              "unknown" => 0 },
@@ -1673,11 +1745,43 @@ class StepTest < Minitest::Test
     refute_nil record.brief, "the rung was walked without a brief"
     gem_section = record.brief.sections.find { |section| section.key == "gem:factory_girl" }
     refute_nil gem_section, "the brief did not ask about the gem the routing moves"
-    assert_equal %w[rails factory_girl], corpus.upgrade_calls.map(&:first)
+    assert_equal %w[factory_girl], corpus.upgrade_calls.map(&:first),
+      "the framework section re-asked the window instead of reading the plan it already had"
 
     payload = AgentsFyi::Upgrader::Step.run_payload(record)
     assert_equal record.brief.asked, payload.dig("brief", "asked")
     assert_equal gem_section.key, payload.dig("brief", "sections").map { |s| s["key"] }.find { |k| k == gem_section.key }
+  end
+
+  # **The plan's joined half reaches the brief the step records.** The plan already fetched the
+  # rung's observed reports, the reports that joined nothing and the rules in force; the step hands
+  # the plan to the brief instead of asking the library window a second time.
+  def test_the_brief_carries_the_plan_s_observed_and_unmatched_changes
+    payload = plan(changes: [change(subject: "before_filter", kind: "renamed")])
+    payload["steps"].first["observed"] = [{
+      "report_id" => "r1", "title" => "before_filter is gone", "library" => "actionpack",
+      "broken_in" => "5.0.0", "status" => "resolved_verified",
+      "change_kind" => "symbol_removed", "change_key" => "ruby|actionpack|before_filter",
+      "resolution" => "use before_action"
+    }]
+    payload["steps"].first["observed_unmatched"] = [{
+      "report_id" => "r2", "title" => "a report nobody documented", "library" => "rails",
+      "broken_in" => "5.0.0", "status" => "open", "change_key" => "ruby|rails|unknown"
+    }]
+    payload["steps"].first["rules"] = [{ "change_key" => "ruby|actionpack|before_filter",
+      "kind" => "rewrite", "authority" => "curated" }]
+    payload["steps"].first["counts"] = { "observed_unclassified" => 1 }
+    corpus = FakeCorpus.new(payload: payload)
+
+    record = step(track(app), corpus: corpus).run
+
+    section = record.brief.sections.first
+    assert_equal %w[r1 r2], section.items.filter_map(&:id)
+    assert_equal "ruby|actionpack|before_filter", section.items.first.change_key
+    assert_equal "unmatched", section.items[1].match
+    assert_equal "curated", section.items.last.authority
+    assert_empty Array(corpus.upgrade_calls),
+      "the brief asked the window after the plan had already joined it"
   end
 
   # **The run body carries the review brief's internal sections.** The service stores them for the

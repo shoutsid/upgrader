@@ -240,6 +240,15 @@ because overwriting it is a decision and not a safeguard. `framework_defaults: "
 so a decision is a first-class object rather than a note in a pull request body. The shape is
 checked at load; the meaning of an effect belongs to the code that applies it.
 
+A `rule` effect's payload names the `change_key` it is about, the `kind` of mechanism, and a
+nested `payload` with that mechanism's own fields. `skip` leaves that change out of the scan and
+the residue, `expect` accepts a known failure so it is not filed as a new report, and `rewrite`,
+`insert` and `config` are tree edits through the same line-checked applier as every other effect.
+`rewrite` carries `old`/`new`, `insert` carries `path`/`after`/`text`, and `config` carries
+`key`/`file`/`value` (or the `path`/`find`/`replace` a config effect already uses).
+`applies_when` scopes any rule to a rung, and a condition this build does not know refuses rather
+than applying everywhere.
+
 ## Choosing a machine
 
 A step executes the application's commands somewhere. The three answers are deliberately

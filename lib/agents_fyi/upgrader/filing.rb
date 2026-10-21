@@ -16,16 +16,18 @@ module AgentsFyi
     #   failed, its exit code, and its output. It does *not* read a stack trace to work out
     #   which gem broke, because a name guessed out of a traceback is a claim the run did
     #   not establish — see `docs/design-notes.md` on character similarity not being evidence. The
-    #   library is the subject the step was about, said here rather than inferred.
+    #   library is the component of the change the plan names, or the meta-gem when it names none,
+    #   said here rather than inferred from a traceback.
     # * **A refusal is not a failure.** A `refused` step is a fact about the ladder's
     #   coverage, and its home is the run record's refusal list, which is what the coverage
     #   figure is measured from. Filing it as a corpus report would file this tool's own
     #   gaps as somebody's breakage.
     module Filing
-      # What the report is about. `rails` because the step's subject is the meta-gem and
-      # `version` is the release it was being moved to — the pair a caller planning the same
-      # upgrade can be found by. Naming a gem the trace mentioned instead would be this tool
-      # deciding which of the application's dependencies is at fault, which is exactly the
+      # **The fallback library.** A rung that names a documented change files under that change's
+      # ladder component; a failure that names none stays `rails`, because the step's subject is
+      # the meta-gem and `version` is the release it was moving to — the pair a caller planning
+      # the same upgrade can be found by. Naming a gem the trace mentioned instead would be this
+      # tool deciding which of the application's dependencies is at fault, which is exactly the
       # decision it does not make.
       LIBRARY = "rails"
 
@@ -34,8 +36,24 @@ module AgentsFyi
       # report would look wrong.
       ECOSYSTEM = "ruby"
 
-      # The subject is a library, so the kind is the miner's: a package with a release.
-      SUBJECT_KIND = "package"
+      # **A framework failure is a platform failure.** The report is about Rails' own change, not
+      # about a package the application installed, and `platform` is the corpus's word for that
+      # (`Report.subject_kinds`). Filing it as `package` would put a framework break in the same
+      # bucket as a gem's release and make the observed half of the ladder read as a gem finding.
+      SUBJECT_KIND = "platform"
+
+      # The ladder's four kinds, mapped to the corpus's five. `default_changed` deliberately has no
+      # destination: the enum does not declare one (ADR 0011's open item), and a report with a
+      # subject and a null kind still joins by its key — the key does not include the kind.
+      CHANGE_KINDS = {
+        "renamed" => "symbol_renamed",
+        "removed" => "symbol_removed",
+        "moved" => "symbol_moved"
+      }.freeze
+
+      # The ladder's own kinds. A decision effect's refusal carries the *effect* kind (`patch`,
+      # `rule`), which is not a change kind and must not become a report's subject.
+      LADDER_KINDS = %w[renamed removed moved default_changed config_renamed].freeze
 
       # Which precheck verdicts are worth filing, and this is the same rule the miner
       # applies in `agents_fyi_miner.corpus.FILABLE` — written twice because the two clients
@@ -63,8 +81,15 @@ module AgentsFyi
       # `environment` and `attempted` cannot change a verdict, so they are dropped from the
       # draft rather than sent and refused. The body dispatched to both is built once, from
       # `report_for`, so the draft and the submission cannot disagree about what happened.
+      # **The structured fields are part of the draft too, and they do not change the comparison.**
+      # The service's precheck accepts `subject`, `change_kind` and `replacement` and its comparison
+      # reads title, library, version, problem, resolution and trace — so sending them makes the
+      # draft describe the same report the write will, without moving a `duplicate` or `similar`
+      # verdict. A draft that omitted them would still be a truthful comparison, but the two halves
+      # of one report would be described by different fields.
       PRECHECK_FIELDS = %w[
-        title library version ecosystem subject_kind from_version problem trace
+        title library version ecosystem subject_kind from_version subject change_kind replacement
+        problem trace
       ].freeze
 
       # What filing did, in a word and a sentence: `filed`, `duplicate` (the corpus already
@@ -88,9 +113,15 @@ module AgentsFyi
 
         stage = failing_stage(record: record)
         tail = text(stage&.output_tail, record: record)
+        change = change_for(record)
         {
           "title" => title_for(record: record, first: Record.first_line(tail)),
-          "library" => LIBRARY,
+          # **The change the rung names, when it names one.** The ladder gives a change a
+          # component (`activerecord`, `actionpack`, …), and the report's library is that
+          # component rather than the meta-gem — the corpus's observed half is read one library
+          # per component. A failure that names no change stays `rails`, which is the honest
+          # answer and leaves it unclassified rather than guessing a gem out of a traceback.
+          "library" => change_library(change),
           # The release the application was moved *to*: the miner's rule, one level up — a
           # caller searches for what they are about to install, and what they are about to
           # install is the release that broke it.
@@ -98,6 +129,9 @@ module AgentsFyi
           "ecosystem" => ECOSYSTEM,
           "subject_kind" => SUBJECT_KIND,
           "from_version" => record.from_version.to_s,
+          "subject" => change && change["subject"],
+          "change_kind" => change && CHANGE_KINDS[change["kind"].to_s],
+          "replacement" => change && change["replacement"],
           "environment" => environment_for(record: record),
           "problem" => problem_for(record: record, stage: stage, head: head_of(tail)),
           # `attempted` is the evidence in the words of what was run, and every clause of it
@@ -130,15 +164,19 @@ module AgentsFyi
         resolution << ", and the suite was green after it."
         resolution << "\n\n```diff\n#{outcome.diff}\n```" unless outcome.diff.to_s.strip.empty?
 
+        change = change_for(record)
         {
           "title" => clip("#{LIBRARY} #{record.to_version}: #{broken} left `#{suite}` red, and a " \
                           "bounded repair made it green — #{Record.first_line(failure)}",
             MAX_TITLE).to_s.rstrip,
-          "library" => LIBRARY,
+          "library" => change_library(change),
           "version" => record.to_version.to_s,
           "ecosystem" => ECOSYSTEM,
           "subject_kind" => SUBJECT_KIND,
           "from_version" => record.from_version.to_s,
+          "subject" => change && change["subject"],
+          "change_kind" => change && CHANGE_KINDS[change["kind"].to_s],
+          "replacement" => change && change["replacement"],
           "environment" => environment_for(record: record),
           "problem" => "A Rails #{record.from_version} -> #{record.to_version} step was measured " \
                        "against this application's own suite: #{broken} (`#{suite}`) was red before " \
@@ -173,6 +211,17 @@ module AgentsFyi
       def self.file(corpus:, record:)
         payload = report_for(record: record)
         return Result.new(action: "skipped", reason: skip_reason(record)) if payload.nil?
+
+        # **A failure a rule expected is not a finding.** The rule's `failure` was matched against
+        # this run's own output before the run was recorded (`expected_rule`), and the decision id
+        # is in the run body's `decisions` list, so the service can retire the rule if the run
+        # falsified it. Filing it anyway would file the known failure as new evidence every rung.
+        expected = expected_rule(record: record)
+        unless expected.nil?
+          return Result.new(action: "skipped",
+            reason: "expected: `#{expected["change_key"]}` is a known failure of this rung " \
+                    "(decision #{expected["decision_id"]}), so it was not filed as a new report")
+        end
 
         file_payload(corpus: corpus, payload: payload)
       end
@@ -212,6 +261,102 @@ module AgentsFyi
           next if value.nil? || value.to_s.empty?
 
           draft[key] = value
+        end
+      end
+
+      # **The change the rung names, from the plan the record carries.** A failure's own output is
+      # the first place to look: a suite that says `before_filter` is naming the change. A rung that
+      # carried exactly one documented change names it too, even when the failure is a stack trace
+      # about something else — there is only one change the step could have been about. With several
+      # changes and no name in the output, the record's own decisions are the last signal, and a
+      # single distinct subject there is the change a person was asked to make. Anything else is
+      # genuinely unclassified, and `rails`/nil is the honest answer rather than a guess.
+      def self.change_for(record)
+        changes = Array(record&.changes).grep(Hash)
+        named = failure_text(record).downcase
+        mentioned = changes.select do |change|
+          subject = change["subject"].to_s
+          !subject.empty? && named.include?(subject.downcase)
+        end
+        return mentioned.max_by { |change| change["subject"].to_s.length } unless mentioned.empty?
+        return changes.first if changes.length == 1
+
+        entries = change_entries(record)
+        subjects = entries.map { |entry| entry.subject.to_s }.reject(&:empty?).uniq
+        candidates = changes.select { |change| subjects.include?(change["subject"].to_s) }
+        return candidates.first if candidates.length == 1
+
+        # **A decision or a scan refusal can name a change the plan did not.** The scan starts
+        # below the rung, so an earlier rung's change can be located here, and a manual call site
+        # the ladder does not document is still a subject the corpus can key a report by. One
+        # distinct subject is that change; several are a rung with several questions, and none of
+        # them is the change the failure names.
+        entry_change(entries) if subjects.length == 1
+      end
+
+      # The record's decisions and refusals that name a *ladder change* rather than an effect of
+      # one. A rule effect's refusal is about the decision, not about a change the corpus documents.
+      def self.change_entries(record)
+        (Array(record.decisions) + Array(record.refused)).select do |entry|
+          LADDER_KINDS.include?(entry.kind.to_s) ||
+            (entry.respond_to?(:component) && !entry.component.to_s.empty?)
+        end
+      end
+
+      # The change a single decision or refusal names, in the plan's own shape. A decision carries
+      # the component and key when it came from the plan; a refusal from the applier carries the
+      # ladder's kind and replacement but not the join, so its key is nil and the library falls
+      # back to `rails` — the honest answer for a change the plan did not name.
+      def self.entry_change(entries)
+        entry = Array(entries).find { |candidate| !candidate.subject.to_s.empty? }
+        return nil if entry.nil?
+
+        {
+          "subject" => entry.subject.to_s,
+          "kind" => entry.kind,
+          "replacement" => entry.replacement,
+          "component" => entry.respond_to?(:component) ? entry.component : nil,
+          "change_key" => entry.respond_to?(:change_key) ? entry.change_key : nil
+        }
+      end
+
+      def self.change_library(change)
+        component = change && change["component"].to_s
+        component.to_s.empty? ? LIBRARY : component
+      end
+
+      # The text an `expect` rule is matched against: the verdict's sentence, the decisive stage's
+      # output and every stage's tail. A known failure may be named by the verdict ("the suite was
+      # green before this step and failed after it") while its actual message lives in the suite's
+      # tail, or the reverse; both are this run's evidence and neither is a different claim.
+      def self.failure_text(record)
+        parts = [record.why, failing_stage(record: record)&.output_tail,
+                 record.baseline&.output_tail, record.suite&.output_tail]
+        parts.concat(Array(record.stages).map(&:output_tail))
+        parts.compact.map(&:to_s).reject(&:empty?).join("\n")
+      end
+
+      # The `expect` rule this run met, or nil. Matching is a case-insensitive substring because
+      # the rule's `failure` is a person's statement of the known failure, not a regex: a rule that
+      # required the whole output to match would never fire on a suite that adds a timestamp.
+      def self.expected_rule(record:)
+        return nil if record.nil?
+
+        text = failure_text(record).downcase
+        return nil if text.empty?
+
+        rules = Array(record&.expected) + Array(record&.fired_rules)
+        rules.find do |rule|
+          next false unless rule.is_a?(Hash)
+
+          kind = (rule["kind"] || rule.dig("payload", "kind")).to_s
+          next false unless kind == "expect"
+
+          # The client's fired rule carries the mechanism's inner payload; a rule read straight
+          # from a declaration carries the service's outer one. Both put `failure` one level down.
+          failure = (rule.dig("payload", "failure") ||
+                     rule.dig("payload", "payload", "failure")).to_s
+          !failure.strip.empty? && text.include?(failure.downcase)
         end
       end
 

@@ -174,6 +174,14 @@ module AgentsFyi
         @checks = []
         @prepare_checks = []
         @commits = []
+        # **The rules the project declared, and the ones that fired.** `fired_rules` is what the
+        # run body's existing `decisions` field carries, so the service can retire a rule a failed
+        # run falsified; `expected_rules` are the `expect` rules still waiting to see whether this
+        # run's failure is the one they name. `skipped_keys` filters the plan and the scan.
+        @fired_rules = []
+        @expected_rules = []
+        @skipped_keys = []
+        @plan_changes = []
         @app_update_skipped = []
         @base_commit = nil
         @record_commit = nil
@@ -491,6 +499,11 @@ module AgentsFyi
             why: "the service returned no step for #{@from} -> #{@to}: #{payload["next_step"]}"
           )
         end
+        # **The rung's changes travel with the record.** A failed step is filed against the change
+        # it names (`Filing`), and the component/subject/replacement are the plan's facts rather
+        # than something to re-derive from a traceback. The plan's observed half is already joined
+        # to these changes by `change_key`; the brief reads it from the step it is handed.
+        @plan_changes = Array(step["changes"])
         step
       rescue Corpus::Refused => e
         # The service's own sentence, kept whole: it says which direction this ladder
@@ -537,6 +550,11 @@ module AgentsFyi
             decisions: @decisions.select { |decision| !decision.path.to_s.empty? },
             carried: @decisions.count { |decision| decision.path.to_s.empty? },
             unapplied_rules: @unapplied_rules || [],
+            # **The joined brief is evidence, not decoration.** It is what the corpus already knows
+            # about this rung, change by change — a report that is this failure, a rule that is
+            # already in force, a decision another project made. The repair agent is the one reader
+            # who can use that before trying the same fix again.
+            brief: @brief,
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
@@ -1225,9 +1243,20 @@ module AgentsFyi
           # **The walk's own earlier answers are recall too.** A decision the project carries is
           # what this application already chose; the brief says so before the rung applies it, so a
           # reviewer sees the answer rather than rediscovering the question.
-          decisions: @project&.decisions || [])
+          decisions: @project&.decisions || [],
+          # **The plan's joined half is the framework section's first source.** It knows which
+          # report is which change, which reports joined nothing and which rules are in force; a
+          # second `/api/reports/upgrade` read would know only the library window.
+          plan: step,
+          # A decision's own project is the cross-project answer's identity; one the declaration
+          # does not repeat belongs to the project this walk is reading.
+          project: @project&.slug)
+        observed = Array(step["observed"]).length
+        unmatched = Array(step["observed_unmatched"]).length
+        rules = Array(step["rules"]).length
         @out.puts("  recall: #{result.sections.length} question(s), " \
-                  "#{result.sections.sum { |section| section.items.length }} report(s)" \
+                  "#{result.sections.sum { |section| section.items.length }} report(s) " \
+                  "(plan: #{observed} observed, #{unmatched} unmatched, #{rules} rule(s))" \
                   "#{result.truncated ? ", truncated" : ""}") if @out
         result
       rescue Corpus::Refused, Corpus::Unreachable => e
@@ -1677,15 +1706,35 @@ module AgentsFyi
         decisions = @project&.decisions
         return if decisions.nil? || decisions.empty?
 
-        result = Effects.new(root: @worktree.root, rung: step["to_version"]).apply(decisions)
+        result = Effects.new(root: @worktree.root, rung: step["to_version"],
+          source_roots: @project&.source_roots || []).apply(decisions)
         @applied.concat(result.applied)
         @refused.concat(result.refused)
+        # **A rule that fires is recorded, and a rule that only waits is not.** `skip` fires only
+        # when this rung carries the change it names — a rule for another project's change did
+        # nothing here; `expect` waits for the failure and is added by `build` only if this run's
+        # output is the failure it names. Both carry their decision id, which is the id the run
+        # body already sends.
+        result.rules.each do |rule|
+          key = rule["change_key"].to_s
+          case rule["kind"].to_s
+          when "expect"
+            @expected_rules << rule
+          when "skip"
+            @skipped_keys << key unless key.empty?
+            @fired_rules << rule if @plan_changes.any? { |change| change["change_key"].to_s == key }
+          else
+            @fired_rules << rule
+          end
+        end
         stages << Record::Command.new(stage: Record::DECISIONS,
           command: "decisions: #{result}",
           ran: true, exit_code: result.refused.empty? ? 0 : 1, seconds: 0.0,
           output_tail: result.applied.map { |edit|
             "#{edit.path}:#{edit.line} (#{edit.origin})"
-          }.concat(result.refused.map { |refusal| "refused: #{refusal.reason}" }).join("\n"))
+          }.concat(result.rules.map { |rule|
+            "rule #{rule["kind"]} #{rule["change_key"]} (decision:#{rule["decision_id"]})"
+          }).concat(result.refused.map { |refusal| "refused: #{refusal.reason}" }).join("\n"))
         @out.puts("  #{result}") if @out
       end
 
@@ -1693,6 +1742,12 @@ module AgentsFyi
       # manual half is a decision for a person and travels in the record as one —'s fifth
       # rule: a refusal is an output.
       def apply(stages, step)
+        # **A skipped change is not scanned, not surveyed and not a decision.** The service's scan
+        # is a window read and has no change-key filter, so the skip is applied to what the window
+        # returns: the plan's change leaves the rule/survey lists, and a located edit whose subject
+        # belongs only to a skipped change is dropped. A subject two changes share is kept, because
+        # the other change is still work.
+        changes = changes_for(step)
         files = source_files
         if files.empty?
           stages << Record::Command.new(stage: Record::APPLY, command: "no Ruby source found to scan",
@@ -1706,11 +1761,13 @@ module AgentsFyi
           # The plan's half is still this step's half: a repository with no Ruby source
           # this tool reads has not thereby moved, and the changes no machine may make
           # are exactly the ones a person still has to.
-          return [[], [], decisions_for(step, nil)]
+          return [[], [], decisions_for(step, nil, changes: changes)]
         end
 
         corpus = @corpus || Corpus.new(base: @api)
         scan = corpus.scan(from: scan_from(step, corpus), to: step["to_version"], files: files)
+        scan = scan.merge("edits" => skip_edits(scan["edits"], step),
+          "manual" => skip_edits(scan["manual"], step))
         if @out
           @out.puts("  scan: #{scan["counts"].inspect} — #{files.size} file(s) sent")
           # The counts alone read as one thing and mean three: a window whose documented
@@ -1745,13 +1802,13 @@ module AgentsFyi
           named["config/application.rb"] = File.read(application, encoding: "utf-8").lines.map(&:chomp)
         end
         tree = file_lines(files).merge(named)
-        rules = Rewrites.apply(manual, files: tree, sources: named, changes: step["changes"] || [],
+        rules = Rewrites.apply(manual, files: tree, sources: named, changes: changes,
           rung: step["to_version"])
-        inert = Rewrites.inert(step["changes"] || [])
+        inert = Rewrites.inert(changes)
         # **What the surveys found, before the decisions are built** — the evidence travels *in* the
         # decision rather than beside it, because a residue read one line at a time is what a person
         # actually works from.
-        evidence = Rewrites.survey(step["changes"] || [], tree: tree, located: manual)
+        evidence = Rewrites.survey(changes, tree: tree, located: manual)
         # A rule that *knows* the change and would not touch this line is the most specific thing
         # anything downstream can be told, so it is kept rather than counted: the repair agent's
         # brief carries it (`Repair#prompt_for`).
@@ -1762,10 +1819,10 @@ module AgentsFyi
         # **The changes whose fix is a gem**, applied to the call sites the scan located: the call
         # sites need no edit, so what handles them is a declaration in the application's Gemfile.
         declared, bridged = declare_bridges(
-          Rewrites.bridges(manual, changes: step["changes"] || [], tree: bridge_evidence)
+          Rewrites.bridges(manual, changes: changes, tree: bridge_evidence)
         )
         handled = rules.applied + bridged + bridges_the_gemfile_answers
-        decisions = decisions_for(step, scan, evidence: evidence).reject do |decision|
+        decisions = decisions_for(step, scan, evidence: evidence, changes: changes).reject do |decision|
           handled.include?(decision.subject.to_s) ||
             already_reads_the_new_way?(decision, tree) ||
             the_changes_own_scaffold?(decision)
@@ -1785,6 +1842,35 @@ module AgentsFyi
           output_tail: apply_summary(result, decisions, rules, inert, created, declared)
         )
         [result.applied + declared, result.refused, decisions]
+      end
+
+      # The plan's changes with the ones a `skip` rule named removed. The key is the join, so a
+      # change the plan does not name is not filtered by subject — a rule for another project's
+      # change cannot silently hide this application's unrelated work.
+      def changes_for(step)
+        changes = Array(step["changes"])
+        return changes if @skipped_keys.empty?
+
+        changes.reject { |change| @skipped_keys.include?(change["change_key"].to_s) }
+      end
+
+      # A scan edit whose change a skip rule named. The scan entry's own `change_key` wins when the
+      # service sends one; otherwise the subject is mapped through the plan's changes, and only a
+      # subject that no kept change carries is dropped.
+      def skip_edits(edits, step)
+        entries = Array(edits)
+        return entries if @skipped_keys.empty?
+
+        all = Array(step["changes"])
+        skipped_subjects = all.select { |change| @skipped_keys.include?(change["change_key"].to_s) }
+          .map { |change| change["subject"].to_s }
+        kept_subjects = all.reject { |change| @skipped_keys.include?(change["change_key"].to_s) }
+          .map { |change| change["subject"].to_s }
+        skipped_subjects -= kept_subjects
+        entries.reject do |entry|
+          key = entry["change_key"].to_s
+          key.empty? ? skipped_subjects.include?(entry["subject"].to_s) : @skipped_keys.include?(key)
+        end
       end
 
       # **The scan looks below this rung, and a real walk is why.** An application can declare a release
@@ -2094,9 +2180,9 @@ module AgentsFyi
       # found here" while reading as "nothing was carried" is the empty-answer trap with the
       # count raised. A change this application does not use today is still a change this step
       # carried.
-      def decisions_for(step, scan, evidence: {})
+      def decisions_for(step, scan, evidence: {}, changes: nil)
         found = (scan && scan["manual"] || []).group_by { |entry| entry["subject"].to_s }
-        carried = (step["changes"] || []).reject { |change| change["automatic"] }
+        carried = Array(changes || step["changes"]).reject { |change| change["automatic"] }
 
         located = carried.map do |change|
           decision(change, found[change["subject"].to_s]&.first, evidence: evidence,
@@ -2140,7 +2226,12 @@ module AgentsFyi
           subject: subject, reason: reason,
           kind: (change && change["kind"]) || (entry && entry["kind"]),
           replacement: (change && change["replacement"]) || (entry && entry["replacement"]),
-          source: (change && change["source"]) || (entry && entry["source"])
+          source: (change && change["source"]) || (entry && entry["source"]),
+          # The component and key are the plan's join, carried so a decision can be read against
+          # the change it is about rather than only by its subject. An unplanned call site has
+          # neither, which is the honest answer: the ladder does not document it.
+          component: change && change["component"],
+          change_key: (change && change["change_key"]) || (entry && entry["change_key"])
         )
       end
 
@@ -2822,7 +2913,7 @@ module AgentsFyi
 
       def build(step, stages, verdict, why)
         settle_decisions_against_the_lock
-        Record.new(
+        record = Record.new(
           repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: step["from_version"], to_version: step["to_version"], name: step["name"],
           requires_ruby: step["requires_ruby"], interpreter: @machine.interpreter,
@@ -2832,11 +2923,23 @@ module AgentsFyi
           patch: capture_patch, baseline: @baseline, suite: @suite,
           verdict: verdict, why: why, brief: @brief, repairs: @repairs,
           checks: @checks, commits: @commits,
-          accepted_decisions: accepted_decisions_in_force,
+          # Filled below, after an `expect` rule that this run met is added to the fired list: a
+          # decision that shaped the rung is in force whether its evidence is an edit or a rule.
+          accepted_decisions: [],
           app_update: app_update_record(step),
           toolchain: @project&.toolchain&.to_h,
-          project: @project&.to_h
+          project: @project&.to_h,
+          changes: @plan_changes, expected: @expected_rules, fired_rules: @fired_rules
         )
+        # **An expected failure is recorded before the run is sent, because the service retires a
+        # rule from the run body's decisions.** The match is against this run's own output, so a
+        # rule that names a failure this rung did not produce stays in force and is not fired.
+        expected = Filing.expected_rule(record: record)
+        unless expected.nil? || @fired_rules.include?(expected)
+          @fired_rules << expected
+        end
+        record.accepted_decisions.replace(accepted_decisions_in_force)
+        record
       end
 
       # **A decision is in force on this rung only if one of its effects was applied here.** The
@@ -2848,7 +2951,11 @@ module AgentsFyi
         ids = @applied.filter_map do |edit|
           origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
           origin.split(":", 2).last if origin.start_with?("decision:")
-        end.uniq
+        end
+        # A skip or an expect changes the walk rather than the tree, so it has no applied edit to
+        # carry its origin; its fired rule is the evidence that the answer shaped this rung.
+        ids.concat(Array(@fired_rules).map { |rule| rule["decision_id"].to_s })
+        ids = ids.reject(&:empty?).uniq
         Array(@project&.decisions).select { |decision| ids.include?(decision["id"].to_s) }
       end
 
@@ -3146,10 +3253,14 @@ module AgentsFyi
           # in: the edit already says who made it (`origin: decision:<id>`), so a second list would be
           # a second copy. The service links a *passed* run to those answers, which is what verifies a
           # decision — accepted is the operator's word, verified is the rung's gate.
-          "decisions" => record.applied.filter_map { |edit|
+          # **Every decision that shaped this rung, in the field the service already reads.** An
+          # applied edit carries its `decision:<id>` origin; a skip or an expect has no edit, so its
+          # fired rule carries the id instead. The public run body does not grow a new field for it.
+          "decisions" => (record.applied.filter_map { |edit|
             origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
             origin.split(":", 2).last if origin.start_with?("decision:")
-          }.uniq,
+          } + Array(record.fired_rules).map { |rule| rule["decision_id"].to_s })
+            .reject(&:empty?).uniq,
           # **The review brief's internal sections.** The public run response is frozen and does not
           # grow; the service stores these for the site admin, where a reviewer reads the gate, the
           # concern commits, the app:update outcome and the toolchain beside the command evidence.

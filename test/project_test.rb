@@ -127,6 +127,25 @@ class ProjectTest < Minitest::Test
     assert_empty lighthouse.decisions
   end
 
+  # **A decision may name the project and change it is about.** That is what lets the brief show a
+  # cross-project answer against the same change key, and the site admin writes both fields into the
+  # declaration when the corpus knows them. They are optional because a declaration written before
+  # the join existed carries neither.
+  def test_a_decision_may_carry_the_project_and_change_key_it_is_about
+    project = PROJECT.parse(minimal.merge("decisions" => [decision.merge(
+      "project" => "lighthouse",
+      "change_key" => "ruby|actionpack|before_filter",
+      "effects" => [{ "kind" => "rule",
+                      "payload" => { "change_key" => "ruby|actionpack|before_filter",
+                                     "kind" => "skip", "payload" => {} } }]
+    )]).to_json)
+
+    carried = project.decisions.first
+    assert_equal "lighthouse", carried["project"]
+    assert_equal "ruby|actionpack|before_filter", carried["change_key"]
+    assert_equal "rule", carried["effects"].first["kind"]
+  end
+
   # **The application's complete contract is a declaration, not a convention.** The suite, the source
   # roots, the other checks, the toolchain, the formatter and the app:update policy are all facts
   # about *this* application, and each one is checked here rather than discovered by a walk.

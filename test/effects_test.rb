@@ -158,17 +158,181 @@ class EffectsTest < Minitest::Test
     end
   end
 
-  # `rule` is the walk's own behaviour rather than the tree's, and this build applies none: refused by
-  # name, because an effect that vanishes is a decision nobody can see was ignored.
-  def test_a_rule_effect_is_refused_by_name
-    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+  # The service's rule shape: the outer payload names the change and the mechanism, and the
+  # mechanism's own fields are nested under `payload`. `Decision::RuleEffect` is the one place
+  # that shape is decided, and the client reads the same bytes the declaration carries.
+  def rule(kind:, change_key: "ruby|actionpack|before_filter", guard: nil, **payload)
+    outer = { "change_key" => change_key, "kind" => kind,
+              "payload" => payload.transform_keys(&:to_s) }
+    outer["guard"] = guard unless guard.nil?
+    { "kind" => "rule", "payload" => outer }
+  end
+
+  # **A skip is the walk's own behaviour, and it fires without touching the tree.** The step reads
+  # the fired rule and removes the change from the scan's findings; the record still says which
+  # decision did it, because the run body sends the decision id.
+  def test_a_skip_rule_fires_and_names_the_decision_that_asked_for_it
+    with_tree("app/models/item.rb" => "before_filter :x\n") do |dir|
       result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
-        decision(effects: [{ "kind" => "rule",
-                             "payload" => { "action" => "skip_change", "subject" => "before_filter" } }])
+        decision(effects: [rule(kind: "skip")])
       ])
 
       assert_empty result.applied
-      assert_includes result.refused.first.reason, "applies no rules"
+      assert_empty result.refused
+      assert_equal 1, result.rules.length
+      assert_equal "skip", result.rules.first["kind"]
+      assert_equal "d1", result.rules.first["decision_id"]
+      assert_equal "ruby|actionpack|before_filter", result.rules.first["change_key"]
+      assert_includes result.to_s, "1 rule(s) fired"
+    end
+  end
+
+  # An expect rule is a rule the run may meet; it fires here, and the step decides from the run's
+  # own output whether the failure it names is the one that happened.
+  def test_an_expect_rule_fires_with_the_failure_it_accepts
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "expect", failure: "undefined method `x'")])
+      ])
+
+      assert_equal "expect", result.rules.first["kind"]
+      assert_equal "undefined method `x'", result.rules.first.dig("payload", "failure")
+    end
+  end
+
+  # **A rewrite is a whole-token rename through the line-checked applier.** It must not rename the
+  # word inside a string or a comment — the mask is what makes "literal whole token" true — and the
+  # edit carries the decision's origin so the run can say which rule made it.
+  def test_a_rewrite_rule_renames_the_token_and_not_the_prose
+    body = <<~RUBY
+      before_filter :authenticate
+      # before_filter is documented here
+      logger.info("before_filter was renamed")
+      before_filter :other
+    RUBY
+    with_tree("app/controllers/items_controller.rb" => body) do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "rewrite", old: "before_filter", new: "before_action")])
+      ])
+
+      assert_empty result.refused
+      assert_equal 2, result.applied.length
+      assert_equal ["decision:d1", "decision:d1"], result.applied.map(&:origin)
+      assert_equal 1, result.rules.length
+      written = File.read(File.join(dir, "app/controllers/items_controller.rb"))
+      assert_equal 2, written.scan("before_action").length
+      assert_includes written, "# before_filter is documented here"
+      assert_includes written, %("before_filter was renamed")
+      refute_includes written, "before_action :authenticate\nbefore_action :other\nbefore_action :authenticate"
+    end
+  end
+
+  # An insertion is a replacement of its anchor line with itself plus the new text, so the applier's
+  # line check still applies. An anchor that is absent or appears twice is refused with the count.
+  def test_an_insert_rule_adds_a_line_after_its_anchor_and_refuses_an_ambiguous_one
+    with_tree("config/application.rb" => "module Store\n  class Application\n  end\nend\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "insert", path: "config/application.rb",
+          after: "class Application", text: "    config.load_defaults 6.0")])
+      ])
+
+      assert_empty result.refused
+      assert_equal 1, result.applied.length
+      assert_equal 1, result.rules.length
+      assert_includes File.read(File.join(dir, "config/application.rb")),
+        "class Application\n    config.load_defaults 6.0"
+
+      ambiguous = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(id: "d2", effects: [rule(kind: "insert", path: "config/application.rb",
+          after: "end", text: "    # twice")])
+      ])
+      assert_includes ambiguous.refused.first.reason, "more than once"
+    end
+  end
+
+  # A rule config names a setting, and the client turns it into the existing config effect's
+  # line-checked edit: the same exactly-once `find`, the same applied line and the same record, so
+  # a rule cannot become a second, looser config writer. The line's own `=`/space and comment stay.
+  def test_a_config_rule_uses_the_existing_config_edit
+    with_tree("config/application.rb" => "  config.load_defaults 5.2 # keep this for now\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "config", key: "config.load_defaults",
+          file: "config/application.rb", value: "6.0")])
+      ])
+
+      assert_empty result.refused
+      assert_equal 1, result.applied.length
+      assert_equal "config", result.rules.first["kind"]
+      assert_includes File.read(File.join(dir, "config/application.rb")),
+        "  config.load_defaults 6.0 # keep this for now"
+    end
+  end
+
+  # A setting that is absent or occurs twice is refused with which, for the reason every config
+  # edit is: the line is the only thing that says which site the value belongs to.
+  def test_a_config_rule_refuses_a_setting_it_cannot_locate_once
+    with_tree("config/application.rb" => "config.load_defaults 5.2\nconfig.load_defaults 5.2\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "config", key: "config.load_defaults",
+          file: "config/application.rb", value: "6.0")])
+      ])
+
+      assert_empty result.applied
+      assert_includes result.refused.first.reason, "more than once"
+    end
+  end
+
+  # A rule that cannot say which of the five it is has no vocabulary to apply, and the refusal names
+  # the five rather than treating it as a tree edit.
+  def test_a_rule_of_an_unknown_kind_is_refused_with_the_vocabulary
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [{ "kind" => "rule",
+          "payload" => { "change_key" => "ruby|actionpack|x", "action" => "skip_change" } }])
+      ])
+
+      assert_empty result.applied
+      assert_includes result.refused.first.reason, "known: rewrite, insert, config, skip, expect"
+    end
+  end
+
+  # **A guard this build cannot read refuses rather than applying everywhere.** `applies_when` is
+  # the condition the walk understands; a guard silently dropped would apply a rule outside the
+  # window its author scoped it to.
+  def test_a_rule_guard_this_build_does_not_read_refuses
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "rewrite", old: "ITEM", new: "THING",
+          guard: { "file" => "app/models/item.rb" })])
+      ])
+
+      assert_empty result.applied
+      assert_includes result.refused.first.reason, "no guard vocabulary"
+    end
+  end
+
+  # The key is what joins a rule to its change and retires it, so a rule without one is refused
+  # rather than applied to whatever the walk happens to be doing.
+  def test_a_rule_without_a_change_key_is_refused
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [{ "kind" => "rule", "payload" => { "kind" => "skip" } }])
+      ])
+
+      assert_includes result.refused.first.reason, "no `change_key`"
+    end
+  end
+
+  # A rule's own payload is read by its kind, so a key the kind does not know is refused with that
+  # kind's vocabulary rather than silently ignored.
+  def test_a_rule_payload_key_the_kind_does_not_read_is_refused
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [rule(kind: "skip", subject: "before_filter")])
+      ])
+
+      assert_includes result.refused.first.reason, "subject"
+      assert_includes result.refused.first.reason, "known: change_key"
     end
   end
 

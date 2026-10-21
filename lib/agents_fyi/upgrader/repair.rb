@@ -353,6 +353,30 @@ module AgentsFyi
           end
           lines << ""
         end
+        # **What the corpus already knows, joined change by change.** The brief is not a list of
+        # search hits: the plan said which report is which documented change, which rules are in
+        # force and which reports joined nothing, so the model can start from an executed answer
+        # rather than re-deriving the same fix. Only the non-empty sections travel, and only the
+        # first few items of each, because the prompt is a brief and not a corpus dump.
+        brief = e[:brief]
+        sections = brief.respond_to?(:sections) ? brief.sections.reject(&:empty?) : []
+        unless sections.empty?
+          lines << "What this corpus already knew about this rung (the review brief):"
+          sections.first(4).each do |section|
+            lines << "- #{section.title}: #{section.question}"
+            section.items.first(3).each do |item|
+              detail = +"  - #{item.title}"
+              detail << " (#{item.change_key})" unless item.change_key.to_s.empty?
+              detail << " — #{item.status}" unless item.status.to_s.empty?
+              detail << " · #{item.authority} rule" unless item.authority.to_s.empty?
+              detail << " · fix: #{item.fix}" unless item.fix.to_s.empty?
+              lines << detail
+            end
+            lines << "  - …and #{section.total - section.items.first(3).length} more" if
+              section.total.to_i > 3
+          end
+          lines << ""
+        end
         # **The most specific thing in the brief.** These are changes this tool *has a rule for* and
         # would not touch — a value whose end the rule cannot see, a line that is not only the call —
         # so the model is being told where a mechanical attempt already stopped, which is a better

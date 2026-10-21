@@ -80,6 +80,56 @@ class BriefTest < Minitest::Test
     assert_includes section.items.first.title, "served static assets"
   end
 
+  # **The plan is the joined read, so the framework section reads it rather than asking a second
+  # question.** An observed report carries the change key it joined; an unmatched report carries the
+  # key nobody documented; a rule carries its authority and the change it is about. The window read
+  # would know only that the library had reports somewhere in the move.
+  def test_the_framework_section_is_the_plan_s_joined_view
+    corpus = FakeCorpus.new(moves: { "rails" => { "changes" => [{ "id" => "unused" }] } })
+    plan = {
+      "changes" => [{ "subject" => "before_filter", "change_key" => "ruby|actionpack|before_filter" }],
+      "observed" => [{ "report_id" => "r1", "title" => "before_filter is gone",
+                       "library" => "actionpack", "broken_in" => "5.1.0",
+                       "status" => "resolved_verified", "change_kind" => "symbol_removed",
+                       "change_key" => "ruby|actionpack|before_filter", "resolution" => "use before_action" }],
+      "observed_unmatched" => [{ "report_id" => "r2", "title" => "a report nobody documented",
+                                 "library" => "rails", "broken_in" => "6.0.0",
+                                 "status" => "open", "change_key" => "ruby|rails|unknown" }],
+      "rules" => [{ "rule_id" => nil, "change_key" => "ruby|actionpack|before_filter",
+                    "kind" => "rewrite", "authority" => "curated" }],
+      "counts" => { "observed_unclassified" => 2 }
+    }
+
+    result = brief_for(corpus).call(from: "5.0.0", to: "6.0.0", plan: plan)
+    section = result.sections.first
+
+    assert_equal "framework", section.key
+    assert_equal "answers", section.state
+    assert_equal %w[r1 r2], section.items.filter_map(&:id)
+    assert_equal ["ruby|actionpack|before_filter", "ruby|rails|unknown", "ruby|actionpack|before_filter"],
+      section.items.map(&:change_key)
+    assert_equal "unmatched", section.items[1].match
+    assert_equal "curated", section.items.last.authority
+    assert_includes section.note, "1 documented change(s)"
+    assert_includes section.note, "2 report(s) not recorded as changes"
+    assert_empty corpus.upgrade_calls, "the plan was already fetched and the brief asked the window again"
+  end
+
+  # A plan that could not read a corpus (`observed` is null) is not a corpus with nothing to say,
+  # so the brief falls back to the route rather than turning an unasked question into an empty one.
+  def test_a_plan_with_no_corpus_falls_back_to_the_window_read
+    corpus = FakeCorpus.new(moves: { "rails" => { "changes" => [{
+      "id" => "r1", "title" => "a window report", "library" => "rails",
+      "version" => "6.0.0", "status" => "resolved_verified"
+    }] } })
+
+    result = brief_for(corpus).call(from: "5.2.0", to: "6.0.0",
+      plan: { "observed" => nil, "changes" => [] })
+
+    assert_equal ["a window report"], result.sections.first.items.map(&:title)
+    assert_equal [["rails", "5.2.0", "6.0.0"]], corpus.upgrade_calls
+  end
+
   # **A gem's move is its own question.** The routing moved `factory_girl` at 4.1 and no Rails
   # change knows about it; a brief that asked only the framework would miss exactly the report that
   # saved that rung.
@@ -183,10 +233,13 @@ class BriefTest < Minitest::Test
   def test_accepted_decisions_are_rendered_in_the_decisions_section
     result = brief_for(FakeCorpus.new).call(from: "4.0.0", to: "4.1.0",
       decisions: [{
-        "id" => "d1", "question" => "Should the row keep a Show link?",
+        "id" => "d1", "project" => "storefront",
+        "change_key" => "ruby|actionpack|before_filter",
+        "question" => "Should the row keep a Show link?",
         "answer" => "remove it", "accepted_by" => "operator:1",
-        "effects" => [{ "kind" => "patch", "payload" => {} },
-                      { "kind" => "gem", "payload" => { "name" => "x" } }]
+        "effects" => [{ "kind" => "patch", "payload" => { "path" => "app/views/bids/index.html.erb" } },
+                      { "kind" => "rule", "payload" => { "change_key" => "ruby|actionpack|before_filter",
+                                                         "kind" => "skip" } }]
       }])
 
     section = result.sections.find { |candidate| candidate.key == "decisions" }
@@ -194,7 +247,43 @@ class BriefTest < Minitest::Test
     item = section.items.first
     assert_equal "Should the row keep a Show link?", item.title
     assert_equal "remove it", item.status
+    assert_equal "storefront", item.project
+    assert_equal "ruby|actionpack|before_filter", item.change_key
     assert_includes item.fix, "patch"
+    assert_includes item.fix, "rule skip"
     assert_includes result.to_markdown, "remove it"
+    assert_includes result.to_markdown, "change ruby|actionpack|before_filter"
+    assert_includes result.to_markdown, "project storefront"
+  end
+
+  # A declaration written before the decision carried its own project still names the project the
+  # walk is reading, because that is whose declaration it is.
+  def test_a_decision_without_a_project_is_the_walk_s_own
+    result = brief_for(FakeCorpus.new).call(from: "4.0.0", to: "4.1.0", project: "storefront",
+      decisions: [{ "id" => "d1", "question" => "keep the link?", "answer" => "no",
+                    "accepted_by" => "operator:1", "effects" => [] }])
+
+    item = result.sections.find { |section| section.key == "decisions" }.items.first
+    assert_equal "storefront", item.project
+  end
+
+  # **A decision from another project is the same change.** The declaration carries it with the key
+  # the plan joins on and the project whose operator answered; the brief does not filter it away.
+  def test_a_cross_project_decision_keeps_its_project_and_change_key
+    result = brief_for(FakeCorpus.new).call(from: "4.0.0", to: "4.1.0",
+      decisions: [{ "id" => "d2", "project" => "lighthouse",
+                    "change_key" => "ruby|activerecord|before_filter",
+                    "question" => "the filter runs before the association loads",
+                    "answer" => "use before_action", "accepted_by" => "operator:2",
+                    "effects" => [{ "kind" => "rule",
+                                    "payload" => { "change_key" => "ruby|activerecord|before_filter",
+                                                   "kind" => "rewrite",
+                                                   "old" => "before_filter", "new" => "before_action" } }] }])
+
+    item = result.sections.find { |section| section.key == "decisions" }.items.first
+
+    assert_equal "lighthouse", item.project
+    assert_equal "ruby|activerecord|before_filter", item.change_key
+    assert_includes item.effects, "rule rewrite on ruby|activerecord|before_filter"
   end
 end
