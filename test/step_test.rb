@@ -512,6 +512,24 @@ class StepTest < Minitest::Test
     assert_equal work, @source.asked.first[:home]
   end
 
+  # **A custom rvm root or gemset has to reach the machine, not only the setup script.** The
+  # script installs into the directory the environment names; a step that read only its own
+  # defaults looked in `~/.rvm` at `agents-fyi-upgrader` and reported an uninstalled era.
+  def test_the_rvm_machine_reads_the_configured_root_and_gemset
+    dir = track(app)
+    rvm_root = File.join(dir, "rvm")
+    machine_step = AgentsFyi::Upgrader::Step.new(
+      repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
+      runtime: "rvm", source: FakeSource.new(dir),
+      env: { "UPGRADER_RVM_ROOT" => rvm_root, "UPGRADER_RVM_GEMSET" => "custom" }
+    )
+    entry = AgentsFyi::Upgrader::Interpreters.named("3.3")
+
+    machine = machine_step.send(:build_machine, entry)
+
+    assert_equal File.join(rvm_root, "wrappers", "ruby-3.3.12@custom"), machine.wrapper
+  end
+
   # **A clone that could not be made is not a verdict about the move.** The queue-driven run recorded
   # a DNS failure as `refused`, which settles a move for good; `unverified` is the machine failing to
   # measure, retried and spending no attempt.

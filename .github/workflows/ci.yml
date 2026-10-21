@@ -26,14 +26,17 @@ jobs:
 
       - name: Check Ruby syntax
         run: |
-          ruby -c bin/agents-fyi-upgrader > /dev/null
-          find lib test -name '*.rb' -print0 |
+          find . -name '*.rb' -not -path './.git/*' -print0 |
             while IFS= read -r -d '' file; do
               ruby -c "$file" > /dev/null || exit 1
             done
 
       - name: Check shell syntax
-        run: bash -n entrypoint.sh scripts/*.sh
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -print0 |
+            while IFS= read -r -d '' file; do
+              bash -n "$file" || exit 1
+            done
 
       - name: Check JSON
         run: ruby -rjson -e 'Dir["**/*.json"].sort.each { |path| JSON.parse(File.read(path)) }'

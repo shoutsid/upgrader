@@ -188,10 +188,10 @@ matrix, not a transient failure.
 
 ### `serve: no target, so this loop will not walk anything`
 
-`serve` idles without `--to` unless `--walk` is set. Set `UPGRADER_TO` to the release the move
-ends at, or set `UPGRADER_WALK=1` to walk each repository to the top of the ladder. This is
-deliberate: a deployment that has not decided where it is going must not start walking somebody's
-application.
+`serve` idles without `--to` unless `--walk` is set or the project declaration supplies a target.
+Set `UPGRADER_TO` to the release the move ends at, or set `UPGRADER_WALK=1` to walk each
+repository to the top of the ladder. This is deliberate: a deployment that has not decided where
+it is going must not start walking somebody's application.
 
 ### `the upgrade queue is not being served`
 
@@ -264,7 +264,8 @@ each request against the base.
 
 `republish` reads the ledger's delivered entries and the stored record. A delivery that predates
 the record store, or whose volume was lost, cannot be rebuilt. It does not move a branch; it
-rebuilds the body from the record and publishes again.
+rebuilds the body from the record and publishes again. It cannot retry a failed delivery —
+`serve` does that on its next cycle.
 
 ## Records and secrets
 

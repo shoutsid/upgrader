@@ -158,8 +158,17 @@ module AgentsFyi
           name = row.fetch("name").to_s
           raise Invalid, "an interpreter entry has no name" if name.empty?
 
+          image = overrides[name] || row.fetch("image").to_s
+          # A bare digest is the pin an operator naturally writes, so it inherits the matrix
+          # image's repository rather than becoming a daemon reference that starts with
+          # `sha256:` and names no image at all. A full reference is used as written.
+          if image.start_with?("sha256:")
+            repository = row.fetch("image").to_s.split("@", 2).first.sub(/:[^:\/]+\z/, "")
+            image = "#{repository}@#{image}"
+          end
+
           Entry.new(
-            name: name, ruby: row.fetch("ruby").to_s, image: overrides[name] || row.fetch("image").to_s,
+            name: name, ruby: row.fetch("ruby").to_s, image: image,
             base: row.fetch("base").to_s, bundler: row.fetch("bundler").to_s,
             rvm: row["rvm"].to_s
           )

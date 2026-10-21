@@ -59,8 +59,16 @@ module AgentsFyi
       private
 
       def record_for(entry)
-        stem = "#{entry.repo.gsub(/[^A-Za-z0-9._-]/, "-")}-#{entry.from_version}-#{entry.to_version}"
-        path = File.join(@home.to_s, "records", "#{stem}.json")
+        path = File.join(@home.to_s, "records",
+          "#{Record.stem(entry.repo, entry.from_version, entry.to_version)}.json")
+        unless File.file?(path)
+          # A record written before the stem became readable, or by a build that still used
+          # the raw repository string. The fallback is read-only; a republish never writes a
+          # record.
+          legacy = "#{entry.repo.gsub(/[^A-Za-z0-9._-]/, "-")}-" \
+                   "#{entry.from_version}-#{entry.to_version}"
+          path = File.join(@home.to_s, "records", "#{legacy}.json")
+        end
         return nil unless File.file?(path)
 
         source = JSON.parse(File.read(path))

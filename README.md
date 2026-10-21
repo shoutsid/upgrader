@@ -25,8 +25,8 @@ and reviewers can read the client, not because it is open source.
   optionally, rungs chained inside a cycle.
 - **`preview`** — renders the review brief a stored step record would publish, without a
   checkout, a token or a push.
-- **`prune`** / **`republish`** — housekeeping for containers, per-run bundles and failed
-  deliveries.
+- **`prune`** / **`republish`** — housekeeping for containers, per-run bundles and the bodies of
+  pull requests that were already delivered.
 
 The record is the product. A pass is not "the tool finished"; it is a suite that was green
 before the move and green after it, a named verdict, and the evidence behind both.
@@ -60,8 +60,9 @@ export AGENTS_FYI_URL=https://agents.shoutsid.fyi
 ```
 
 `--to` is optional for `plan` and `step`: without it, the target is the top of the service's
-ladder. `serve` deliberately idles without a target unless `--walk` is set — a deployment that
-has not decided where it is going must not start walking somebody's application.
+ladder. `serve` deliberately idles without a target unless `--walk` is set or the named project
+declaration supplies one — a deployment that has not decided where it is going must not start
+walking somebody's application.
 
 A write or a queue read needs an operator key:
 
@@ -95,7 +96,7 @@ name rather than copied into something that could be confused with your own tree
 | `serve` | one step per repository per cycle, over a durable ledger | run records with `--record`, and reports for failures |
 | `serve --walk --publish` | chains rungs, and delivers each pass as a branch and a pull request | the corpus, branches and pull requests |
 | `preview` | renders a stored record as a review brief | nothing |
-| `republish` | retries recorded deliveries that did not go out | the delivery record |
+| `republish` | re-renders and updates the bodies of already-delivered pull requests from their records | the pull-request body |
 | `prune` | removes containers and bundles left by finished or killed runs | nothing that belongs to a live run |
 
 Exit status is part of the contract:

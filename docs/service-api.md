@@ -32,8 +32,9 @@ GitHub credentials, not service keys, and neither is written into a record.
 
 Every request has a 25-second open and read timeout. A connection failure, a timeout, or a
 non-JSON response is an **unreachable** service: the loop waits it out. A `step` whose plan cannot
-be read is `refused` with the reason, because there is no plan to execute; a `plan` that cannot
-read the ladder and was not given `--to` is a failure, because it cannot name a target.
+be read is `refused` with the reason, because there is no plan to execute. A `plan`, or a `step`
+without `--to`, that cannot read the ladder is a failure (exit `1`), because it cannot name a
+target before the step starts.
 
 A 4xx is the service reading the request and declining it, in its own words. A 5xx is the service
 being unavailable. The client does not retry inside a request; the loop decides when to try again.

@@ -83,7 +83,8 @@ less honest about what was read.
 `--to` is optional. Without it, the target is the top of the service's ladder — the service
 publishes `top`, so "to what?" is answered by the source of the rule rather than by a second
 copy in this tool. (This applies to `plan` and `step`; `serve` idles without a target unless
-`--walk` is set.) A backwards move is a **refusal** (exit `2`), not a failure.
+`--walk` is set or the project declaration supplies one.) A backwards move is a **refusal**
+(exit `2`), not a failure.
 
 The plan prints:
 

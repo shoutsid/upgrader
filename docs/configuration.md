@@ -34,7 +34,7 @@ A setting that is not present is a setting the caller did not make.
 | Variable | Default | Meaning |
 |---|---|---|
 | `UPGRADER_RUNTIME` | empty (native) | `docker` runs the application in an era container; `rvm` (or `host`) runs it on the host through rvm; anything else, including empty, runs it on this process's Ruby. |
-| `UPGRADER_INTERPRETER_IMAGES` | empty | digest pins for era images, as `2.2=sha256:…,2.5=sha256:…`. Empty uses the tags the matrix carries. |
+| `UPGRADER_INTERPRETER_IMAGES` | empty | digest pins for era images, as `2.2=sha256:…,2.5=sha256:…`; a bare digest inherits the matrix image's repository. Empty uses the tags the matrix carries. |
 | `UPGRADER_DOCKER_VOLUME` | discovered | the named volume the walker's home is mounted from, so an era container can mount the same worktree. Set only when discovery cannot answer. |
 | `UPGRADER_RVM_ROOT` | `~/.rvm` | rvm's directory, for `UPGRADER_RUNTIME=rvm`. |
 | `UPGRADER_RVM_GEMSET` | `agents-fyi-upgrader` | the gemset this tool keeps its eras in, so it does not install into the developer's default. |
@@ -61,7 +61,7 @@ configured without changing its command.
 | Variable | Default | Meaning |
 |---|---|---|
 | `API_BASE_URL` | `http://service:8001` | the service the loop calls. The entrypoint passes it as `--api`. |
-| `UPGRADER_TO` | empty | the Rails release every move ends at. Empty idles unless `UPGRADER_WALK` is set. |
+| `UPGRADER_TO` | empty | the Rails release every move ends at. Empty idles unless `UPGRADER_WALK` is set or the project declaration supplies a target. |
 | `UPGRADER_INTERVAL` | `600` | seconds between cycles when there is nothing to do. |
 | `UPGRADER_STEP_TIMEOUT` | `3600` | the ceiling for one application suite; a step runs several commands and may outlive it. |
 | `UPGRADER_WALK` | empty | set to any non-empty value to pass `--walk`. |
@@ -116,7 +116,7 @@ the others from a catalogue listing.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `base_ref` | the repository's default branch | the branch, tag or commit the walk starts from |
+| `base_ref` | the repository's default branch | the branch or tag the walk starts from |
 | `stack` | `rails` | the stack pack. `rails` is the only pack this build carries. |
 | `suite` | `{"kind":"none"}` | `kind` is `rspec`, `minitest` or `none`; `command` is required unless `kind` is `none`. |
 | `services` | `[]` | names of services the application needs, for example `postgres`, `redis`. |
@@ -314,8 +314,9 @@ default), and with `chain: true` each pull request targets the rung before it ra
 base branch. A step that did not pass is never published: a branch is a claim that the rung
 works.
 
-A delivery that fails is recorded, and `republish` retries it from the stored record. `republish`
-does not move a branch; it rebuilds the body and publishes again.
+A delivery that fails is recorded, and `serve` retries it on its next cycle from the stored
+record. `republish` is the separate maintenance pass for an **already-delivered** request whose
+body should be re-rendered; it does not move a branch, and it does not retry a missing push.
 
 ## The application's environment
 

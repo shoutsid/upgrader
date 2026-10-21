@@ -6,10 +6,19 @@ versioning for its command-line surface and record format.
 
 ## [Unreleased]
 
+### Added
+
+- `--version`, so an issue can name the client build without reading the source.
+
 ### Fixed
 
 - `--work` is honored: a step places its working copy and per-run bundle there instead of
   silently leaving them under `$UPGRADER_HOME`.
+- `UPGRADER_RVM_ROOT` and `UPGRADER_RVM_GEMSET` reach the rvm machine instead of being read only
+  by the setup script.
+- A bare `sha256:…` in `UPGRADER_INTERPRETER_IMAGES` inherits the matrix image's repository.
+- Record names are readable (`owner-application-7.0.0-7.1.0.json`) rather than the sanitized raw
+  URL; `republish` still finds a record written under the old name.
 
 ## [0.1.0] - 2026-10-21
 
@@ -27,7 +36,8 @@ versioning for its command-line surface and record format.
   chained rungs (`--walk`) and pull-request delivery (`--publish`).
 - `preview`, which renders the review brief from a stored record without a checkout, a token or a
   push.
-- `republish` and `prune`, for failed deliveries and for what killed runs leave behind.
+- `republish` and `prune`, for already-delivered pull-request bodies and for what killed runs
+  leave behind. Failed deliveries are retried by `serve`, not by `republish`.
 - Project declarations: the repository, base ref, releases, suite, services, environment names,
   eras, delivery, source roots, checks, toolchain, style and `app:update` policy as data.
 - The era matrix and the local builders for the interpreter images and the rvm interpreters.

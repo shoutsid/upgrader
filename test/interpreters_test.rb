@@ -152,6 +152,16 @@ class InterpretersTest < Minitest::Test
     assert_empty Interpreters.overrides_from({})
   end
 
+  # A digest is the pin an operator naturally writes, and a bare one has to inherit the
+  # repository from the matrix. Passing it through unchanged produced an image reference that
+  # began with `sha256:` and named no image, which the daemon could only refuse.
+  def test_a_bare_digest_override_inherits_the_matrix_image
+    entry = Interpreters.candidates(path: three, images: { "2.2" => "sha256:beef" })
+      .find { |candidate| candidate.name == "2.2" }
+
+    assert_equal "era-2.2@sha256:beef", entry.image
+  end
+
   def test_two_entries_under_one_name_are_refused
     path = write_matrix([row(name: "2.2", ruby: "2.2.10"), row(name: "2.2", ruby: "2.2.11")])
     error = assert_raises(Interpreters::Invalid) { Interpreters.matrix(path: path) }

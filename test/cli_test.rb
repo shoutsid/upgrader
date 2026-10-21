@@ -341,6 +341,14 @@ class CliTest < Minitest::Test
     assert_empty err
   end
 
+  def test_a_bare_version_flag_prints_the_client_version
+    code, out, err = run_cli(["--version"])
+
+    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+    assert_equal "#{AgentsFyi::Upgrader::VERSION}\n", out
+    assert_empty err
+  end
+
   # The preflight mode: a mode of its own because it is the half of a walk that cannot be
   # established by installing anything. Two assertions carry it — the caller's tree is
   # still byte-for-byte what it was (the repair happens in a copy this tool owns), and the

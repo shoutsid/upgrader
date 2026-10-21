@@ -20,7 +20,7 @@ ruby -Ilib -Itest test/rewrites_test.rb
 One test:
 
 ```bash
-ruby -Ilib -Itest test/rewrites_test.rb -n test_a_removed_name_is_not_offered_a_replacement_it_was_not_executed_with
+ruby -Ilib -Itest test/rewrites_test.rb -n test_the_removal_rule_takes_a_whole_line_and_leaves_every_other_shape_alone
 ```
 
 The suite runs on Ruby 3.3.12 in CI and on whatever Ruby 3.3+ is on your machine. It needs no

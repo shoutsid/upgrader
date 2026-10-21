@@ -43,6 +43,7 @@ module AgentsFyi
         ladder this service publishes
 
         Usage:
+          agents-fyi-upgrader --version
           agents-fyi-upgrader plan  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--project SLUG]
           agents-fyi-upgrader preflight --repo PATH|URL [--ref REF] [--api URL]
@@ -120,6 +121,7 @@ module AgentsFyi
         options = parse
         return usage_error(options[:error]) if options[:error]
         return help if options[:help]
+        return version if options[:version]
         return usage_error("no command given") unless options[:command]
         begin
           @project = load_project(options)
@@ -414,7 +416,7 @@ module AgentsFyi
         parser = OptionParser.new do |opts|
           opts.banner = USAGE
           opts.on("--repo PATH|URL", "the repository to plan: a local path or a git URL") { |v| options[:repo] = v }
-          opts.on("--ref REF", "the branch, tag or commit to read; a local plan reads HEAD") { |v| options[:ref] = v }
+          opts.on("--ref REF", "the branch or tag to read; a local plan reads HEAD") { |v| options[:ref] = v }
           opts.on("--to VERSION", "the Rails release the move ends at, e.g. 7.1.0 " \
                   "(default: the top of the service's ladder)") { |v| options[:to] = v }
           opts.on("--api URL", "the service to ask (default $AGENTS_FYI_URL)") { |v| options[:api] = v }
@@ -460,6 +462,7 @@ module AgentsFyi
           opts.on("--repos OWNER/NAME[@REF]", "a repository for `serve` to walk") do |v|
             (options[:repos] ||= []).concat(v.split(","))
           end
+          opts.on("--version", "print the client version and exit") { options[:version] = true }
           opts.on("-h", "--help", "this text") { options[:help] = true }
         end
 
@@ -495,6 +498,11 @@ module AgentsFyi
 
       def help
         @out.puts(USAGE)
+        EXIT_OK
+      end
+
+      def version
+        @out.puts(AgentsFyi::Upgrader::VERSION)
         EXIT_OK
       end
 

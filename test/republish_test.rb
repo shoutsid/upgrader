@@ -62,7 +62,7 @@ class RepublishTest < Minitest::Test
         decisions: [Record::Decision.new(path: "app/y.rb", line: 2, subject: "button_to",
           reason: "the call site")],
         patch: "diff")
-      stem = "#{REPO.gsub(/[^A-Za-z0-9._-]/, "-")}-4.0.0-4.1.0"
+      stem = Record.stem(REPO, "4.0.0", "4.1.0")
       FileUtils.mkdir_p(File.join(home, "records"))
       File.write(File.join(home, "records", "#{stem}.json"), JSON.generate(record.to_h))
 

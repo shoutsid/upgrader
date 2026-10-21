@@ -20,8 +20,8 @@ set -eu
 #
 # The ladder lives in the service and nowhere else, so a this-tool default would be a second
 # copy of "what comes after 7.1" — the one rule the product is built on, and the one a second
-# copy is guaranteed to disagree about eventually. Empty means the loop idles and says so,
-# exactly as an empty repository list does.
+# copy is guaranteed to disagree about eventually. Empty means the loop idles unless a project
+# declaration supplies a target, and it says so, exactly as an empty repository list does.
 #
 # This variable existed nowhere until it was looked for, and that was a bug of the same
 # shape as the removed log level: `serve` prints "set `UPGRADER_TO`" when it has no
@@ -139,9 +139,8 @@ end
 done
 
 if [ -z "${UPGRADER_TO}" ] && [ -z "${UPGRADER_WALK}" ]; then
-    echo "upgrader: UPGRADER_TO is empty, so this loop will not walk anything —" \
-        "set it to the Rails release the move ends at (for example 7.1.0), or set" \
-        "UPGRADER_WALK=1 to walk each repository to the top of the ladder" >&2
+    echo "upgrader: UPGRADER_TO is empty; this loop idles unless the named project declares" \
+        "a target, or UPGRADER_WALK=1 walks each repository to the top of the ladder" >&2
 fi
 
 # **`UPGRADER_REPOS` is retired.** The service's queue says which repositories to walk and in what

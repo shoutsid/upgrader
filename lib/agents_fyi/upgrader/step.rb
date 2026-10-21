@@ -782,8 +782,11 @@ module AgentsFyi
 
       def build_machine(entry)
         return @machine_factory.call(entry) if @machine_factory
-        return Machine::Host.new(entry: entry, home: @home, out: @out, services: services,
-          services_command: @stack.services_command.first) if rvm_mode?
+        if rvm_mode?
+          return Machine::Host.new(entry: entry, home: @home, out: @out, services: services,
+            services_command: @stack.services_command.first,
+            rvm_root: @env[Machine::Host::RVM_ENV], gemset: @env[Machine::Host::GEMSET_ENV])
+        end
 
         Machine::Container.new(entry: entry, home: @home, out: @out, run_id: run_id)
       end

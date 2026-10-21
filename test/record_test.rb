@@ -17,6 +17,17 @@ class RecordTest < Minitest::Test
       seconds: 1.0, output_tail: "")
   end
 
+  # A record name is what an operator types into `preview`. A raw URL sanitized into
+  # `https---github.com-...` is technically unique and practically unusable.
+  def test_a_record_name_is_readable_for_a_url_a_declaration_and_a_local_path
+    assert_equal "owner-application-7.0.0-7.1.0",
+      AgentsFyi::Upgrader::Record.stem("https://github.com/owner/application.git", "7.0.0", "7.1.0")
+    assert_equal "acme-storefront-7.0.0-7.1.0",
+      AgentsFyi::Upgrader::Record.stem("acme/storefront", "7.0.0", "7.1.0")
+    assert_equal "application-7.0.0-7.1.0",
+      AgentsFyi::Upgrader::Record.stem("/srv/application", "7.0.0", "7.1.0")
+  end
+
   def stages(*args)
     args
   end

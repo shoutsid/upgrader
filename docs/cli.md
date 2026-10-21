@@ -16,7 +16,7 @@ usage text the binary carries.
 | `step` | yes | runs the first release of a move end to end on a working copy the tool owns |
 | `serve` | yes | the durable loop: the service's queue, a ledger, a heartbeat, one step per repository per cycle |
 | `preview` | no | renders the review brief a stored record would publish |
-| `republish` | no | retries recorded deliveries that did not go out |
+| `republish` | no | re-renders and updates already-delivered pull-request bodies from their records |
 | `prune` | no | removes containers and bundles left by finished or killed runs |
 
 `serve --walk` chains rungs inside a cycle. `serve --publish` (or `step --publish`) delivers a
@@ -38,13 +38,14 @@ refusal (exit `2`), not a failed request: there is nowhere to send it.
 |---|---|
 | `--api URL` | the service to ask. Default: `$AGENTS_FYI_URL`. No built-in default. |
 | `--repo PATH\|URL` | the application: a local directory, or a git URL. A local directory is read where it is and never written to. |
-| `--ref REF` | the branch, tag or commit to read. A URL is cloned at that ref; for a local path, `plan` reads its current `HEAD` while `step` and `preflight` use the ref for their worktree. |
-| `--to VERSION` | the Rails release the move ends at, for example `7.1.0`. Optional in `plan` and `step`; without it the target is the top of the service's ladder. `serve` idles without one unless `--walk` is set. |
+| `--ref REF` | the branch or tag to read. A URL is cloned at that ref; for a local path, `plan` reads its current `HEAD` while `step` and `preflight` use the ref for their worktree. |
+| `--to VERSION` | the Rails release the move ends at, for example `7.1.0`. Optional in `plan` and `step`; without it the target is the top of the service's ladder. `serve` idles without one unless `--walk` is set or the project declaration supplies a target. |
 | `--project SLUG` | a declared application (see [Configuration](configuration.md#project-declarations)). Default: `$UPGRADER_PROJECT`. A declaration supplies the repository, base ref and target; an explicit flag still wins. |
 | `--record DIR` | where `step` writes its patch and JSON record, and `preflight` writes `preflight.json`. |
 | `--home DIR` | this client's own directory: working copies and the ledger. Default: `$UPGRADER_HOME`, then `~/.cache/agents-fyi-upgrader`. |
 | `--work DIR` | where `step` puts its working copy and per-run bundle. Default: `$UPGRADER_HOME`. |
 | `--suite-env FILE` | `KEY=VALUE` lines merged into every command that runs **the application** — its suite, database preparation, `app:update` and boot. Never into this tool's own environment. |
+| `--version` | print the client version and exit `0`. |
 | `-h`, `--help` | print usage and exit `0`. |
 
 ### `plan`
@@ -91,7 +92,7 @@ agents-fyi-upgrader step --repo . --to 7.1.0 --record ./out
 | `--rungs N` | how many rungs `--walk` chains in one cycle. Default: `3`. |
 | `--force` | ignore a settled ledger entry for this run. |
 | `--publish` | deliver each passed rung as a branch and a pull request. |
-| `--record DIR` | write one record per move (`<repository>-<from>-<to>.json`), plus its patch. |
+| `--record DIR` | write one record per move (`<repository>-<from>-<to>.json`), plus its patch. The repository part is readable: a URL such as `https://github.com/owner/application.git` becomes `owner-application`, and a local path uses its basename. |
 | `--suite-env FILE` | as above. |
 
 ```bash
@@ -99,10 +100,10 @@ agents-fyi-upgrader serve --to 7.1.0 --interval 600
 agents-fyi-upgrader serve --walk --publish --to 8.1.0
 ```
 
-`serve` deliberately idles without a target unless `--walk` is set: a deployment that has not
-decided where it is going must not start walking somebody's application. `UPGRADER_REPOS` is
-retired; the service's queue is the deployment's source of work. `--repos` remains for a
-one-off manual run.
+`serve` deliberately idles without a target unless `--walk` is set or the named project
+declaration supplies one: a deployment that has not decided where it is going must not start
+walking somebody's application. `UPGRADER_REPOS` is retired; the service's queue is the
+deployment's source of work. `--repos` remains for a one-off manual run.
 
 `serve --publish` asks the service for the repository's connected GitHub App credential; a
 repository with no installation publishes nothing. `UPGRADER_GITHUB_TOKEN` is the token
@@ -129,6 +130,10 @@ Both are local and take only `--home`:
 agents-fyi-upgrader republish --home ~/.cache/agents-fyi-upgrader
 agents-fyi-upgrader prune --home ~/.cache/agents-fyi-upgrader
 ```
+
+`republish` rewrites the title, body and base of a pull request that was **already delivered**,
+using the record the step wrote. It does not retry a failed push or open a missing request:
+`serve` retries failed delivery on its next cycle, before asking the queue for work.
 
 `prune` removes only what belongs to a process that is gone: a step container whose owning
 walker died, or a per-run bundle no live run is using. It never touches a live run's bundle or
@@ -157,6 +162,10 @@ of the four verdicts it is and why.
 - `<repository>-<from>-<to>.json` — the record;
 - `<repository>-<from>-<to>.patch` — the patch, where there is one;
 - `preflight.json` for `preflight`.
+
+The repository part is a readable name, not the raw argument: `https://github.com/owner/application.git`
+writes `owner-application-7.0.0-7.1.0.json`, and a local path uses its basename. A record written
+by an older build under the sanitized raw name is still found by `republish`.
 
 The record carries the repository and commit, the move, the machine, the verdict and its
 sentence, the baseline and post-move suite, the stages with every command and exit code, the

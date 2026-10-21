@@ -2,6 +2,7 @@
 
 require "json"
 require "time"
+require "uri"
 
 module AgentsFyi
   module Upgrader
@@ -699,10 +700,40 @@ module AgentsFyi
 
       # Written where an operator asked for it, and only there: the tool keeps no
       # history of its own runs beyond the ledger's one line per move.
+      #
+      # The stem is readable rather than the raw repository string sanitized: a URL becomes
+      # `owner-name`, a declaration's `owner/name` the same, and a local path its basename.
+      # The raw form put `https---github.com-...` in front of every file, which is not a name
+      # an operator wants to type into `preview`.
+      def self.stem(repository, from_version, to_version)
+        name = readable_repository(repository)
+        "#{name.gsub(/[^A-Za-z0-9._-]/, "-")}-#{from_version}-#{to_version}"
+      end
+
+      def self.readable_repository(repository)
+        text = repository.to_s
+        if text.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
+          path = URI.parse(text).path.to_s
+          parts = path.split("/").reject(&:empty?)
+          parts.length >= 2 ? parts.last(2).join("-") : File.basename(path)
+        elsif text.start_with?("git@") && text.include?(":")
+          path = text.split(":", 2).last
+          parts = path.split("/").reject(&:empty?)
+          parts.length >= 2 ? parts.last(2).join("-") : File.basename(path)
+        elsif text.start_with?("/", ".", "~") || !text.include?("/")
+          File.basename(text)
+        else
+          text.split("/").reject(&:empty?).last(2).join("-")
+        end.delete_suffix(".git")
+      rescue URI::InvalidURIError
+        File.basename(text).delete_suffix(".git")
+      end
+      private_class_method :readable_repository
+
       def write(dir)
         require "fileutils"
         FileUtils.mkdir_p(dir)
-        stem = "#{@repository.gsub(/[^A-Za-z0-9._-]/, "-")}-#{@from_version}-#{@to_version}"
+        stem = Record.stem(@repository, @from_version, @to_version)
         json = File.join(dir, "#{stem}.json")
         patch = File.join(dir, "#{stem}.patch")
         File.write(json, "#{JSON.pretty_generate(to_h)}\n")

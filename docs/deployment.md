@@ -128,8 +128,9 @@ scripts/upgrader-images.sh prune
 the images on the same daemon it talks to. A rung whose floor no image meets is refused by name
 rather than attempted.
 
-`UPGRADER_INTERPRETER_IMAGES` pins an image by digest (`2.2=sha256:…,2.5=sha256:…`), which makes
-a rebuild a deliberate change rather than a rebuild that quietly re-runs verdicts against
+`UPGRADER_INTERPRETER_IMAGES` pins an image by digest (`2.2=sha256:…,2.5=sha256:…`); a bare
+digest inherits the matrix image's repository, and a full reference is used as written. The pin
+makes a rebuild a deliberate change rather than a rebuild that quietly re-runs verdicts against
 different bytes.
 
 ### rvm

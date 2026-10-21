@@ -8,8 +8,9 @@ They are kept because the alternative is a future change re-learning the same fa
 A tool that chose `--to` for you would need Rails' release order. The first version had a default
 target and a `no_target` refusal explaining that "a default arrives when the service exposes the
 top of its ladder". That is now true: `plan` and `step` read `top` from the service when no target
-is named. `serve` still idles without a target unless `--walk` is set, because a deployment that
-has not decided where it is going must not start walking somebody's application.
+is named. `serve` still idles without a target unless `--walk` is set or the project declaration
+supplies one, because a deployment that has not decided where it is going must not start walking
+somebody's application.
 
 The same reasoning gives the client **no default service**. A walker that quietly talked to the
 deployment its author ran would answer from a corpus its caller did not choose. `AGENTS_FYI_URL`
