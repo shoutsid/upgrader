@@ -1242,8 +1242,9 @@ module AgentsFyi
           },
           # **The walk's own earlier answers are recall too.** A decision the project carries is
           # what this application already chose; the brief says so before the rung applies it, so a
-          # reviewer sees the answer rather than rediscovering the question.
-          decisions: @project&.decisions || [],
+          # reviewer sees the answer rather than rediscovering the question. `brief_decisions` are
+          # the same change answered on another project: they are shown and never applied.
+          decisions: (@project&.decisions || []) + (@project&.brief_decisions || []),
           # **The plan's joined half is the framework section's first source.** It knows which
           # report is which change, which reports joined nothing and which rules are in force; a
           # second `/api/reports/upgrade` read would know only the library window.

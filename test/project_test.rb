@@ -146,6 +146,21 @@ class ProjectTest < Minitest::Test
     assert_equal "rule", carried["effects"].first["kind"]
   end
 
+  # **A brief decision is recall, not an effect.** The site admin writes the project's own answers
+  # under `decisions` and the same change answered elsewhere under `brief_decisions`; the brief
+  # shows both and `Effects` reads only the first. Keeping them in one list would apply another
+  # application's answer on this one.
+  def test_brief_decisions_are_read_but_are_not_applied_decisions
+    project = PROJECT.parse(minimal.merge(
+      "decisions" => [decision],
+      "brief_decisions" => [decision.merge("id" => "d2", "project" => "lighthouse")]
+    ).to_json)
+
+    assert_equal ["d1"], project.decisions.map { |carried| carried["id"] }
+    assert_equal ["d2"], project.brief_decisions.map { |carried| carried["id"] }
+    assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
+  end
+
   # **The application's complete contract is a declaration, not a convention.** The suite, the source
   # roots, the other checks, the toolchain, the formatter and the app:update policy are all facts
   # about *this* application, and each one is checked here rather than discovered by a walk.

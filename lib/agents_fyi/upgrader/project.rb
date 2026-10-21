@@ -22,7 +22,7 @@ module AgentsFyi
       # typo is a setting that silently does nothing, and a walk that ignores a setting its operator
       # believes is in force is the failure this class exists to prevent.
       FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery
-        decisions source_roots checks toolchain style app_update].freeze
+        decisions brief_decisions source_roots checks toolchain style app_update].freeze
 
       # The fields one accepted decision carries in a declaration. It is the site admin's rendering of
       # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
@@ -153,8 +153,8 @@ module AgentsFyi
       end
 
       attr_reader :slug, :repo, :base_ref, :from, :to, :stack, :suite, :services, :env_names,
-        :eras, :delivery, :decisions, :source_roots, :checks, :toolchain, :style, :app_update,
-        :path
+        :eras, :delivery, :decisions, :brief_decisions, :source_roots, :checks, :toolchain, :style,
+        :app_update, :path
 
       # The declaration named by a slug, from the projects directory.
       #
@@ -251,6 +251,11 @@ module AgentsFyi
         @eras = read_eras(fields["eras"])
         @delivery = read_delivery(fields["delivery"])
         @decisions = read_decisions(fields["decisions"])
+        # **A brief decision is recall, not an applied effect.** The site admin writes the same
+        # project's answers under `decisions` and the same change answered on another project under
+        # `brief_decisions`; the brief shows both, and only `decisions` reaches `Effects`. That is
+        # ADR 0011's "nothing from recall is applied automatically" made structural.
+        @brief_decisions = read_decisions(fields["brief_decisions"])
         @source_roots = read_source_roots(fields["source_roots"])
         @checks = read_checks(fields["checks"])
         @toolchain = read_toolchain(fields["toolchain"])
@@ -264,7 +269,8 @@ module AgentsFyi
           "slug" => slug, "repo" => repo, "base_ref" => base_ref, "from" => from, "to" => to,
           "stack" => stack, "suite" => suite.to_h, "services" => services,
           "env_names" => env_names, "eras" => eras, "delivery" => delivery.to_h,
-          "decisions" => decisions, "source_roots" => source_roots,
+          "decisions" => decisions, "brief_decisions" => brief_decisions,
+          "source_roots" => source_roots,
           "checks" => checks.map(&:to_h), "toolchain" => toolchain&.to_h,
           "style" => style&.to_h, "app_update" => app_update.to_h
         }.compact
