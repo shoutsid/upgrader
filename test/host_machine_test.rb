@@ -134,7 +134,7 @@ class HostMachineTest < Minitest::Test
   # directory as the working directory, because that is where it reads the `database.yml` whose
   # roles and databases it creates. *Which* command that is comes from the stack pack through the
   # caller: this machine is told rather than recognising a name, because the name is one
-  # application's (`docs/refactor/adr/0008`).
+  # application's (see `docs/design-notes.md`).
   def test_the_services_script_runs_in_the_services_container_with_the_application_s_directory
     argv, _env = machine(services_command: "agents-fyi-services").command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
 

@@ -499,6 +499,19 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **`--work` is a place for the working copy, not a second home.** The option was parsed and
+  # dropped, so a step kept putting its tree under `$UPGRADER_HOME` while the caller believed it
+  # had moved. The source is the only component that decides where a tree lives, so its `home`
+  # argument is what this drives; the ledger and records stay under the real home.
+  def test_work_moves_the_working_copy_without_moving_the_home
+    dir = track(app)
+    work = track(Dir.mktmpdir)
+
+    step(dir, work: work).run
+
+    assert_equal work, @source.asked.first[:home]
+  end
+
   # **A clone that could not be made is not a verdict about the move.** The queue-driven run recorded
   # a DNS failure as `refused`, which settles a move for good; `unverified` is the machine failing to
   # measure, retried and spending no attempt.
@@ -532,10 +545,10 @@ class StepTest < Minitest::Test
 
   def step(dir, corpus: nil, tests: nil, runner: nil, ledger: nil, record: nil, contribute: false,
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
-           suite_env: nil, applier: nil, pause: nil, project: nil, to: "6.0.0")
+           suite_env: nil, applier: nil, pause: nil, project: nil, to: "6.0.0", work: nil)
     @source = source || FakeSource.new(dir, home: dir)
     AgentsFyi::Upgrader::Step.new(
-      repository: "acme/storefront", to: to, api: "http://api.test", home: dir,
+      repository: "acme/storefront", to: to, api: "http://api.test", home: dir, work: work,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
       applier: applier || FakeApplier, runner: runner || FakeRunner.new, contribute: contribute,
@@ -1076,7 +1089,7 @@ class StepTest < Minitest::Test
   # written from the final state, where the suite is green: the failure the repair answered, and the
   # files it changed to do so, exist only while the loop runs. Both travel in the record, and the
   # corpus receives the repair as a report whose problem is that failure and whose resolution is the
-  # repair — the write-back rule `docs/refactor/adr/0008` states.
+  # repair — the write-back rule the design notes state.
   def test_a_repair_is_recorded_with_what_it_answered_and_filed_as_a_report
     dir = track(app)
     corpus = RecordingCorpus.new(payload: plan(changes: []))
@@ -1628,7 +1641,7 @@ class StepTest < Minitest::Test
   # **Recall happens before the pin, and the record carries it.** The brief is asked where the rung's
   # gems are known and nothing that can change has happened yet; what comes back travels in the record
   # and in the run body, so a reader of the pull request or the site admin sees what the walk knew before
-  # it decided. A brief that lived only in the log is the failure `docs/refactor/adr/0008` names.
+  # it decided. A brief that lived only in the log is the failure the design notes name.
   def test_the_rung_is_briefed_before_it_acts_and_the_brief_travels_with_the_record
     corpus = FakeCorpus.new(payload: plan(changes: [change]),
       route: { "ruby" => "2.2.2", "rails" => "5.0.0", "gems_read" => 1,

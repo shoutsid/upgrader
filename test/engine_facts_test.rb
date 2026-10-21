@@ -5,7 +5,7 @@ require "agents_fyi/upgrader"
 
 # **The engine names no project, and no stack spelling outside the pack.**
 #
-# This is the first seam of `docs/refactor/adr/0008`, and it is a source test because the failure it
+# The design notes call this the engine's first seam, and it is a source test because the failure it
 # prevents is invisible at runtime: a second project walked by an engine that still carries
 # `bin/rails` and `RAILS_SECRET_TOKEN` does not crash, it quietly measures the second project with
 # the first one's knowledge. Measured on the first complete walk, those spellings were spread across

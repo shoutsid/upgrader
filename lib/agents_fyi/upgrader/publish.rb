@@ -28,13 +28,14 @@ module AgentsFyi
     #   has not established that. This class therefore does not decide *whether* to
     #   publish — its caller does, from the verdict — but it re-states the check for the
     #   callers that forget.
-    # * **The token is never written down.** It arrives from `UPGRADER_GITHUB_TOKEN`, it is
+    # * **The token is never written down.** It arrives from the caller — `step --publish` reads
+    #   `UPGRADER_GITHUB_TOKEN`, and the loop passes the service's short-lived credential — it is
     #   used in the push URL, and every message on the way out has it replaced with `***`.
     #   A token in a record is a token in a corpus, and this record is published beside the
     #   run.
     class Publish
-      # Where the token comes from. Named here and read by no other file: the container sets
-      # it as an environment variable and the CLI never mentions it.
+      # Where a one-shot step's token comes from. `serve` passes the service's short-lived
+      # credential instead; the CLI reads this name for `step --publish`.
       ENV_TOKEN = "UPGRADER_GITHUB_TOKEN"
 
       # The namespace a branch lives under when the project declares none. Load-bearing for two

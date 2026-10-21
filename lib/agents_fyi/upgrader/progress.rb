@@ -16,10 +16,10 @@ module AgentsFyi
     # Three decisions shape it:
     #
     # * **A file, not an API call.** The obvious design is a progress endpoint, and it is closed:
-    #   the service's public surface is reconciled against a frozen recording
-    #   (`test/agents_fyi/fixtures/discovery_golden.json` holds the endpoints, and the verdicts a
-    #   run may carry are pinned by `upgrades_golden.json`), so neither a new route nor a new
-    #   `upgrade_verdict` value can be added. A file the *site admin* reads is outside that contract,
+    #   the service's public surface is reconciled against frozen recordings (the discovery
+    #   recording holds the endpoints, and the verdicts a run may carry are pinned by the run
+    #   recording), so neither a new route nor a new `upgrade_verdict` value can be added. A file
+    #   the *site admin* reads is outside that contract,
     #   which is the only place left — and it is the operator's own view, which is who is asking.
     # * **Written atomically.** The reader is another process on another container: a half-written
     #   JSON file read at the wrong moment would be a site admin error rather than a stale line, so

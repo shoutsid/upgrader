@@ -133,8 +133,9 @@ module AgentsFyi
       # chapter of the guide it came from (`Upgrade::Refusal`). The first version of
       # this sent `kind: "plan"` — this tool's word for where the refusal came from — in
       # a field that means what kind of *change* it is, which is the same trap as a field
-      # that means two things (`AGENTS.md`). `path` and `line` are present only when the
-      # scan found the change in this application, and the change travels either way.
+      # that means two things (see `docs/design-notes.md`). `path` and `line` are present
+      # only when the scan found the change in this application, and the change travels
+      # either way.
       Decision = Struct.new(
         :path, :line, :subject, :reason, :kind, :replacement, :source, keyword_init: true
       )
@@ -394,8 +395,8 @@ module AgentsFyi
       # caller picks, and the two are different answers to "what happened". A bundle that
       # cannot be installed is the case this exists for — it is not the move failing, and
       # it is not the application refusing; it is no baseline, which makes every later
-      # observation uninterpretable (`AGENTS.md`: a probe that could not be made is not
-      # evidence about anything).
+      # observation uninterpretable (a probe that could not be made is not
+      # evidence about anything; see `docs/design-notes.md`).
       #
       # `machine` and `era` are carried by the two unverified records that are *about* their
       # machine rather than about the application: a step no interpreter could be built for
@@ -742,7 +743,7 @@ module AgentsFyi
         # they are neither a ladder rule nor a Gemfile repair — they are the edits a *gem's* own upgrade
         # needed. Reading `origin` without asking first is a `NoMethodError` in the one place that
         # renders a finished run — so every run whose preflight repaired a Gemfile raised while printing
-        # its summary, which is the shape `AGENTS.md` keeps paying for: a `to_s` the tests never call
+        # its summary, which is the shape the design notes keep paying for: a `to_s` the tests never call
         # with the input a real run has.
         origins = @applied.select { |edit| edit.respond_to?(:origin) }
           .map { |edit| edit.origin.to_s }.tally

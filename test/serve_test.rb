@@ -311,7 +311,7 @@ class ServeTest < Minitest::Test
   # the application's own facts say which repository to clone, which ref to start from and which
   # release to move to — and the same declaration travels to the step, which reads its suite and its
   # environment names from it. Measured on the lighthouse: all three were flags before, which is how
-  # the engine came to know one application (docs/refactor/adr/0008).
+  # the engine came to know one application (see `docs/design-notes.md`).
   def test_a_project_supplies_the_repository_the_ref_the_target_and_the_step
     project = AgentsFyi::Upgrader::Project.find("lighthouse")
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])

@@ -92,7 +92,7 @@ module AgentsFyi
       # **What this corpus has *observed* about a move.** `/api/rails/upgrade` (above) is the ladder's
       # documented half: what a release changed. This is the other half — the reports filed against
       # that move, with the fixes that resolved them and how they were verified — and it is what a
-      # rung is briefed with before the walk acts (`docs/refactor/adr/0008`, recall).
+      # rung is briefed with before the walk acts (see `docs/design-notes.md`).
       #
       # `ecosystem` is named rather than defaulted: the service's own default is `python`, and a
       # Rails walk that left it out would be answered "no report names this library" by a corpus
@@ -202,9 +202,9 @@ module AgentsFyi
       #
       # Empty is a real answer — nothing is queued — and it is deliberately not the only
       # one. A queue the service is *not serving* is reported as an error rather than as
-      # an empty list, because the two want opposite responses from a loop: `AGENTS.md`
-      # records what the mining queue taught this repository about a paused list read as
-      # an empty one, and this is the same surface one ecosystem over.
+      # an empty list, because the two want opposite responses from a loop: the design notes
+      # record what the mining queue taught this repository about a paused list read as an
+      # empty one, and this is the same surface one ecosystem over.
       #
       # Rows the loop cannot walk are dropped rather than handed on, and that is a
       # deliberate narrowing of what "the queue" means: an entry with no `repo_url` is not

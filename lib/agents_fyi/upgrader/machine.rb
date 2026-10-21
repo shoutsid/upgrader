@@ -434,7 +434,7 @@ module AgentsFyi
       # The ports the application's own configuration expects when it names none. **The services
       # script is not named here**: it is the stack's (the era images ship it, and the pack says
       # which command it is), so a native machine is told which command to route to the services
-      # container rather than recognising one name (docs/refactor/adr/0008).
+      # container rather than recognising one name (see `docs/design-notes.md`).
       PG_PORT = 5432
       REDIS_PORT = 6379
 

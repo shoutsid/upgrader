@@ -1,0 +1,92 @@
+name: Bug report
+description: Report a reproducible problem with the upgrader.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please search the existing issues and
+        read [Troubleshooting](https://github.com/shoutsid/upgrader/blob/main/docs/troubleshooting.md)
+        first.
+
+        **Do not paste an operator key, a GitHub token, a suite environment value or an
+        application's private source.** Redact the record before attaching it. Security reports
+        go through [SECURITY.md](https://github.com/shoutsid/upgrader/blob/main/SECURITY.md),
+        not this form.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `agents-fyi-upgrader --help`, the image tag, or the commit.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and Ruby
+      description: For example "Ubuntu 24.04, Ruby 3.3.12, Docker 27.5".
+      placeholder: "Ubuntu 24.04, Ruby 3.3.12, Docker 27.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - native
+        - docker
+        - rvm
+        - not applicable (plan / preview / prune)
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command and flags, with the service URL but no key.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened, and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The exit code, the terminal output, and the relevant record stages. Redact secrets.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest repository, declaration or sequence that shows the problem. A public repository is ideal; a description is enough if it cannot be shared.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: I read the troubleshooting guide.
+          required: true
+        - label: I removed keys, tokens and private source from this report.
+          required: true

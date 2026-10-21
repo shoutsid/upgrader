@@ -6,7 +6,7 @@
 # carries on. It is a *tool* before it is a service — phase 2 is `plan`, run by
 # hand, and the product of a run is a patch and a record rather than a row.
 #
-# Pinned by digest, and to the same bytes as the Ruby stage in `miner/Dockerfile`.
+# Pinned by digest, and to the same bytes as the service's miner image.
 # That is not tidiness: every refusal message this repository's Ruby rules were
 # written against was captured on Ruby 3.3.12 / RubyGems 3.5.22, and the miner has
 # been installing gems on that interpreter for weeks. A second Ruby, chosen by a
@@ -55,13 +55,13 @@ RUN apt-get update \
 # built from source instead. `pkg-config` because several `extconf.rb`s refuse to
 # configure without it.
 #
-# The default is 0 and it must stay 0: `docker run <image> plan --repo …` is run on
-# machines that will never execute a step, `upgrader/test/`'s own suite builds this
-# image with no arguments, and ~250 MB of toolchain in the image that only reads a
-# lockfile is the wrong default. The service that *does* execute steps passes 1
-# (`docker-compose.yml`), and `test/deploy_config_test.rb` holds both halves of that
-# sentence — because a service that cannot compile a native gem runs, reports healthy
-# and completes no step, which is a failure with no error message anywhere.
+# The default is 0 and it must stay 0: `docker run <image> plan --repo …` is often run
+# on a machine that will never execute a step, and ~250 MB of toolchain in an image
+# that only reads a lockfile is the wrong default. The deployment that *does* execute
+# steps passes 1. `test/artifact_test.rb` holds the image half; the service's contract
+# suite holds the deployment half — because a service that cannot compile a native gem
+# runs, reports healthy and completes no step, which is a failure with no error message
+# anywhere.
 ARG WITH_BUILD_TOOLS=0
 RUN if [ "$WITH_BUILD_TOOLS" = "1" ]; then \
       apt-get update \
@@ -77,7 +77,8 @@ RUN if [ "$WITH_BUILD_TOOLS" = "1" ]; then \
 # completes no step of an application old enough to need an era container. That is the same
 # failure shape the compiler's own comment describes, one layer down, and `docker-compose.yml`
 # cannot close it: a mount and a runtime are facts about the deployment, and a binary is a
-# fact about the image. `test/deploy_config_test.rb` holds all four halves.
+# fact about the image. `test/artifact_test.rb` holds the image half; the service's
+# `test/contracts/upgrader/deploy_config_test.rb` holds the deployment half.
 #
 # `docker-cli` rather than `docker.io`: Debian ships the client alone (about 30 MB), where the
 # package that carries the daemon as well is about 95 MB of image for a process this walker
@@ -148,10 +149,10 @@ RUN useradd --system --uid 10003 --create-home upgrader \
 USER upgrader
 
 # `GEM_HOME` is the gem cache, and its path is declared *here* rather than typed into
-# the compose file for the reason `PIP_CACHE_DIR` is declared in `miner/Dockerfile`:
+# the compose file for the reason `PIP_CACHE_DIR` is declared in the service's miner image:
 # it is the interpreter's own idea of where gems live, so the image is where it is
 # read from, and the compose mount is checked against this line rather than against a
-# second copy of it (`test/deploy_config_test.rb`). It is a *cache* — a `.gem` is an
+# second copy of it (the service's `test/contracts/upgrader/deploy_config_test.rb`). It is a *cache* — a `.gem` is an
 # artifact the index published a hash for — and the bundle built from it is not: see
 # the note on the mount.
 #

@@ -7,7 +7,7 @@ module AgentsFyi
     # **An accepted decision's effects, applied to the working tree — before anything is scanned.**
     #
     # A decision that lived only in the site admin would be a note with a nicer form. The point of
-    # making it a row (`docs/refactor/adr/0008`, decision 3) is that its *effect* is machinery: every
+    # making it a row (see `docs/design-notes.md`) is that its *effect* is machinery: every
     # later walk of the same project applies it, in a declared order, and a rung that passes with it
     # in force is the evidence that the answer was right.
     #

@@ -140,7 +140,7 @@ module AgentsFyi
         # declaration, the Rails pack is what a step runs.
         # The project this step walks, when the caller declared one. It supplies the suite, the
         # environment *names* the suite reads and the stack; the entry points that have a
-        # declaration pass it (docs/refactor/adr/0008, the adapter).
+        # declaration pass it (the design notes call this the adapter).
         @project = project
         @stack = stack || Stacks.for(project&.stack || "rails")
         # **The application's own environment, when the deployment knows it.** A repository
@@ -202,7 +202,7 @@ module AgentsFyi
         # has no rung to walk — the loop asked the ladder, was refused with "`8.1.0` and `8.1.0` are
         # the same Rails release", and *recorded that refusal* every ten minutes: eight rows saying a
         # finished walk is finished, and a corpus whose queue list grew while nothing was learnt
-        # (`docs/refactor/adr/0008`, "settled is not delivered"). `nil` is this step's answer for
+        # (see `docs/design-notes.md`). `nil` is this step's answer for
         # "nothing ran", which the loop reports as idle; the target's own `done` is what says it is
         # complete, and a passed rung that failed to *deliver* is the delivery queue's work, not a
         # reason to walk it again.
@@ -376,7 +376,8 @@ module AgentsFyi
       # step that passed. An interrupted step settled nothing, so the tree it was
       # measured in holds nothing either.
       def prepare(stages)
-        @worktree = @source.worktree(@repository, ref: @ref, home: @home, run: run_id, reuse: @reuse)
+        @worktree = @source.worktree(@repository, ref: @ref, home: @work || @home, run: run_id,
+          reuse: @reuse)
         if @reuse
           # **A clean tree is not proof that the last step finished.** Concern commits move HEAD,
           # so a process killed after one leaves a clean tree sitting on a half-move. The marker
@@ -663,7 +664,7 @@ module AgentsFyi
       #   its suite, and every candidate's attempt — the reason it was tried and the reason
       #   it was rejected — travels in the record. When none works, the record is
       #   `unverified`, because a machine that could not make the measurement established
-      #   nothing about the move (`AGENTS.md`'s probe rule).
+      #   nothing about the move (the probe rule in `docs/design-notes.md`).
       def choose_machine(stages, step)
         return [@machine, install_bundle(stages, @machine)] if @machine
 
@@ -1696,7 +1697,7 @@ module AgentsFyi
             # **A bridge and a survey are skipped here too, and that is said rather than silent**: both
             # read the files the scan would have sent, so a repository with none gets neither. It is the
             # degenerate case — a Rails application has Ruby — but a stage that quietly did less than its
-            # name says is the shape `AGENTS.md` keeps paying for.
+            # name says is the shape the design notes keep paying for.
             output_tail: "no bridge declared, no survey run and no rule's own file read: all three " \
                          "read what the scan would have sent")
           # The plan's half is still this step's half: a repository with no Ruby source
@@ -1812,7 +1813,7 @@ module AgentsFyi
       # What the apply stage's tail says: the counts, then what this tool's own rules did, then the
       # rules that name no change in this rung. The last two are evidence rather than decoration —
       # a rule that applied nothing and a rule whose change has left the ladder look identical from
-      # the outside, which is the shape `AGENTS.md` keeps paying for.
+      # the outside, which is the shape the design notes keep paying for.
       def apply_summary(result, decisions, rules, inert, created = [], declared = [])
         parts = ["applied #{result.applied.size}, refused #{result.refused.size}, " \
                  "#{decisions.size} change(s) need a decision"]

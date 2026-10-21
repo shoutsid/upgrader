@@ -1,0 +1,23 @@
+# Bundles and generated artifacts
+*.gem
+.bundle/
+vendor/bundle/
+coverage/
+out/
+records/
+state/
+tmp/
+ledger.json
+preflight.json
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
+.direnv/

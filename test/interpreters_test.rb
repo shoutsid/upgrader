@@ -200,7 +200,7 @@ class InterpretersTest < Minitest::Test
   # does not match the Ruby it installs into fails with "Bundler requires Ruby version", and
   # a `services.sh` the image does not copy is a step whose PostgreSQL was never started.
   # The suite cannot build six images, so it reads the recipe and the script — the same shape
-  # as `deploy_config_test.rb` one component over.
+  # as `artifact_test.rb` beside it.
   # **The host setup script is the other half of `UPGRADER_RUNTIME=rvm`, and it has to agree with
   # the matrix and with the walker.** Three facts, each of which has been wrong in some version of
   # a setup script: the interpreter comes from the matrix rather than from a second list, the gemset
@@ -210,7 +210,7 @@ class InterpretersTest < Minitest::Test
   # asked for a Ruby is a script that changes that machine in ways nobody read.
   def test_the_host_setup_script_reads_the_matrix_and_changes_no_system_packages
     root = File.expand_path("..", __dir__)
-    script = File.read(File.expand_path("../../scripts/upgrader-rubies.sh", root), encoding: "utf-8")
+    script = File.read(File.join(root, "scripts", "upgrader-rubies.sh"), encoding: "utf-8")
 
     assert_includes script, "interpreters.json", "the script keeps its own copy of the eras"
     assert_includes script, 'rvm install "$ruby"', "the era's interpreter is not installed"
@@ -227,7 +227,7 @@ class InterpretersTest < Minitest::Test
     root = File.expand_path("..", __dir__)
     dockerfile = File.read(File.join(root, "images", "Dockerfile"), encoding: "utf-8")
     script = File.read(File.join(root, "images", "services.sh"), encoding: "utf-8")
-    builder = File.read(File.expand_path("../../scripts/upgrader-images.sh", root), encoding: "utf-8")
+    builder = File.read(File.join(root, "scripts", "upgrader-images.sh"), encoding: "utf-8")
 
     %w[BASE_IMAGE BUNDLER].each do |argument|
       assert_includes dockerfile, "ARG #{argument}", "the Dockerfile takes no #{argument}"

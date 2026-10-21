@@ -84,7 +84,7 @@ module AgentsFyi
         @publish = publish
         # **The project this loop walks, declared rather than named.** From it come the target
         # release, the starting ref, the suite, the services and the branch namespace; without one
-        # every one of those is a command-line flag (docs/refactor/adr/0008, the adapter).
+        # every one of those is a command-line flag (the design notes call this the adapter).
         @project = project
         # **`force` reaches the step, because the step is where the ledger's "settled" answer is read.**
         # The loop has no opinion about it of its own, and a flag the loop swallowed would look like it

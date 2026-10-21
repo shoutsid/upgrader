@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3.12"
+
+      - name: Check Ruby syntax
+        run: |
+          ruby -c bin/agents-fyi-upgrader > /dev/null
+          find lib test -name '*.rb' -print0 |
+            while IFS= read -r -d '' file; do
+              ruby -c "$file" > /dev/null || exit 1
+            done
+
+      - name: Check shell syntax
+        run: bash -n entrypoint.sh scripts/*.sh
+
+      - name: Check JSON
+        run: ruby -rjson -e 'Dir["**/*.json"].sort.each { |path| JSON.parse(File.read(path)) }'
+
+      - name: Run the suite
+        run: ruby -Ilib -Itest test/all_test.rb
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the plan image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: upgrader:ci
+          cache-from: type=gha,scope=plan
+          cache-to: type=gha,mode=max,scope=plan
+
+      - name: Smoke-test the plan image
+        run: docker run --rm upgrader:ci --help
+
+      - name: Build the step image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: upgrader:step-ci
+          build-args: |
+            WITH_BUILD_TOOLS=1
+            WITH_DOCKER_CLIENT=1
+          cache-from: type=gha,scope=step
+          cache-to: type=gha,mode=max,scope=step
+
+      - name: Smoke-test the step image
+        run: docker run --rm upgrader:step-ci --help

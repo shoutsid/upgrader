@@ -680,22 +680,9 @@ class PreflightTest < Minitest::Test
     assert_empty second.repairs
   end
 
-  # **Two components, one bound.** The client's question size is the route's own, read out of
-  # the service's file rather than copied and hoped about — a client that drifted below the
-  # route would refuse itself questions the service would answer, and one above it would ask
-  # questions the service refuses, which is exactly how the whole digest went missing on the
-  # first real application.
-  def test_the_client_s_question_bound_is_the_routes_own
-    route = File.read(File.expand_path("../../upgrade/app/services/upgrade/migrations.rb", __dir__),
-      encoding: "utf-8")
-    limit = route[/GEMS_LIMIT = (\d+)/, 1]
-
-    refute_nil limit, "the route no longer declares a GEMS_LIMIT for this test to pin"
-    assert_equal limit.to_i, Preflight::DIGEST_GEMS_LIMIT
-  end
-
-  # And when an application does exceed it, the note says what was not asked about rather
-  # than a prefix going out silently: a question cut short reads as a complete answer.
+  # And when an application does exceed the route's bound, the note says what was not asked
+  # about rather than a prefix going out silently: a question cut short reads as a complete
+  # answer.
   def test_a_question_larger_than_the_route_s_bound_says_what_it_did_not_ask
     gemfile = +%(source "https://rubygems.org"\n)
     (Preflight::DIGEST_GEMS_LIMIT + 5).times { |index| gemfile << %(gem "gem#{index}", "1.0"\n) }

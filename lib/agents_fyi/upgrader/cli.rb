@@ -91,12 +91,12 @@ module AgentsFyi
                   before it.
 
         Exit status:
-          0  a plan was printed, a step ran and did not fail the suite, or the loop
-             stopped cleanly
+          0  a plan was printed, a step ran and passed, or the loop stopped cleanly
           2  a refusal — the ladder will not plan this move, or the tool will not guess
              a target. The sentence says which.
-          1  a real failure — no Gemfile.lock, an unreachable service, git, or a step
-             whose suite was green before it and failed after
+          1  a real failure — no Gemfile.lock, an unreachable service, git, a step
+             whose suite was green before it and failed after, or an `unverified` step
+             (nothing was established about the move)
       TEXT
 
       def initialize(argv, out: $stdout, err: $stderr, env: ENV, corpus: nil, inspector: Open3,
@@ -252,10 +252,12 @@ module AgentsFyi
       end
 
       # One step, on a copy this tool owns. The exit status follows the record rather
-      # than the record following the exit status: `unverified` is a success here (the
-      # step ran; nothing was able to check it) and the JSON says which it was, because
-      # a caller that only reads the exit code cannot be told a nuance it did not ask
-      # for — and one that reads the record gets all of it.
+      # than the record following the exit status. **`unverified` is a failure here**:
+      # the step ran, but nothing established that the move worked — no interpreter
+      # installed the bundle, the suite could not run, or the baseline was red. The JSON
+      # distinguishes it from `failed`, so a caller that reads the record gets the
+      # nuance, and a caller that only reads the exit code is not told that measuring
+      # nothing was a pass.
       # **The containers a killed run left behind.** `step` and `serve` remove their own when
       # they end, and a process that is killed runs no `ensure` at all — so a container from a
       # crash or a `SIGKILL` keeps running until something looks. This is that look, and the
@@ -412,7 +414,7 @@ module AgentsFyi
         parser = OptionParser.new do |opts|
           opts.banner = USAGE
           opts.on("--repo PATH|URL", "the repository to plan: a local path or a git URL") { |v| options[:repo] = v }
-          opts.on("--ref REF", "the branch, tag or commit to read (URLs only)") { |v| options[:ref] = v }
+          opts.on("--ref REF", "the branch, tag or commit to read; a local plan reads HEAD") { |v| options[:ref] = v }
           opts.on("--to VERSION", "the Rails release the move ends at, e.g. 7.1.0 " \
                   "(default: the top of the service's ladder)") { |v| options[:to] = v }
           opts.on("--api URL", "the service to ask (default $AGENTS_FYI_URL)") { |v| options[:api] = v }
@@ -423,7 +425,9 @@ module AgentsFyi
           opts.on("--from FILE", "the record `preview` renders") { |v| options[:from] = v }
           opts.on("--base-ref REF", "the chain base a preview names (default: the repository's)") { |v| options[:base_ref] = v }
           opts.on("--report-base URL", "the public service a preview links reports to") { |v| options[:report_base] = v }
-          opts.on("--work DIR", "where `step` puts its working copy (default $UPGRADER_HOME)") { |v| options[:work] = v }
+          opts.on("--work DIR", "where `step` puts its working copy and bundle (default $UPGRADER_HOME)") do |v|
+            options[:work] = File.expand_path(v)
+          end
           opts.on("--home DIR", "this client's own directory: worktrees and the ledger") { |v| options[:home] = File.expand_path(v) }
           opts.on("--heartbeat FILE", "the file `serve` touches every cycle") { |v| options[:heartbeat] = v }
           opts.on("--interval SECONDS", Integer, "how long `serve` waits between cycles") { |v| options[:interval] = v }

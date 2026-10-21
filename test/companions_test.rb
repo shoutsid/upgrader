@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "json"
 require "fileutils"
 require "tmpdir"
 require "agents_fyi/upgrader"
@@ -16,8 +15,6 @@ class CompanionsTest < Minitest::Test
   Companions = AgentsFyi::Upgrader::Companions
   Rewrites = AgentsFyi::Upgrader::Rewrites
   Applier = AgentsFyi::Upgrader::Applier
-  ROOT = File.expand_path("../../..", __dir__)
-  DIGEST = File.join(ROOT, "data", "gem_migrations.json")
 
   def tree(files)
     dir = Dir.mktmpdir
@@ -201,23 +198,12 @@ class CompanionsTest < Minitest::Test
     assert_nil Companions.for("json", "~> 1.8")
   end
 
-  # **The digest and the companion have to agree about the line, or the application gets the Gemfile
-  # rewritten and the suite left broken.** A digest edited to move rspec-rails to a different line
-  # fails here, which is the only place the two can be compared.
-  def test_the_companion_is_the_line_the_digest_declares
-    digest = JSON.parse(File.read(DIGEST)).fetch("migrations")
-    rung = digest.select { |migration| migration["gem"] == "rspec-rails" }
-      .find { |migration| migration.dig("when", "rails_at_least") == "5.0" }
-
-    refute_nil rung, "the digest has no rspec-rails rule for the 5.0 rung"
-    assert_equal entry.requirement, rung["requirement"],
-      "the digest moves rspec-rails to #{rung["requirement"].inspect} and the companion's edits " \
-      "are keyed to #{entry.requirement.inspect}"
-    assert_equal false, rung["mechanical"],
-      "the move cannot be a preflight repair: rspec-rails 3 stops providing assigns, and the gem " \
-      "that restores it requires actionpack ~> 5.x"
-  end
-
+  # The digest agreement that used to be here — the rspec-rails line and the
+  # shoulda-matchers line — now lives in the service's contract suite
+  # (`test/contracts/upgrader/companions_test.rb`), because only a checkout that holds
+  # `data/gem_migrations.json` can compare the digest with these edits. The client's
+  # suite still drives the edits against real files below.
+  #
   # **A block is several lines, and its evidence is one of them.** The insert has to land after the
   # require that loads the test framework — `Shoulda::Matchers.configure` resolves `:rspec` through
   # the gem's own registry, so the framework has to be loaded before the block runs — and a second
@@ -253,23 +239,6 @@ class CompanionsTest < Minitest::Test
     assert_empty Companions.edits(Companions::SHOULDA_MATCHERS, root: root)
     refute Companions.placed?(Companions::SHOULDA_MATCHERS, root: root),
       "no file carries the marker, so the companion is not placed"
-  end
-
-  # **The digest and the companion have to agree about the line here too, and this one is
-  # interpreter-scoped.** The entry that moves shoulda-matchers off 2.8.0 is scoped by `ruby_at_least
-  # 2.7` — the interpreter that removed `BigDecimal.new`, which 2.8.0 calls in a class body at boot —
-  # and the companion's edits are keyed to that same requirement.
-  def test_the_shoulda_companion_is_the_line_the_digest_declares
-    digest = JSON.parse(File.read(DIGEST)).fetch("migrations")
-    rung = digest.select { |migration| migration["gem"] == "shoulda-matchers" }
-      .find { |migration| migration.dig("when", "ruby_at_least") == "2.7" }
-
-    refute_nil rung, "the digest has no shoulda-matchers rule for the 2.7 era"
-    assert_equal Companions::SHOULDA_MATCHERS.requirement, rung["requirement"],
-      "the digest moves shoulda-matchers to #{rung["requirement"].inspect} and the companion's " \
-      "edits are keyed to #{Companions::SHOULDA_MATCHERS.requirement.inspect}"
-    assert_equal true, rung["mechanical"],
-      "the line move is a preflight repair, which is what lets its companion be applied there"
   end
 
   # **The second half of the same move: the matchers are included with a `type`, and rspec-rails

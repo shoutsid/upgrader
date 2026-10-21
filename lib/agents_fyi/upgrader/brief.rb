@@ -9,7 +9,7 @@ module AgentsFyi
     # over a gem pair, by an operator who hit the same failure in a different application. The first
     # twelve-rung walk learned that the expensive part is not applying a change but deciding what to
     # do when one refuses to apply, and every one of those decisions had been made somewhere before
-    # (`docs/refactor/adr/0008`, recall).
+    # (see `docs/design-notes.md`).
     #
     # Three questions are asked, and the shape of each is the corpus's rather than a guess here:
     #
@@ -201,7 +201,7 @@ module AgentsFyi
       end
 
       # Our own earlier answers, as the walk recorded them. Empty until decisions are first-class
-      # (`docs/refactor/adr/0008`, the decision model), and a section either way: a reader should see
+      # (see `docs/design-notes.md`), and a section either way: a reader should see
       # that the walk looked for its own past than infer that it did not.
       def decisions_section(decisions)
         entries = Array(decisions)

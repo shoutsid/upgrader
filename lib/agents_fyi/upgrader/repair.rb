@@ -75,7 +75,7 @@ module AgentsFyi
       # state, where the suite is green: what the failure *said*, and which files the repair changed
       # to answer it, exist only while the loop runs. It travels in the record and becomes a report
       # (`Filing.repair_report_for`), because a repair that lives only in a log is the failure
-      # `docs/refactor/adr/0008` names.
+      # the design notes name.
       Outcome = Struct.new(:failure, :suite, :attempts, :files, :diff, :before_the_move,
         keyword_init: true) do
         def to_h

@@ -12,7 +12,7 @@ module AgentsFyi
     # delivered. None of it belongs to the engine. Measured on the first complete walk, the engine
     # named `bin/rails`, `bundle exec rspec`, `agents-fyi-services`, `RAILS_SECRET_TOKEN`, the era image
     # prefix and the GitHub target, and every one of those is a property of one application
-    # (`docs/refactor/adr/0008`).
+    # (see `docs/design-notes.md`).
     #
     # A project names a **stack** — `rails` today — whose pack knows what a release changes and how a
     # command is spelled for it. The project says *which* of the stack's commands to run and what its
@@ -217,7 +217,7 @@ module AgentsFyi
       end
 
       # A declaration, validated. Public because the site admin will write one and has to be able to ask
-      # whether it is valid before storing it (`docs/refactor/adr/0008`, the config screen).
+      # whether it is valid before storing it (see `docs/design-notes.md`).
       def self.parse(text, path: nil)
         parsed = JSON.parse(text.to_s)
         raise Invalid, "a project declaration is an object, not #{parsed.class}" unless parsed.is_a?(Hash)

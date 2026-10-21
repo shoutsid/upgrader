@@ -26,7 +26,7 @@ set -eu
 # This variable existed nowhere until it was looked for, and that was a bug of the same
 # shape as the removed log level: `serve` prints "set `UPGRADER_TO`" when it has no
 # target, the container started, came up healthy and walked nothing for as long as nobody
-# ran a step by hand and noticed. `deploy_config_test.rb` now asserts that this script
+# ran a step by hand and noticed. `test/artifact_test.rb` now asserts that this script
 # supplies every flag `serve` needs, so the next required flag to be added fails the suite
 # rather than the deployment.
 : "${UPGRADER_TO:=}"
@@ -52,8 +52,11 @@ set -eu
 : "${UPGRADER_RUNGS:=}"
 # **Publishing is the delivery half and it is off unless asked for.** With it, every passed
 # rung becomes a branch (`agents-fyi/upgrade-<release>`) and a pull request chained to the
-# rung before it, and `UPGRADER_GITHUB_TOKEN` must be set — the client reads that itself and
-# never writes it down (a token in a record is a token in a corpus).
+# rung before it. The loop asks the service for the repository's connected GitHub App
+# credential; a repository with no installation publishes nothing and says so. There is no
+# deployment-wide customer credential to fall back to, and a token is never written down (a
+# token in a record is a token in a corpus). `step --publish`, run by hand, is the mode that
+# reads `UPGRADER_GITHUB_TOKEN`.
 : "${UPGRADER_PUBLISH:=}"
 # **The application's own environment, when the deployment knows it.** A repository that
 # carries no secrets is the ordinary case: this walk's first real application reads
@@ -92,7 +95,7 @@ fi
 # is the CLI's own report and the loop's one line per cycle, and a flag that filters none
 # of it is a flag that lies. The alternative rejected was keeping the flag and giving the
 # CLI a level to honour — a second vocabulary for what the miner's `LOG_LEVEL` means, with
-# none of the machinery behind it. `deploy_config_test.rb` now checks every flag this
+# none of the machinery behind it. `test/artifact_test.rb` now checks every flag this
 # script passes against the CLI's own usage text, which is the check that would have
 # caught it.
 
@@ -106,7 +109,7 @@ attempt=0
 # error* — a postfix `if` cannot carry an `else` — so every attempt exited 1, the loop
 # always spent its full five minutes, and it then announced that an API answering
 # `/api/health` "did not come up in 5 minutes". The probe's own stderr went to `/dev/null`,
-# which is where the syntax error went with it. `deploy_config_test.rb` now compiles this
+# which is where the syntax error went with it. `test/artifact_test.rb` now compiles this
 # snippet, so a probe that cannot run is a red suite rather than five wasted minutes on
 # every boot.
 #

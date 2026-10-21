@@ -15,7 +15,7 @@ module AgentsFyi
     #   established: the move it was making (`from_version` -> `version`), the command that
     #   failed, its exit code, and its output. It does *not* read a stack trace to work out
     #   which gem broke, because a name guessed out of a traceback is a claim the run did
-    #   not establish — see `AGENTS.md` on character similarity not being evidence. The
+    #   not establish — see `docs/design-notes.md` on character similarity not being evidence. The
     #   library is the subject the step was about, said here rather than inferred.
     # * **A refusal is not a failure.** A `refused` step is a fact about the ladder's
     #   coverage, and its home is the run record's refusal list, which is what the coverage
