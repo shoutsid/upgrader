@@ -588,15 +588,47 @@ class ServeTest < Minitest::Test
     assert_includes out.string, "the work list comes from the service's queue"
   end
 
-  def test_no_target_means_nothing_is_walked_and_nothing_is_asked_for
+  # **A queue row without a destination is skipped, but the queue is still read.** The loop
+  # must ask which repositories exist before it can know whether one of them carries its own
+  # target; reading nothing would make an account-owned project invisible. What must not happen
+  # is a step being handed an empty destination.
+  def test_no_target_means_nothing_is_walked_and_the_queue_is_still_read
     out = StringIO.new
     corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/storefront" }])
 
     assert_equal 0, serve(corpus: corpus, to: nil, cycles: 1, out: out).run
 
     assert_empty FakeStep.calls
-    assert_empty corpus.asked
+    refute_empty corpus.asked, "the loop did not read the queue it was supposed to inspect"
     assert_includes out.string, "no target"
+  end
+
+  # **An account project supplies its own destination, with no deployment-wide target.** This is
+  # the connect wizard's contract: the project's `to` is the decision, so a loop started without
+  # `UPGRADER_TO` must still walk it. Before this, `walk` returned idle before `run_one` ever
+  # looked at the account project.
+  def test_an_account_project_walks_without_a_deployment_target
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "7.1.0")])
+    corpus = FakeCorpus.new(targets: [
+      { "repo_url" => "acme/account", "ref" => "main", "status" => "queued" }
+    ])
+    corpus.define_singleton_method(:projects) do
+      { "projects" => [{
+        "slug" => "account", "repo" => "acme/account", "base_ref" => "main",
+        "from" => "7.0.0", "to" => "8.1.0", "stack" => "rails",
+        "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+        "source_roots" => ["app"], "checks" => [], "services" => [], "env_names" => [],
+        "toolchain" => {}, "style" => { "format" => "bundle exec rubocop -A" },
+        "app_update" => {},
+        "delivery" => { "provider" => "none" }, "account" => "Team"
+      }] }
+    end
+
+    assert_equal 0, serve(corpus: corpus, cycles: 1, to: nil).run
+
+    call = FakeStep.calls.first
+    refute_nil call, "an account project with its own target was not walked"
+    assert_equal "8.1.0", call[:to]
   end
 
   # The deployment's own shape, which is also the bug this test exists for. The helper

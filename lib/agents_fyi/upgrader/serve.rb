@@ -155,9 +155,9 @@ module AgentsFyi
         # is the service's and this tool keeps no copy, so a loop that picked "the next
         # release" would be deciding which rung the operator meant.
         if @to.to_s.empty? && !@walk
-          @out.puts("serve: no target, so this loop will not walk anything — set " \
-                    "UPGRADER_TO to the Rails release the move ends at, or `--walk` to walk " \
-                    "to the top of the service's ladder")
+          @out.puts("serve: no target (deployment-wide); account projects supply their own, " \
+                    "and queue rows without one are skipped — set UPGRADER_TO or `--walk` " \
+                    "for the rows that do not carry one")
         end
 
         # One reading before the first cycle, so an operator who opens the page while the loop is
@@ -203,13 +203,16 @@ module AgentsFyi
       end
 
       def walk
+        # **The project feed is read once per cycle, not once per process.** The service advances
+        # a project's `from_version` when a rung passes; a walker that kept the first read for
+        # ever would keep planning from a release it had already left.
+        refresh_account_projects!
         # **A settled rung is not a delivered one.** Delivery is retried before this cycle asks for
         # work, because a passed rung whose branch or pull request never arrived is already paid for
         # — re-walking it would spend the rung again — and a delivery that failed in a previous cycle
         # is exactly what the ledger now remembers. This runs even when there is nothing to walk: the
         # debt is about a rung that already passed.
         retry_delivery if @publish
-        return :idle if target.nil?
 
         outcomes = work.map { |spec| walk_spec(spec) }
         return :blocked if outcomes.include?(:blocked)
@@ -256,9 +259,13 @@ module AgentsFyi
         Project.find_by_repository(repository)
       end
 
-      # The account projects the service knows, read once per process. A row the service cannot make
+      # The account projects the service knows, read once per cycle. A row the service cannot make
       # walkable is stated and skipped rather than taking the whole feed down; a queue row with no
       # declaration still uses the stack's defaults, exactly as before.
+      def refresh_account_projects!
+        remove_instance_variable(:@account_projects) if instance_variable_defined?(:@account_projects)
+      end
+
       def account_projects
         return @account_projects if defined?(@account_projects)
 
@@ -530,6 +537,12 @@ module AgentsFyi
         else
           target
         end
+        if destination.to_s.empty?
+          @out.puts("serve: #{repository} — no destination: the project has no target and the " \
+                    "loop was not given `--to` or `--walk`")
+          return nil
+        end
+
         record = @step_class.new(
           repository: repository, ref: ref, to: destination, api: @api, home: @home, out: @out,
           suite_env: @suite_env,

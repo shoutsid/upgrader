@@ -186,12 +186,12 @@ matrix, not a transient failure.
 
 ## The loop does nothing
 
-### `serve: no target, so this loop will not walk anything`
+### `serve: no deployment-wide target`
 
-`serve` idles without `--to` unless `--walk` is set or the project declaration supplies a target.
-Set `UPGRADER_TO` to the release the move ends at, or set `UPGRADER_WALK=1` to walk each
-repository to the top of the ladder. This is deliberate: a deployment that has not decided where
-it is going must not start walking somebody's application.
+The loop reads the service's queue every cycle. An account project's own `to` is the destination;
+`UPGRADER_TO` is only the fallback for rows that do not carry one, and `--walk` reads an empty
+target as the top of the service's ladder. A row with neither is skipped and named. Set
+`UPGRADER_TO` or `UPGRADER_WALK=1` if the queue rows do not carry a project target.
 
 ### `the upgrade queue is not being served`
 

@@ -39,7 +39,7 @@ refusal (exit `2`), not a failed request: there is nowhere to send it.
 | `--api URL` | the service to ask. Default: `$AGENTS_FYI_URL`. No built-in default. |
 | `--repo PATH\|URL` | the application: a local directory, or a git URL. A local directory is read where it is and never written to. |
 | `--ref REF` | the branch or tag to read. A URL is cloned at that ref; for a local path, `plan` reads its current `HEAD` while `step` and `preflight` use the ref for their worktree. |
-| `--to VERSION` | the Rails release the move ends at, for example `7.1.0`. Optional in `plan` and `step`; without it the target is the top of the service's ladder. `serve` idles without one unless `--walk` is set or the project declaration supplies a target. |
+| `--to VERSION` | the Rails release the move ends at, for example `7.1.0`. Optional in `plan` and `step`; without it the target is the top of the service's ladder. `serve` uses an account project's own `to` first; `--to` is the deployment-wide fallback, and a row with no destination is skipped. |
 | `--project SLUG` | a declared application (see [Configuration](configuration.md#project-declarations)). Default: `$UPGRADER_PROJECT`. A declaration supplies the repository, base ref and target; an explicit flag still wins. |
 | `--record DIR` | where `step` writes its patch and JSON record, and `preflight` writes `preflight.json`. |
 | `--home DIR` | this client's own directory: working copies and the ledger. Default: `$UPGRADER_HOME`, then `~/.cache/agents-fyi-upgrader`. |

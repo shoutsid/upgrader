@@ -60,9 +60,10 @@ export AGENTS_FYI_URL=https://agents.shoutsid.fyi
 ```
 
 `--to` is optional for `plan` and `step`: without it, the target is the top of the service's
-ladder. `serve` deliberately idles without a target unless `--walk` is set or the named project
-declaration supplies one — a deployment that has not decided where it is going must not start
-walking somebody's application.
+ladder. `serve` reads the service's queue each cycle; an account project's `to` is its destination,
+`--to` is the deployment-wide fallback, and `--walk` reads an empty target as the top of the
+ladder. A row with no destination is skipped and named — a deployment that has not decided where
+a repository is going must not start walking it.
 
 A write or a queue read needs an operator key:
 

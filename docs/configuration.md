@@ -61,7 +61,7 @@ configured without changing its command.
 | Variable | Default | Meaning |
 |---|---|---|
 | `API_BASE_URL` | `http://service:8001` | the service the loop calls. The entrypoint passes it as `--api`. |
-| `UPGRADER_TO` | empty | the Rails release every move ends at. Empty idles unless `UPGRADER_WALK` is set or the project declaration supplies a target. |
+| `UPGRADER_TO` | empty | the deployment-wide Rails release every move ends at. Empty uses each account project's own `to`; `UPGRADER_WALK` reads empty as the ladder top. A row with no destination is skipped. |
 | `UPGRADER_INTERVAL` | `600` | seconds between cycles when there is nothing to do. |
 | `UPGRADER_STEP_TIMEOUT` | `3600` | the ceiling for one application suite; a step runs several commands and may outlive it. |
 | `UPGRADER_WALK` | empty | set to any non-empty value to pass `--walk`. |
