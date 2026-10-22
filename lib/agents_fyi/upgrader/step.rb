@@ -3493,8 +3493,10 @@ module AgentsFyi
         {
           "argv" => stage.command,
           # The application's own command, before the runner wrapped it. The service keeps it
-          # beside the wrapper so a member can read what ran without a docker invocation.
-          "display" => stage.display,
+          # beside the wrapper so a member can read what ran without a docker invocation. Some
+          # stages (the suite, the baseline) are already the application's own command and carry
+          # no separate display; the command is the display there, not a fallback to a wrapper.
+          "display" => stage.display.to_s.empty? ? stage.command : stage.display,
           "stage" => stage.stage,
           "exit_code" => stage.exit_code,
           "duration_ms" => (stage.seconds.to_f * 1000).round,

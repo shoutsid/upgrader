@@ -2005,6 +2005,9 @@ class StepTest < Minitest::Test
     assert payload["commands"].all? { |command| command.key?("display") }
     assert payload["commands"].any? { |command| command["display"].to_s.include?("bundle") },
       "the run body did not carry the application's own command"
+    baseline = payload["commands"].find { |command| command["stage"] == "baseline" }
+    assert_equal "bundle exec rspec", baseline["display"],
+      "the suite stage lost its command because it carries no separate display"
     assert payload["commands"].any? { |command| command["stage"] == "pin" }
     # The ladder's manual half is a decision for a person, and it travels as one — a
     # refusal list that could not name the change could say how much was left to do and
