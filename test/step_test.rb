@@ -2002,6 +2002,9 @@ class StepTest < Minitest::Test
     assert_includes payload["patch"].to_s, %(gem "rails", "5.0.0"), "the patch is not in the run"
     assert payload["finished_at"]
     assert payload["commands"].all? { |command| command.key?("exit_code") }
+    assert payload["commands"].all? { |command| command.key?("display") }
+    assert payload["commands"].any? { |command| command["display"].to_s.include?("bundle") },
+      "the run body did not carry the application's own command"
     assert payload["commands"].any? { |command| command["stage"] == "pin" }
     # The ladder's manual half is a decision for a person, and it travels as one — a
     # refusal list that could not name the change could say how much was left to do and

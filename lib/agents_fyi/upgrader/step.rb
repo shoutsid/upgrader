@@ -3492,6 +3492,9 @@ module AgentsFyi
       def self.command_payload(stage)
         {
           "argv" => stage.command,
+          # The application's own command, before the runner wrapped it. The service keeps it
+          # beside the wrapper so a member can read what ran without a docker invocation.
+          "display" => stage.display,
           "stage" => stage.stage,
           "exit_code" => stage.exit_code,
           "duration_ms" => (stage.seconds.to_f * 1000).round,

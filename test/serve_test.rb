@@ -36,7 +36,7 @@ class ServeTest < Minitest::Test
   # and command list are still none of this loop's business, which is why this is a Struct
   # rather than the real thing.
   Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version, :commit,
-    keyword_init: true) do
+    :run_id, keyword_init: true) do
     def passed? = verdict == AgentsFyi::Upgrader::Record::PASSED
   end
 
@@ -97,7 +97,8 @@ class ServeTest < Minitest::Test
       settle(result)
 
       Result.new(verdict: result.verdict, to_version: result.to_version, worktree: @worktree,
-        repository: @kwargs[:repository], from_version: "4.2.11", commit: "9f2c1ab8")
+        repository: @kwargs[:repository], from_version: "4.2.11", commit: "9f2c1ab8",
+        run_id: "run-1")
     end
 
     # A real git tree, because what the loop does with it — commit a passing step, reset
@@ -750,6 +751,7 @@ class ServeTest < Minitest::Test
     assert_equal true, entry["delivered"]
     assert_equal "https://github.com/acme/storefront/pull/1", entry["pull_request"]
     assert_equal "9f2c1ab8", entry["commit"]
+    assert_equal "run-1", entry["run_id"]
     # **The brief is rendered once by the engine**, not rebuilt by the service; the feed is where
     # the site admin reads it beside the branch and PR.
     assert_includes entry["brief"], "## What moved"

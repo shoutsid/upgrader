@@ -27,8 +27,8 @@ module AgentsFyi
       end
 
       def call
-        entries = (@ledger || Ledger.load(File.join(@home.to_s, "ledger.json"))).entries
-        entries.filter_map do |entry|
+        ledger = @ledger || Ledger.load(File.join(@home.to_s, "ledger.json"))
+        ledger.entries.filter_map do |entry|
           next unless entry.verdict == Ledger::PASSED
 
           delivery = entry.delivery
@@ -44,13 +44,30 @@ module AgentsFyi
           project = Project.find_by_repository(entry.repo)
           base_ref = delivery["base_ref"].to_s
           base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
-          result = @publish_class.new(
+          publisher = @publish_class.new(
             root: delivery["root"], repository: entry.repo,
             from_version: entry.from_version, to_version: entry.to_version,
             record: record, commit: delivery["commit"].to_s, token: @token, out: @out,
             branch_pattern: delivery["branch_pattern"], report_base: @report_base,
             base_ref: base_ref
-          ).call
+          )
+          result = publisher.call
+          # **A rewritten body is a new delivery fact.** The service's rendered review brief is a
+          # snapshot of the PR body; leaving the old brief behind after a republish would make the
+          # site admin show text the pull request no longer carries. The run id and the rest of the
+          # state survive the merge.
+          if result.published?
+            updated = delivery.merge(
+              "branch" => result.branch.to_s.empty? ? delivery["branch"] : result.branch,
+              "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
+              "pull_request" => result.pull_request.to_s.empty? ? delivery["pull_request"] : result.pull_request,
+              "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : delivery["brief"].to_s
+            )
+            ledger.deliver(repo: entry.repo, commit: entry.commit, from_version: entry.from_version,
+              to_version: entry.to_version, state: updated)
+            Deliveries.new(home: @home, out: @out).record(repo: entry.repo,
+              from_version: entry.from_version, to_version: entry.to_version, delivery: updated)
+          end
           @out&.puts("republish: #{entry.repo} #{entry.from_version}->#{entry.to_version}: #{result}")
           result
         end

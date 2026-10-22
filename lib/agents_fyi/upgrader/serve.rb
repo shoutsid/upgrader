@@ -365,6 +365,9 @@ module AgentsFyi
         state = {
           "attempted" => true,
           "delivered" => delivered?(result, record.repository),
+          # **The run this delivery belongs to.** The feed is keyed by the move as well, and a
+          # later attempt at the same move must not make an older run page claim its pull request.
+          "run_id" => record.run_id,
           "branch" => result.branch,
           "commit" => result.commit,
           "pull_request" => result.pull_request,
