@@ -531,7 +531,7 @@ module AgentsFyi
           # **This sentence is kept word for word**: it is what a reader uses to tell a mechanical
           # rung from one an accepted decision shaped, and the tests hold it.
           lines << "The tool wrote #{@record.applied.length} edit(s): #{parts.join(", ")}. The diff " \
-                   "is the complete record; every edit and its reason is on the run's page."
+                   "is the complete record; every edit and its reason is in the full record below."
         end
         lines.join("\n")
       end
@@ -668,7 +668,7 @@ module AgentsFyi
           lines << "## Manual changes the rung carries"
           lines << ""
           lines << "#{carried} change(s) this rung documents that this application does not use. " \
-                   "They need no edit; the run's page lists them."
+                   "They need no edit; the operator's record lists them."
           lines << ""
         end
         if earlier.any?
@@ -701,8 +701,6 @@ module AgentsFyi
         lines << "- **Risk:** #{risk}"
         lines << "- **Rollback:** #{rollback}"
         lines << "- **Merge order:** #{merge_order}"
-        url = run_url
-        lines << "- **Run record:** #{url}" if url
         lines.join("\n")
       end
 
@@ -785,17 +783,6 @@ module AgentsFyi
         end
       end
 
-      def run_url
-        return nil if @report_base.empty?
-
-        id = @record&.run_id.to_s
-        if id.empty?
-          "#{@report_base}/site_admin/upgrade_runs"
-        else
-          "#{@report_base}/site_admin/upgrade_runs/#{id}"
-        end
-      end
-
       # **The evidence, collapsed.** A reviewer who wants it can read every stage, every command and
       # the full check list; the brief above is what a person needs first. The patch is deliberately
       # left out: the pull request's diff is the patch, and pasting it into the body would be a
@@ -803,12 +790,12 @@ module AgentsFyi
       def record_section
         json = JSON.pretty_generate(scrubbed(public_record))
         if json.length > 24_000
-          json = "#{json[0, 24_000]}\n… (truncated; the run's page has the whole record)"
+          json = "#{json[0, 24_000]}\n… (truncated; the operator's record has the whole record)"
         end
         lines = ["<details>", "<summary>Full run record</summary>", "",
           "The patch is this pull request's diff and is omitted here. Command and check output,",
-          "repair attempt output and repair diffs are omitted from this body — the run's page",
-          "has them, and a public pull request does not need to carry a suite's environment.",
+          "repair attempt output and repair diffs are omitted from this body — the operator's record",
+          "has them, and a pull request does not need to carry a suite's environment.",
           "", "```json", json, "```",
           "", "</details>"]
         lines.join("\n")
@@ -817,7 +804,7 @@ module AgentsFyi
       # **The record as a public page may carry it.** A stage's `command` is the machine's wrapper
       # and can contain `-e RAILS_SECRET_TOKEN=…`; its `output_tail` can contain whatever the suite
       # printed. The logical command (`display`) and the exit code are the evidence a reviewer needs,
-      # and the run's page is where the wrapper and the output live. This is a filter, not a promise
+      # and the operator's record is where the wrapper and the output live. This is a filter, not a promise
       # that the record is safe in general: a project's own values never enter the body.
       def public_record
         record = @record.to_h.reject { |key, _| key == "patch" }
@@ -835,7 +822,7 @@ module AgentsFyi
       end
 
       # A repair's attempts are the failing suite's output and a diff of the fix. The body says a
-      # repair happened; the run's page has the evidence. Keeping the attempt count and the files
+      # repair happened; the operator's record has the evidence. Keeping the attempt count and the files
       # is enough for a reviewer, and it cannot leak a suite's environment.
       def public_repairs(repairs)
         Array(repairs).map do |repair|

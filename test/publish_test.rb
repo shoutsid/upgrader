@@ -616,6 +616,10 @@ class PublishTest < Minitest::Test
     assert_includes body, "## Review and merge"
     assert_includes body, "<details>"
     assert_includes body, "Full run record"
+    # **A reviewer reads the record here.** The site admin is the operator's console, not a
+    # destination a pull request may send someone to; the body is self-contained.
+    refute_includes body, "/site_admin",
+      "the pull request body linked the operator-only run console"
   end
 
   # **A transient remote failure must not move a rung's base to the default branch.** The chain is
