@@ -21,8 +21,14 @@ module AgentsFyi
       # The fields a declaration may carry. **An unknown key is an error rather than a comment:** a
       # typo is a setting that silently does nothing, and a walk that ignores a setting its operator
       # believes is in force is the failure this class exists to prevent.
-      FIELDS = %w[slug repo base_ref from to stack suite services env_names eras delivery
-        decisions brief_decisions source_roots checks toolchain style app_update].freeze
+      FIELDS = %w[slug repo base_ref from to path_policy next_checkpoint stack suite services
+        env_names eras delivery decisions brief_decisions source_roots checks toolchain style
+        app_update].freeze
+
+      # **Where a walk stops next, and by which rule.** A project connected before paths existed has
+      # neither field and walks to `to`, exactly as it always did; the two are optional on purpose,
+      # because the service and the client are deployed apart and the older side must keep working.
+      PATH_POLICIES = %w[minor latest_patch every_patch].freeze
 
       # The fields one accepted decision carries in a declaration. It is the site admin's rendering of
       # `decision_questions`/`answers`/`effects` — the row is the record, this is the delivery — and a
@@ -152,9 +158,9 @@ module AgentsFyi
         def to_h = { "format" => format, "check" => check }.compact
       end
 
-      attr_reader :slug, :repo, :base_ref, :from, :to, :stack, :suite, :services, :env_names,
-        :eras, :delivery, :decisions, :brief_decisions, :source_roots, :checks, :toolchain, :style,
-        :app_update, :path
+      attr_reader :slug, :repo, :base_ref, :from, :to, :path_policy, :next_checkpoint, :stack, :suite,
+        :services, :env_names, :eras, :delivery, :decisions, :brief_decisions, :source_roots,
+        :checks, :toolchain, :style, :app_update, :path
 
       # The declaration named by a slug, from the projects directory.
       #
@@ -243,6 +249,8 @@ module AgentsFyi
         @repo = required(fields, "repo")
         @from = required(fields, "from")
         @to = required(fields, "to")
+        @path_policy = read_path_policy(fields["path_policy"])
+        @next_checkpoint = optional_text(fields, "next_checkpoint")
         @base_ref = optional_text(fields, "base_ref")
         @stack = optional_text(fields, "stack") || "rails"
         @suite = read_suite(fields["suite"])
@@ -267,6 +275,7 @@ module AgentsFyi
       def to_h
         {
           "slug" => slug, "repo" => repo, "base_ref" => base_ref, "from" => from, "to" => to,
+          "path_policy" => path_policy, "next_checkpoint" => next_checkpoint,
           "stack" => stack, "suite" => suite.to_h, "services" => services,
           "env_names" => env_names, "eras" => eras, "delivery" => delivery.to_h,
           "decisions" => decisions, "brief_decisions" => brief_decisions,
@@ -284,6 +293,17 @@ module AgentsFyi
       def moves_from?(release) = release.to_s == from.to_s
 
       def suite_command = suite&.command
+
+      # **The release the next step walks to.** A project that publishes a checkpoint stops there
+      # instead of at the final destination; one that does not (or a feed written before checkpoints
+      # existed) keeps the destination, which is the behaviour every walk had. `to` stays the
+      # *destination* — the field the service's final-destination rule reads — so the two are never
+      # the same question.
+      def checkpoint = next_checkpoint.to_s.empty? ? to : next_checkpoint
+
+      def checkpoints? = !next_checkpoint.to_s.empty?
+
+      def patch_checkpoint? = same_minor?(from, checkpoint)
 
       private
 
@@ -314,6 +334,36 @@ module AgentsFyi
                          "or a null"
         end
         value
+      end
+
+      # A policy the declaration does not state is the service's default. It is read at all because
+      # a walker that silently ignored a policy its operator set would be walking a path the service
+      # planned and this client did not agree to; an unknown one is a typo, and a typo here is a
+      # setting that silently does nothing, so it is refused like every other unknown value.
+      def read_path_policy(value)
+        return nil if value.nil? || value.to_s.strip.empty?
+
+        policy = value.to_s.strip
+        unless PATH_POLICIES.include?(policy)
+          raise Invalid, "path_policy is #{policy.inspect}; known: #{PATH_POLICIES.join(", ")}"
+        end
+        policy
+      end
+
+      # `major.minor` of a release, or nil when it is not one. The client keeps no copy of the
+      # service's ladder, but it does have to answer one question the ladder answers: whether two
+      # releases are in the same minor, which is what makes a checkpoint a maintenance run.
+      def same_minor?(left, right)
+        one = minor(left)
+        two = minor(right)
+        !one.nil? && one == two
+      end
+
+      def minor(version)
+        parts = version.to_s.strip.split(".").first(2)
+        return nil unless parts.size == 2 && parts.all? { |part| part.match?(/\A[0-9]+\z/) }
+
+        parts.join(".")
       end
 
       def read_suite(value)

@@ -1534,6 +1534,63 @@ class StepTest < Minitest::Test
     assert_empty outside, "a Rails command ran outside this run's bundle: #{outside.inspect}"
   end
 
+  # **A patch checkpoint is maintenance, and the stages it leaves out are the point.** A patch release
+  # documents no change the ladder could apply, so the run pins, boots and measures: no plan to fetch,
+  # no scan, no accepted-decision edit, no `app:update` and no framework defaults. If any of those ran,
+  # the tool would be changing an application for a release that documents no change to it.
+  def test_a_patch_checkpoint_runs_the_maintenance_pipeline_and_nothing_else
+    dir = track(app)
+    corpus = FakeCorpus.new(payload: plan)
+    runner = FakeRunner.new
+    tests = CapturingTests.new(runner: runner)
+
+    record = step(dir, corpus: corpus, runner: runner, tests: tests, to: "4.2.12").run
+
+    assert record.passed?, record.why
+    assert_equal "4.2.11", record.from_version
+    assert_equal "4.2.12", record.to_version, "the record named a minor instead of the checkpoint"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "4.2.12")
+    assert_equal 2, tests.seen.size, "a patch run is a baseline and one suite"
+
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "baseline"
+    assert_includes stages, "pin"
+    assert_includes stages, "suite"
+    assert_empty stages & %w[preflight apply decisions rails:update defaults style],
+      "a patch run took a rung's stages: #{stages.inspect}"
+    assert_empty runner.calls.grep(/app:update|rails:update/), "a patch run ran app:update"
+    assert_empty (corpus.upgrade_calls || []), "a patch run asked the ladder for a plan"
+  end
+
+  # **The plan says which minor moved; the checkpoint says which patch is installed.** A latest-patch
+  # checkpoint on 5.0.6 uses the 5.0 chapter and writes 5.0.6 — the record and the branch must never
+  # say the chapter's `.0`, which is a release nobody approved.
+  def test_a_minor_checkpoint_pins_its_exact_patch_while_using_the_minor_plan
+    dir = track(app)
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11"))
+
+    record = step(dir, corpus: corpus, to: "5.0.6").run
+
+    assert record.passed?, record.why
+    assert_equal "5.0.6", record.to_version, "the record named the plan's .0 instead of the checkpoint"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.6")
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "rails:update", "the minor plan's app:update did not run"
+    refute_includes record.name.to_s, "5.0.0", "the plan's release leaked into the checkpoint's name"
+  end
+
+  # **A checkpoint behind the lockfile is a stale feed, not a patch move.** Pinning it would write
+  # a downgrade and then report a pass the service refuses to advance; the step refuses instead.
+  def test_a_checkpoint_behind_the_lockfile_is_refused_without_touching_the_tree
+    dir = track(app)
+
+    record = step(dir, to: "4.2.10").run
+
+    assert_equal "refused", record.verdict
+    assert_match(/behind the lockfile/, record.why)
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "4.2.11")
+  end
+
   def test_the_baseline_runs_before_anything_is_written
     dir = track(app)
     tests = CapturingTests.new

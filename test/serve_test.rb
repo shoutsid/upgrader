@@ -159,6 +159,19 @@ class ServeTest < Minitest::Test
     end
   end
 
+  # A publisher that never delivers, for the cross-cycle half of the delivery gate: a failed
+  # retry must keep the repository blocked rather than let the next checkpoint onto a branch that
+  # never arrived.
+  class NeverPublish
+    def initialize(**); end
+
+    def call
+      AgentsFyi::Upgrader::Publish::Result.new(pushed: false,
+        branch: "agents-fyi/upgrade-7.0.6", commit: "c0ffee01",
+        reason: "the branch could not be pushed: no route to host")
+    end
+  end
+
   # The service, as much of it as the loop touches: one method, and it records what it
   # was asked for so a test can tell a queue read from a queue read that never happened.
   class FakeCorpus
@@ -451,6 +464,112 @@ class ServeTest < Minitest::Test
     refute File.exist?(File.join(tree, "app_update_added.rb")), "the step's added file survived"
     assert_empty capture2("git", "-C", tree, "status", "--porcelain").first.strip
     assert_includes out.string, "advances nothing, so the tree"
+  end
+
+  # **The next stop is the checkpoint, not the destination.** A project on a path publishes the
+  # exact release to walk next; handing the step `to` would make every checkpoint a leap to the end
+  # of the path — which is the shape the ladder refuses because it has no chapter for it.
+  def test_a_project_with_a_checkpoint_walks_it_instead_of_the_destination
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "7.0.6")])
+    corpus = account_corpus(account_row("next_checkpoint" => "7.0.6"))
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 1).run
+
+    assert_equal "7.0.6", FakeStep.calls.first[:to],
+      "the walker went to the destination instead of the checkpoint the service planned"
+  end
+
+  # **A passed checkpoint is followed by the next one from a fresh reading.** The project object the
+  # cycle started with still names the stop that just passed; continuing from it would ask for the
+  # same release, and the step would answer "already at". The feed is re-read after every pass.
+  def test_a_passed_checkpoint_refreshes_the_feed_before_the_next_one
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "7.0.6"),
+      Result.new(verdict: "passed", to_version: "7.1.6")
+    ])
+    feed = [account_row("from" => "7.0.3", "next_checkpoint" => "7.0.6"),
+            account_row("from" => "7.0.6", "next_checkpoint" => "7.1.6")]
+    reads = 0
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/account", "ref" => "main",
+                                        "status" => "queued" }])
+    corpus.define_singleton_method(:projects) do
+      row = feed[[reads, feed.size - 1].min]
+      reads += 1
+      { "projects" => [row] }
+    end
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 2).run
+
+    assert_equal %w[7.0.6 7.1.6], FakeStep.calls.map { |call| call[:to] },
+      "the walk repeated the checkpoint it had just passed"
+  end
+
+  # **Delivery gates the chain.** The next checkpoint's branch is based on this one's, so a publish
+  # that did not arrive has to stop the walk rather than stack a pull request on a branch that is not
+  # there. The rung passed and stays settled; only the next stop waits.
+  def test_a_delivery_that_did_not_arrive_stops_before_the_next_checkpoint
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "7.0.6"),
+      Result.new(verdict: "passed", to_version: "7.1.6")
+    ])
+    RetryPublish.reset!
+    out = StringIO.new
+    corpus = account_corpus(account_row("next_checkpoint" => "7.1.6"))
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 2, publish: true,
+      publish_class: RetryPublish, out: out).run
+
+    assert_equal 1, FakeStep.walked, "the next checkpoint was stacked on a branch that never arrived"
+    assert_includes out.string, "stops here rather than stacking"
+  end
+
+  # The next cycle must remember the debt. The old retry logged the failure and then walked the
+  # next checkpoint anyway, which is the same branch-stacking bug one cycle later.
+  def test_a_delivery_that_still_fails_on_retry_keeps_the_repository_blocked
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "7.0.6"),
+      Result.new(verdict: "passed", to_version: "7.1.6")
+    ])
+    out = StringIO.new
+    corpus = account_corpus(account_row("next_checkpoint" => "7.1.6"))
+
+    serve(corpus: corpus, cycles: 2, to: nil, walk: true, rungs: 2, publish: true,
+      publish_class: NeverPublish, out: out).run
+
+    assert_equal 1, FakeStep.walked,
+      "a still-undelivered rung let the next checkpoint stack on a missing branch"
+    assert_includes out.string, "still have an undelivered checkpoint"
+  end
+
+  # A feed written before checkpoints existed carries neither field, and that project keeps walking
+  # to its destination. The service and the client are deployed apart, so this is the older side.
+  def test_a_feed_with_no_checkpoint_still_walks_the_destination
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
+    corpus = account_corpus(account_row)
+
+    serve(corpus: corpus, cycles: 1, to: nil, walk: true, rungs: 1).run
+
+    assert_equal "8.1.0", FakeStep.calls.first[:to]
+  end
+
+  # A queue row for one account project, as the service publishes it. One helper so a test about a
+  # path is not also a test of the declaration's shape.
+  def account_corpus(row)
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/account", "ref" => "main",
+                                        "status" => "queued" }])
+    corpus.define_singleton_method(:projects) { { "projects" => [row] } }
+    corpus
+  end
+
+  def account_row(**overrides)
+    {
+      "slug" => "account", "repo" => "acme/account", "base_ref" => "main",
+      "from" => "7.0.3", "to" => "8.1.0", "stack" => "rails",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "source_roots" => ["app"], "checks" => [], "services" => [], "env_names" => [],
+      "toolchain" => {}, "style" => nil, "app_update" => {},
+      "delivery" => { "provider" => "none" }, "account" => "Team"
+    }.merge(overrides)
   end
 
   def capture2(*argv)

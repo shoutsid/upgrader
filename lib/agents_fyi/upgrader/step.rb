@@ -219,10 +219,39 @@ module AgentsFyi
           return nil
         end
 
+        # **A move inside one minor is maintenance, not a rung.** A patch checkpoint pins a release
+        # the ladder has no chapter for, so there is no plan to fetch and no source to scan: the
+        # suite is the evidence, and the pipeline is deliberately the part of a rung that measures
+        # rather than the part that changes. `@rung_to` is the move here because no plan will set
+        # it and the progress panel must not name the loop's destination as the rung.
+        #
+        # A checkpoint behind the lockfile is not maintenance; it is a stale feed. Pinning the
+        # older release would make the tree and the project row disagree, and `advance!` would
+        # refuse the rewind after a "passed" run. Refuse it and let the service replan instead.
+        if same_minor?(@from, @to)
+          unless checkpoint_ahead?
+            return finish(Record.refused(
+              repository: @repository, from_version: @from, to_version: @to,
+              why: "The next checkpoint #{@to} is behind the lockfile's #{@from}. Re-read the " \
+                   "project path before walking it; this step will not pin a downgrade.",
+              commit: record_commit, worktree: @worktree&.root
+            ))
+          end
+          @rung_to = @to
+          return patch_run(stages)
+        end
+
         # The plan comes from the service and nowhere else: this tool keeps no copy of
         # the ladder, so a move it cannot ask about is a move it cannot make.
         step = planned(stages)
         return finish(step) if step.is_a?(Record)
+
+        # **The plan says which minor moved; the checkpoint says which patch is installed.** A
+        # latest-patch checkpoint names `7.1.6` while the ladder's chapter is the move to `7.1.0`,
+        # so the step's own target becomes the checkpoint and the plan's version travels as
+        # `plan_to`. Every stage downstream — the pin, the commits, the record and the branch — then
+        # reads one release, and it is the one a person approved.
+        step = checkpoint_step(step)
 
         @out.puts("  step: #{step["name"]} (#{step["from_version"]} -> #{step["to_version"]}), " \
                   "requires Ruby #{step["requires_ruby"] || "unstated"}") if @out
@@ -678,6 +707,110 @@ module AgentsFyi
       # 7.0.0, or the run claims a five-rung skip and the service is right to refuse it.
       # Before the plan is fetched there is no rung, and the destination is the only answer.
       def rung_to = @rung_to.to_s.empty? ? @to : @rung_to
+
+      # **A checkpoint whose two releases share a minor is a patch, and a patch is maintenance.**
+      # It is decided from the lockfile's release and the checkpoint rather than from a declared
+      # kind, because those two are the facts the step actually has: the service may put a
+      # checkpoint on the feed, but only the tree can say where the application really is.
+      def patch_checkpoint? = same_minor?(@from, @to) && checkpoint_ahead?
+
+      def checkpoint_ahead?
+        order = Gem::Version.new(@to.to_s) <=> Gem::Version.new(@from.to_s)
+        order&.positive? == true
+      rescue ArgumentError
+        false
+      end
+
+      def checkpoint_kind = patch_checkpoint? ? "patch" : "minor"
+
+      # The step hash the stages expect, for a checkpoint the ladder has no chapter for. It is
+      # deliberately not a fabricated ladder rung: `changes` is empty because a patch release
+      # documents none, and `requires_ruby` is unset so the interpreter is chosen from the
+      # application's own lockfile rather than from a floor nobody stated.
+      def patch_stage
+        @patch_stage ||= {
+          "from_version" => @from, "to_version" => @to,
+          "name" => "Rails #{@to} patch", "requires_ruby" => nil, "changes" => []
+        }
+      end
+
+      # **What is installed is the checkpoint; what changed is the chapter.** A minor checkpoint
+      # names the series' latest patch, while the ladder's plan is the move to the `.0`. The plan's
+      # version stays in `plan_to` for anything that asks, and every stage that writes a version
+      # into the tree, the record or the branch reads the checkpoint.
+      def checkpoint_step(step)
+        plan_version = step["to_version"].to_s
+        return step if @to.to_s.empty? || @to.to_s == plan_version
+        return step unless same_minor?(@to, plan_version)
+
+        step.merge("plan_to" => plan_version, "to_version" => @to,
+          "name" => "#{step["name"]} (patch #{@to})")
+      end
+
+      # **The maintenance pipeline, and the stages it deliberately leaves out.** There is no plan,
+      # no scan, no accepted-decision edit, no `app:update`, no framework-default stepping and no
+      # formatter: a patch release changes no documented API, so anything that rewrites the
+      # application would be this tool making a change nobody documented. What is left is the part
+      # of a rung that measures — the environment, the exact pin, the boot, the suite and the rest
+      # of the application's declared gate — and `Record.verdict` decides it like any other run.
+      def patch_run(stages)
+        step = patch_stage
+        @out.puts("  patch update: #{@from} -> #{@to} — no documented changes; the suite is the evidence") if @out
+
+        entry, settled = settled_entry(step)
+        if settled
+          @out.puts("  already settled: #{entry.verdict} — #{entry.note}") if @out
+          return nil
+        end
+
+        choice = choose_machine(stages, step)
+        return finish(choice) if choice.is_a?(Record)
+
+        @machine, install = choice
+        @out.puts("  interpreter: #{@machine.interpreter}" \
+                  "#{@machine.image.to_s.empty? ? "" : ", image #{@machine.image}"}") if @out
+        return finish(install_record(install, stages)) unless install.ok?
+
+        services = services_stage(stages)
+        if services && !services.ok?
+          verdict, why = Record.verdict(baseline: nil, suite: nil, stages: stages)
+          return finish(build(step, stages, verdict, why))
+        end
+
+        javascript_stage(stages)
+        database_stage(stages)
+        assets_stage(stages)
+        @prepare_checks = prepare_checks_stage(stages)
+
+        # The baseline is the same rule as a rung's: "this patch broke the suite" and "the suite
+        # was already red" are one sentence without it, and the second is not a fact about Rails.
+        @baseline = baseline(stages)
+
+        pin = rewrite(stages, step)
+        return finish(pin) if pin.is_a?(Record)
+        checkpoint("pin Rails #{@to}")
+
+        boot(stages)
+        @suite = suite(stages)
+        @checks = Array(@prepare_checks) + checks_stage(stages)
+        checkpoint(nil)
+
+        verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages,
+          checks: @checks)
+        finish(build(step, stages, verdict, why))
+      end
+
+      def same_minor?(left, right)
+        one = minor_of(left)
+        !one.nil? && one == minor_of(right)
+      end
+
+      def minor_of(version)
+        parts = version.to_s.strip.split(".").first(2)
+        return nil unless parts.size == 2 && parts.all? { |part| part.match?(/\A[0-9]+\z/) }
+
+        parts.join(".")
+      end
 
       # **The commit a record and the ledger name, which is not always the tree's patch base.** A
       # kept tree that was killed after a concern commit is put back to its marker; the marker is
@@ -1647,6 +1780,8 @@ module AgentsFyi
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
           exit_code: result.exit_code, seconds: result.seconds,
           output_tail: result.output_tail)
+        @progress.finish(stage: stage, status: status_for(result),
+          exit_code: result.exit_code, duration_ms: milliseconds(result))
         stages.last
       end
 
@@ -3233,7 +3368,7 @@ module AgentsFyi
         # `@rung_to` only: before the plan is fetched the rung is *not known*, and `@to` is where the
         # walk is going — a panel that showed the target would be naming a move the step is not making.
         @progress.stage(repo: @repository, from: @from, to: @rung_to,
-          commit: record_commit,
+          commit: record_commit, kind: checkpoint_kind,
           era: (@machine.era if @machine.respond_to?(:era)),
           stage: stage, detail: detail, note: note)
       end
@@ -3249,8 +3384,30 @@ module AgentsFyi
         display = argv
         argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
         announce(stage, display.join(" "))
-        @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
+        result = @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
           timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
+        @progress.finish(stage: stage, status: status_for(result),
+          exit_code: result.exit_code, duration_ms: milliseconds(result))
+        result
+      end
+
+      # The timeline's word for a command's end. A command that never ran is `skipped`, not
+      # `failed`: the two send a reader to different places, and a deadline or a missing binary is
+      # not a verdict about the application.
+      def status_for(result)
+        return "skipped" unless result.ran
+
+        # **Two result types reach this line, and they do not spell "passed" the same way.** A
+        # machine command answers with `Record::Command#ok?`; the suite answers with `Tests::Result`'
+        # `passed`, because a suite that never ran is a third answer rather than a failure. Reading
+        # one shape off the other crashed every baseline — 116 errors from one line, which is what a
+        # test suite is for.
+        passed = result.respond_to?(:ok?) ? result.ok? : result.respond_to?(:passed) && result.passed
+        passed ? "passed" : "failed"
+      end
+
+      def milliseconds(result)
+        result.respond_to?(:seconds) && result.seconds ? (result.seconds.to_f * 1000).round : nil
       end
 
       # How many overwrite questions one update task may ask. Generous rather than counted: an application

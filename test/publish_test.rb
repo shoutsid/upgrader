@@ -225,6 +225,28 @@ class PublishTest < Minitest::Test
     assert_equal "agents-fyi/upgrade-4.2.0", second.branch
   end
 
+  # **A patch checkpoint is a branch like any other, named for the exact release.** The chain is the
+  # stack: 4.1.4 is based on 4.1.3, not on the minor's `.0`, because the previous checkpoint's branch
+  # is the one carrying the release this run started from.
+  def test_a_patch_checkpoint_is_branched_and_chained_by_its_exact_version
+    bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.3"\n))
+    first = Publish.new(root: clone, repository: bare, from_version: "4.1.2",
+      to_version: "4.1.3", record: passed_record(repository: bare, from: "4.1.2", to: "4.1.3"),
+      token: "").call
+    assert first.pushed, first.reason
+    assert_equal "agents-fyi/upgrade-4.1.3", first.branch
+
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.4"\n))
+    second = Publish.new(root: clone, repository: bare, from_version: "4.1.3",
+      to_version: "4.1.4", record: passed_record(repository: bare, from: "4.1.3", to: "4.1.4"),
+      token: "").call
+
+    assert second.pushed, second.reason
+    assert_equal "agents-fyi/upgrade-4.1.4", second.branch, "the patch's branch is not its exact release"
+    assert_equal "agents-fyi/upgrade-4.1.3", second.base, "the patch was not chained on its predecessor"
+  end
+
   def test_a_github_rung_is_pushed_with_a_token_and_opens_a_request
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.0"\n))
@@ -325,6 +347,8 @@ class PublishTest < Minitest::Test
       pause: ->(_seconds) {}).call
 
     refute result.pushed
+    refute_nil result.commit, "the retry lost the commit the push produced"
+    refute_nil result.base, "the retry lost the base the branch was pushed against"
     assert_includes result.reason, "api.github.com"
     refute_includes result.reason, "\n", "the reason is a backtrace, not a sentence"
   end

@@ -33,6 +33,16 @@ module AgentsFyi
     #   used in the push URL, and every message on the way out has it replaced with `***`.
     #   A token in a record is a token in a corpus, and this record is published beside the
     #   run.
+    #
+    # **Native GitHub stacked-pull-request support is not a dependency, and the branch base is the
+    # stack.** The REST API this client speaks has no stack object to join; what it has is a pull
+    # request with a base branch, and a checkpoint's request based on the previous checkpoint's
+    # branch *is* the reviewable stack — GitHub renders each rung's diff against the one before it.
+    # A native-stack adapter could later associate the chain, but it would be an association beside
+    # this relationship and not a replacement for it. The delivery record carries the `base` the
+    # request actually used, which is how a reader can tell a chained request from one that fell
+    # back to the repository's default branch — the visible shape of a chain that broke, including
+    # when an earlier request in the stack was closed before this rung was published.
     class Publish
       # Where a one-shot step's token comes from. `serve` passes the service's short-lived
       # credential instead; the CLI reads this name for `step --publish`.
@@ -161,7 +171,12 @@ module AgentsFyi
         Result.new(pushed: true, branch: branch, base: @base, commit: commit,
           pull_request: request, reason: "")
       rescue GitHub::Refused => e
-        Result.new(pushed: false, branch: branch, reason: redact(e.message))
+        # **The push can succeed while the request fails, and the retry needs both facts.** The
+        # first version returned `pushed: false` with no commit here, so the next cycle re-derived
+        # the branch from a tree the caller had already moved on from. The branch and its commit
+        # are facts about this attempt even when the pull request never opened.
+        Result.new(pushed: false, branch: branch, base: @base,
+          commit: @publishing_commit, reason: redact(e.message))
       end
 
       # **The body without a push.** `Preview` is the caller: a stored record is already the whole

@@ -212,9 +212,23 @@ module AgentsFyi
         # — re-walking it would spend the rung again — and a delivery that failed in a previous cycle
         # is exactly what the ledger now remembers. This runs even when there is nothing to walk: the
         # debt is about a rung that already passed.
-        retry_delivery if @publish
+        undelivered = @publish ? retry_delivery : []
 
-        outcomes = work.map { |spec| walk_spec(spec) }
+        # **A delivery debt blocks the repository, not just the publish.** A failed publish is
+        # retried above; if it is still absent, walking the next checkpoint would base its branch
+        # on a branch that never arrived. The queue is filtered so another repository can still
+        # make progress while this one waits for its delivery.
+        available = work.reject do |spec|
+          repository, = self.class.split(spec)
+          undelivered.include?(Repository.name(repository))
+        end
+        if available.empty? && undelivered.any?
+          @out.puts("serve: #{undelivered.uniq.join(", ")} still have an undelivered checkpoint; " \
+                    "no path is walked until delivery succeeds")
+          return :blocked
+        end
+
+        outcomes = available.map { |spec| walk_spec(spec) }
         return :blocked if outcomes.include?(:blocked)
 
         outcomes.include?(:worked) ? :worked : :idle
@@ -248,7 +262,11 @@ module AgentsFyi
       # is the shape this tool had before declarations existed.
       def project_for(repository)
         if @project && Repository.name(@project.repository) == Repository.name(repository)
-          return @project
+          # **The declaration is re-read between checkpoints, because a checkpoint moves in the
+          # file the site admin writes.** A hand-started loop holds the object it was given; a
+          # declaration that has not changed is returned as the same object, so callers that key
+          # on identity (and the tests that assert it) keep working.
+          return reload_declaration(@project) || @project
         end
 
         account_project = account_projects.find do |project|
@@ -257,6 +275,19 @@ module AgentsFyi
         return account_project if account_project
 
         Project.find_by_repository(repository)
+      end
+
+      # A declaration this loop was started with, re-read from its own file when the file has moved.
+      # The comparison is the declaration's own hash, so an unchanged file yields the same object and
+      # a site-admin edit (a new `next_checkpoint`, a new suite) is the one that replaces it.
+      def reload_declaration(project)
+        path = project.path.to_s
+        return nil if path.empty? || !File.file?(path)
+
+        fresh = Project.load(path)
+        fresh.to_h == project.to_h ? project : fresh
+      rescue Project::Invalid
+        nil
       end
 
       # The account projects the service knows, read once per cycle. A row the service cannot make
@@ -319,7 +350,22 @@ module AgentsFyi
 
           return :blocked unless record.passed?
 
-          publish(record, project: project) if @publish
+          # **Delivery gates the chain.** The next checkpoint's branch is based on this one's, so a
+          # publish that did not arrive must stop the walk rather than stack a pull request on a
+          # branch that is not there. `:blocked` is the retry-soon outcome and delivery has its own
+          # retry (`retry_delivery`) that does not re-walk the rung.
+          if @publish && !publish(record, project: project)
+            @out.puts("serve: #{repository} — the delivery of #{record.to_version} did not arrive, " \
+                      "so the walk stops here rather than stacking the next checkpoint on it")
+            return :blocked
+          end
+
+          # **The next checkpoint is a fresh reading.** The project object this loop holds was the
+          # feed's before the run; continuing from it would ask for the stop that just passed, and
+          # the step would answer "already at". Re-resolving is also what carries the service's own
+          # advance of `from_version` and the checkpoint after it.
+          refresh_account_projects!
+          project = project_for(repository) || project
         end
         :worked
       end
@@ -343,6 +389,10 @@ module AgentsFyi
         brief = publisher.respond_to?(:preview_body) ? publisher.preview_body : nil
         remember_delivery(record, result, root: root, pattern: pattern,
           base_ref: project&.base_ref, brief: brief)
+        # **A boolean, because the walk's next branch depends on this one.** A plain git remote is a
+        # delivered branch with no request, which is complete rather than failed — that distinction
+        # already lives on the ledger's answer and is reused here rather than decided twice.
+        delivered?(result, record.repository)
       end
 
       # **A connected account gets its own token; there is no deployment-wide customer credential
@@ -370,6 +420,10 @@ module AgentsFyi
           "run_id" => record.run_id,
           "branch" => result.branch,
           "commit" => result.commit,
+          # **The base the request actually used.** A chained request names the previous
+          # checkpoint's branch; one that fell back names the repository's default, which is the
+          # visible shape of a broken stack and the fact the path page needs to say so.
+          "base" => result.base,
           "pull_request" => result.pull_request,
           "reason" => result.reason,
           # The rendered review brief is evidence a person reads, not a second renderer in the
@@ -403,7 +457,8 @@ module AgentsFyi
       # A tree that is gone cannot be retried (the commit was in it, and the corpus holds the patch but
       # not the objects), so that is said rather than silently skipped.
       def retry_delivery
-        return if @ledger.nil?
+        blocked = []
+        return blocked if @ledger.nil?
 
         @ledger.entries.each do |entry|
           delivery = entry.delivery
@@ -414,6 +469,9 @@ module AgentsFyi
           unless File.directory?(root)
             @out.puts("serve: #{entry.repo} — the delivery of #{entry.to_version} cannot be retried: " \
                       "the tree at #{root} is gone")
+            # The ledger stores the normalized GitHub URL; the queue's spec may be `owner/name`.
+            # Blocking on the raw spelling would let the same repository back into `work`.
+            blocked << Repository.name(entry.repo)
             next
           end
 
@@ -444,7 +502,9 @@ module AgentsFyi
           )
           @deliveries.record(repo: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, delivery: state)
+          blocked << Repository.name(entry.repo) unless delivered?(result, entry.repo)
         end
+        blocked.uniq
       end
 
       # The operator's list wins when there is one — a deployment that named its repositories
@@ -535,8 +595,12 @@ module AgentsFyi
       # line because it is also what a lost volume would look like from the other side.
       def run_one(repository, ref, project: nil)
         project ||= project_for(repository)
+        # **The checkpoint when the project has one, the destination otherwise.** A feed written
+        # before checkpoints existed carries neither field, so an old row keeps walking to `to` —
+        # and a service that is mid-upgrade publishes a checkpoint the client already understands
+        # because it asked for the fields in the same release that reads them.
         destination = if project && !project.to.to_s.empty?
-          project.to
+          project.checkpoint
         else
           target
         end

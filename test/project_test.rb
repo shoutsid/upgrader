@@ -393,6 +393,62 @@ class ProjectTest < Minitest::Test
     assert_includes error.message, "no project"
   end
 
+  # **A feed written before checkpoints existed is still walkable.** The service and the client are
+  # deployed apart, so the older side must keep working: neither field is required, and a project
+  # with no checkpoint walks to its destination exactly as it always did.
+  def test_a_declaration_with_no_path_fields_walks_to_its_destination
+    project = PROJECT.parse(minimal.to_json)
+
+    assert_nil project.path_policy
+    assert_nil project.next_checkpoint
+    refute project.checkpoints?
+    assert_equal "6.0.0", project.checkpoint
+    refute project.patch_checkpoint?
+  end
+
+  # **A checkpoint is the next stop, and the destination is still the destination.** The service's
+  # final-destination rule reads `to`; the walker reads `checkpoint`. Keeping one field for both
+  # would make the last rung of a path look like the first.
+  def test_a_checkpoint_is_the_next_stop_and_the_destination_stays_the_destination
+    project = PROJECT.parse(minimal.merge(
+      "to" => "8.1.0", "path_policy" => "latest_patch", "next_checkpoint" => "7.1.6"
+    ).to_json)
+
+    assert project.checkpoints?
+    assert_equal "7.1.6", project.checkpoint
+    assert_equal "8.1.0", project.to
+    refute project.patch_checkpoint?, "7.1.6 is a minor move from 5.2.0"
+  end
+
+  # A patch checkpoint is the one whose two releases share a minor, and that is what makes the run
+  # maintenance rather than a rung. It is decided from the versions, not from a declared kind.
+  def test_a_patch_checkpoint_is_read_from_the_two_releases
+    project = PROJECT.parse(minimal.merge(
+      "from" => "7.1.4", "to" => "8.1.0", "next_checkpoint" => "7.1.6"
+    ).to_json)
+
+    assert project.patch_checkpoint?
+  end
+
+  def test_a_path_policy_the_client_does_not_know_is_refused_rather_than_ignored
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("path_policy" => "patches").to_json)
+    end
+
+    assert_includes error.message, "path_policy"
+    assert_includes error.message, "known: minor, latest_patch, every_patch"
+  end
+
+  def test_the_path_fields_round_trip_through_the_declaration_s_own_hash
+    project = PROJECT.parse(minimal.merge(
+      "path_policy" => "every_patch", "next_checkpoint" => "6.0.1"
+    ).to_json)
+
+    again = PROJECT.parse(project.to_h.to_json)
+    assert_equal "every_patch", again.path_policy
+    assert_equal "6.0.1", again.next_checkpoint
+  end
+
   private
 
   def decision
