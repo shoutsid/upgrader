@@ -523,6 +523,7 @@ module AgentsFyi
           # service's scan, and the 4.1 body's “30 from the service's scan” read as source
           # edits when every one of them was a dependency line.
           parts << "#{counts['preflight']} from the preflight" if counts["preflight"].positive?
+          parts << "#{counts['app_update']} from app:update reconciliation" if counts["app_update"].positive?
           parts << "#{counts['rule']} from this tool's own rules" if counts["rule"].positive?
           parts << "#{counts['companion']} from gems' own upgrades" if counts["companion"].positive?
           parts << "#{counts['']} from the service's scan and routing" if counts[""].positive?
@@ -612,15 +613,31 @@ module AgentsFyi
           end
           lines << "- …and #{skipped.length - 15} more in the run record" if skipped.length > 15
         end
+        reconciled = Array(update["reconciled"])
+        unless reconciled.empty?
+          lines << ""
+          lines << "### Reconciled with the application's own"
+          lines << ""
+          reconciled.first(15).each do |entry|
+            lines << "- `#{entry["path"]}` — #{entry["note"]}"
+          end
+          lines << "- …and #{reconciled.length - 15} more in the run record" if reconciled.length > 15
+        end
         # **A generated default is not a migration.** The two files this rung adds most often —
         # `cookies_serializer.rb` (`:json` in a new app) and `secrets.yml` — are written by the
-        # release for a new application. An application that already has Marshal cookies and a
-        # `secret_token.rb` has to keep the same key across the deploy and decide the serializer
-        # transition; the file above is the release's default, not that decision.
+        # release for a new application. The reconciliation above is this application's answer;
+        # what remains is the deployment keeping one key across the merge.
         lines << ""
-        lines << "These are the release's generated defaults, not a migration. An application " \
-                 "with a `secret_token.rb` and live cookies must keep the same `secret_key_base` " \
-                 "across the deploy and review the cookie serializer transition before merging."
+        if reconciled.empty?
+          lines << "These are the release's generated defaults, not a migration. An application " \
+                   "with a `secret_token.rb` and live cookies must keep the same `secret_key_base` " \
+                   "across the deploy and review the cookie serializer transition before merging."
+        else
+          lines << "The generated defaults above were reconciled with the application's own " \
+                   "settings; the deployment must still keep the same `secret_key_base` across " \
+                   "the merge, and the next rung completes the cookie serializer transition where " \
+                   "this one set up `:hybrid`."
+        end
         lines.join("\n")
       end
 

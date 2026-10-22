@@ -1654,6 +1654,87 @@ class StepTest < Minitest::Test
     assert File.file?(added)
   end
 
+  # **The 4.1 cookie default is for a new application, not this one.** The generated
+  # `:json` would fail to read every Marshal cookie a 4.0 app already issued; `:hybrid`
+  # reads both and writes JSON. The next rung completes the transition.
+  def test_app_update_sets_the_4_1_cookie_transition_to_hybrid
+    dir = track(Dir.mktmpdir)
+    path = File.join(dir, "config", "initializers", "cookies_serializer.rb")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "Rails.application.config.action_dispatch.cookies_serializer = :json\n")
+
+    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+      root: dir, adopted: ["config/initializers/cookies_serializer.rb"], rung: "4.1.0"
+    )
+
+    assert_empty refused
+    assert_equal 1, applied.length
+    assert_equal "cookies_serializer", applied.first.subject
+    assert_equal "app_update", applied.first.origin
+    assert_includes File.read(path), "= :hybrid"
+    assert_equal ["config/initializers/cookies_serializer.rb"], reconciled.map { |entry| entry["path"] }
+  end
+
+  # **The transition is one release long.** A 4.1 branch left `:hybrid` in place; the
+  # 4.2 rung writes `:json` once the old cookies have aged out.
+  def test_the_next_rung_completes_the_cookie_transition
+    dir = track(Dir.mktmpdir)
+    path = File.join(dir, "config", "initializers", "cookies_serializer.rb")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "Rails.application.config.action_dispatch.cookies_serializer = :hybrid\n")
+
+    applied, _refused, _reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+      root: dir, adopted: [], rung: "4.2.0"
+    )
+
+    assert_equal 1, applied.length
+    assert_includes File.read(path), "= :json"
+  end
+
+  # **One key source, the one the deployment already uses.** app:update adds
+  # `secrets.yml` reading `SECRET_KEY_BASE`; the 4.0 initializer names
+  # `RAILS_SECRET_TOKEN`. The generated file is pointed at the old name and the
+  # initializer is removed, so the deploy does not have to change a variable.
+  def test_app_update_moves_the_old_secret_key_to_secrets_yml
+    dir = track(Dir.mktmpdir)
+    secrets = File.join(dir, "config", "secrets.yml")
+    legacy = File.join(dir, "config", "initializers", "secret_token.rb")
+    FileUtils.mkdir_p(File.dirname(legacy))
+    File.write(secrets, "production:\n  secret_key_base: <%= ENV[\"SECRET_KEY_BASE\"] %>\n")
+    File.write(legacy, "Bidding::Application.config.secret_key_base = ENV[\"RAILS_SECRET_TOKEN\"]\n")
+
+    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+      root: dir, adopted: ["config/secrets.yml"], rung: "4.1.0"
+    )
+
+    assert_empty refused
+    assert_equal 2, applied.length
+    assert_includes File.read(secrets), "ENV[\"RAILS_SECRET_TOKEN\"]"
+    refute File.exist?(legacy), "the obsolete initializer survived the reconciliation"
+    assert_equal 2, reconciled.length
+  end
+
+  # **A literal key is a person's decision.** The tool can move an `ENV[...]`; it must
+  # not copy a literal secret into a tracked file or guess which source to keep.
+  def test_a_literal_secret_key_is_refused_rather_than_moved
+    dir = track(Dir.mktmpdir)
+    secrets = File.join(dir, "config", "secrets.yml")
+    legacy = File.join(dir, "config", "initializers", "secret_token.rb")
+    FileUtils.mkdir_p(File.dirname(legacy))
+    File.write(secrets, "production:\n  secret_key_base: <%= ENV[\"SECRET_KEY_BASE\"] %>\n")
+    File.write(legacy, "Bidding::Application.config.secret_key_base = \"a literal key\"\n")
+
+    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+      root: dir, adopted: ["config/secrets.yml"], rung: "4.1.0"
+    )
+
+    assert_empty applied
+    assert_equal 1, refused.length
+    assert_equal "secret_key_base", refused.first.subject
+    assert File.file?(legacy), "a literal initializer was deleted"
+    assert_empty reconciled
+  end
+
   # The corpus is written to by the *loop*, not by a person running one step: a hand-run
   # step that filed a report would make a shared corpus the side effect of asking a
   # question, and the operator never asked for it.

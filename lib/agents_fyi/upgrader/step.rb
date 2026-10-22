@@ -2778,6 +2778,21 @@ module AgentsFyi
         @conflicts = (@conflicts + self.class.update_conflicts(stage&.output_tail)).uniq
         apply_app_update_policy(@adopted)
         drop_engine_migrations(@adopted) if @project.nil? || @project.app_update.skip_unused_engines
+        reconcile_app_update
+      end
+
+      # **A generated default is not a migration.** `app:update` writes what a *new*
+      # application should have; this application existed before the rung and has its own
+      # secret and its own cookies. The two files where that difference is load-bearing are
+      # reconciled here, before the `run app:update` checkpoint, so the commit and the PR
+      # carry the application's answer rather than the release's default.
+      def reconcile_app_update
+        applied, refused, reconciled = self.class.reconcile_app_update(
+          root: @worktree.root, adopted: @adopted, rung: rung_to
+        )
+        @applied.concat(applied)
+        @refused.concat(refused)
+        @app_update_reconciled = Array(@app_update_reconciled) + reconciled
       end
 
       # **What the project says it does not want `app:update` to write.** A skip is a project fact
@@ -2884,6 +2899,142 @@ module AgentsFyi
       def self.update_conflicts(output)
         text = output.to_s.gsub(/\e\[[0-9;]*m/, "")
         text.scan(/^\s*conflict\s+(\S+)/).flatten.uniq
+      end
+
+      # **The two generated files whose new-application default is wrong for an old one.**
+      #
+      # `app:update` writes what a *new* application should have. A 4.0 application that
+      # arrives at 4.1 is not new: its sessions are Marshal-serialized cookies, and its
+      # `secret_key_base` is an `ENV[...]` in `config/initializers/secret_token.rb`. The
+      # release's defaults would invalidate every cookie (`:json`) and leave two key
+      # sources (`SECRET_KEY_BASE` in `secrets.yml`, `RAILS_SECRET_TOKEN` in the
+      # initializer).
+      #
+      # The rules are deliberately evidence-scoped:
+      # * the cookie file is only rewritten when **app:update adopted it** and it carries
+      #   the generated `:json`; an application that already owned the file chose its value;
+      # * the 4.1 transition is `:hybrid` — read Marshal, write JSON — and the next rung
+      #   completes it to `:json`, because a 4.1 deployment has had one release for the old
+      #   cookies to age out;
+      # * the secret is only moved when the old initializer names an `ENV[...]`; a literal
+      #   or a shape this cannot parse becomes a refusal, not a guess.
+      #
+      # Returns the same three lists the rest of the step records: applied edits, refusals
+      # a person must answer, and the app:update section's reconciliation notes.
+      def self.reconcile_app_update(root:, adopted:, rung:)
+        applied = []
+        refused = []
+        reconciled = []
+        version = begin
+          Gem::Version.new(rung.to_s)
+        rescue ArgumentError
+          nil
+        end
+
+        cookies = File.join(root, "config", "initializers", "cookies_serializer.rb")
+        cookies_rel = "config/initializers/cookies_serializer.rb"
+        if File.file?(cookies)
+          text = File.binread(cookies)
+          lines = text.lines
+          index = lines.index { |line| line.match?(/cookies_serializer\s*=\s*:(json|hybrid)\b/) }
+          current = index && lines[index][/cookies_serializer\s*=\s*:(json|hybrid)\b/, 1]
+          if current
+            target = if adopted.include?(cookies_rel) && current == "json" &&
+                version && version >= Gem::Version.new("4.1") && version < Gem::Version.new("4.2")
+              "hybrid"
+            elsif version && version >= Gem::Version.new("4.2") && current == "hybrid"
+              "json"
+            end
+            if target
+              before = lines[index]
+              after = before.sub(/:(?:json|hybrid)\b/, ":#{target}")
+              lines[index] = after
+              File.binwrite(cookies, lines.join)
+              applied << Applier::Applied.new(path: cookies_rel, line: index + 1,
+                text: before.chomp, after: after.chomp, subject: "cookies_serializer",
+                origin: "app_update",
+                note: target == "hybrid" ?
+                  "Rails 4.1 generates `:json` for a new application. This application's 4.0 " \
+                  "cookies are Marshal-serialized, so `:hybrid` reads both while writing JSON; " \
+                  "the next rung completes the move to `:json` once those cookies have aged out." :
+                  "The 4.1 transition wrote JSON cookies; this rung completes it with `:json`.")
+              reconciled << {
+                "path" => cookies_rel,
+                "note" => target == "hybrid" ?
+                  "set to `:hybrid` for the 4.1 transition; the next rung completes it" :
+                  "completed the 4.1 transition to `:json`"
+              }
+            end
+          end
+        end
+
+        secrets = File.join(root, "config", "secrets.yml")
+        secrets_rel = "config/secrets.yml"
+        legacy = File.join(root, "config", "initializers", "secret_token.rb")
+        legacy_rel = "config/initializers/secret_token.rb"
+        if adopted.include?(secrets_rel) && File.file?(secrets) && File.file?(legacy)
+          legacy_lines = File.binread(legacy).lines
+          index = legacy_lines.index { |line| line.match?(/secret_key_base\s*=\s*ENV\[["'][A-Za-z0-9_]+["']\]/) }
+          line = index && legacy_lines[index]
+          name = line && line[/secret_key_base\s*=\s*ENV\[["']([A-Za-z0-9_]+)["']\]/, 1]
+          if name.nil?
+            refused << Applier::Refused.new(path: legacy_rel, line: index ? index + 1 : nil,
+              text: line&.chomp, found: line&.chomp,
+              reason: "the 4.0 initializer does not name an ENV variable for `secret_key_base`, " \
+                      "so this tool cannot move the same key into `config/secrets.yml`",
+              subject: "secret_key_base", kind: "config", replacement: nil,
+              source: "Rails 4.1", note: "A literal key stays where it is; a person must decide " \
+                      "which source the deployment should use.")
+          else
+            secrets_lines = File.binread(secrets).lines
+            secret_index = secrets_lines.index { |text| text.match?(/ENV\[["']SECRET_KEY_BASE["']\]/) }
+            if secret_index.nil?
+              refused << Applier::Refused.new(path: secrets_rel, line: nil, text: nil, found: nil,
+                reason: "the generated `config/secrets.yml` does not name `SECRET_KEY_BASE`, so " \
+                        "this tool cannot point it at the key the application already uses",
+                subject: "secret_key_base", kind: "config", replacement: nil,
+                source: "Rails 4.1", note: "The old initializer remains; a person must reconcile " \
+                        "the two key sources.")
+            else
+              before = secrets_lines[secret_index]
+              after = before.gsub(/ENV\[(["'])SECRET_KEY_BASE\1\]/) do
+                quote = Regexp.last_match(1)
+                "ENV[#{quote}#{name}#{quote}]"
+              end
+              if after == before
+                refused << Applier::Refused.new(path: secrets_rel, line: secret_index + 1,
+                  text: before.chomp, found: before.chomp,
+                  reason: "`config/secrets.yml` names `SECRET_KEY_BASE`, the same name the " \
+                          "application's initializer does not use",
+                  subject: "secret_key_base", kind: "config", replacement: nil,
+                  source: "Rails 4.1", note: "The old initializer remains; there is nothing to move.")
+              else
+                secrets_lines[secret_index] = after
+                File.binwrite(secrets, secrets_lines.join)
+                applied << Applier::Applied.new(path: secrets_rel, line: secret_index + 1,
+                  text: before.chomp, after: after.chomp, subject: "secret_key_base",
+                  origin: "app_update",
+                  note: "the production key is the same `ENV[#{name}]` the 4.0 initializer used, " \
+                        "so the deployment keeps one key across the rung")
+                File.delete(legacy)
+                applied << Applier::Applied.new(path: legacy_rel, line: index + 1,
+                  text: line.chomp, after: nil, subject: "secret_key_base",
+                  origin: "app_update",
+                  note: "removed; its key now lives in `config/secrets.yml`")
+                reconciled << {
+                  "path" => secrets_rel,
+                  "note" => "production reads `ENV[#{name}]`, the same key the 4.0 initializer used"
+                }
+                reconciled << {
+                  "path" => legacy_rel,
+                  "note" => "removed; the key now lives in `config/secrets.yml`"
+                }
+              end
+            end
+          end
+        end
+
+        [applied, refused, reconciled]
       end
 
       def self.adopt_added_only(root, before)
@@ -3034,6 +3185,7 @@ module AgentsFyi
           "adopted" => Array(@adopted),
           "conflicts" => Array(@conflicts),
           "skipped" => Array(@app_update_skipped),
+          "reconciled" => Array(@app_update_reconciled),
           "framework_defaults" => policy&.framework_defaults || "off",
           "load_defaults" => load_defaults,
           "rung" => step["to_version"]
