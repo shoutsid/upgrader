@@ -140,7 +140,8 @@ module AgentsFyi
           next if term.to_s.strip.empty?
 
           kind = subject.is_a?(Hash) ? subject["change_kind"] : nil
-          sections << ask { search_section(term, kind: kind) }
+          component = subject.is_a?(Hash) ? subject["component"] : nil
+          sections << ask { search_section(term, kind: kind, component: component) }
         end
 
         sections.compact!
@@ -246,15 +247,38 @@ module AgentsFyi
 
       # The search half. `match` is kept per item and `total` is the corpus's, not the page's, so a
       # section that showed three of forty says so.
-      def search_section(term, kind: nil)
+      # **A hit in another library is not a hit on this change.** The word `MultiJson`
+      # matches three reports about the `multi_json` gem's 1.20.1 release, but the Rails
+      # 4.1 change is `activesupport` removing its MultiJSON dependency; the app does not
+      # use the gem. The search is still the corpus's, but the section keeps a report only
+      # when its library is the change's component or Rails itself. An empty filtered
+      # section says so rather than showing an unrelated fix under “same failure”.
+      def search_section(term, kind: nil, component: nil)
         payload = @corpus.search(query: term.to_s, limit: SEARCH_LIMIT)
-        items = Array(payload["items"]).map { |row| item_from_search(row) }
+        rows = Array(payload["items"])
+        rows = rows.select { |row| relevant_library?(row, component) } unless component.to_s.empty?
+        items = rows.map { |row| item_from_search(row) }
         state = items.empty? ? "nothing recorded" : "answers"
         note = kind.to_s.empty? ? nil : "a #{kind} change"
+        empty_note = if component.to_s.empty?
+          "no report matched this subject"
+        else
+          "no report from #{component} or rails matched this subject"
+        end
         Section.new(key: "search:#{term}", title: term.to_s,
           question: "reports matching #{term.to_s.inspect}#{note.nil? ? "" : " (a #{kind} change)"}",
-          state: state, note: items.empty? ? "no report matched this subject" : nil,
-          items: items, total: payload["total"].to_i)
+          state: state, note: items.empty? ? empty_note : nil,
+          items: items,
+          total: component.to_s.empty? ? payload["total"].to_i : items.length)
+      end
+
+      # An empty library is not evidence of a mismatch: a caller that did not record the
+      # library (an older corpus, a rule) keeps the report rather than hiding it.
+      def relevant_library?(row, component)
+        library = row["library"].to_s
+        return true if library.empty?
+
+        [component.to_s, "rails"].reject(&:empty?).include?(library)
       end
 
       # **The declaration's own decisions, including the ones other projects made about the same

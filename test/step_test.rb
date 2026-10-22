@@ -1875,6 +1875,41 @@ class StepTest < Minitest::Test
     assert_equal 0, stage.exit_code
   end
 
+  # **The asset compile has to happen twice, and the second one is the one that matters.**
+  # The first stage runs on the application's old bundle; the 4.1 rung's `jquery-rails 3.1.5`
+  # stopped shipping jQuery UI and only a post-pin compile sees it. The stage is after the
+  # pin and before the suite, because that is the bundle the suite and the deployment get.
+  def test_assets_are_precompiled_again_after_the_pin_and_before_the_suite
+    dir = track(app)
+    FileUtils.mkdir_p(File.join(dir, "app", "assets"))
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
+    assets = record.stages.each_index.select { |i| record.stages[i].stage == AgentsFyi::Upgrader::Record::ASSETS }
+    pin = record.stages.index { |s| s.stage == AgentsFyi::Upgrader::Record::PIN }
+    suite = record.stages.index { |s| s.stage == AgentsFyi::Upgrader::Record::SUITE }
+
+    assert_equal 2, assets.length, "the assets were not compiled after the pin"
+    assert_operator assets.last, :>, pin, "the second compile is not after the pin"
+    assert_operator assets.last, :<, suite, "the second compile is not before the suite"
+  end
+
+  # **A conflict the generator's prompt answered `n` to is still a conflict.** The 4.1
+  # rung's `rails:update` listed eight files it wanted to overwrite; the walker answered
+  # `n` for every one, so they were never dirty and `adopt_added_only` recorded none of
+  # them — and the PR body said “0 conflict(s)” while the task's output listed eight.
+  def test_the_generator_s_prompt_conflicts_are_read_off_its_own_output
+    output = <<~TEXT
+      \e[1m\e[34m       exist\e[0m  config
+      \e[1m\e[31m    conflict\e[0m  config/routes.rb
+      Overwrite /tmp/tree/config/routes.rb? (enter "h" for help) [Ynaqdh]         skip  config/routes.rb
+      \e[1m\e[31m    conflict\e[0m  config/application.rb
+      Overwrite /tmp/tree/config/application.rb? (enter "h" for help) [Ynaqdh]         skip  config/application.rb
+    TEXT
+
+    assert_equal %w[config/routes.rb config/application.rb],
+      AgentsFyi::Upgrader::Step.update_conflicts(output)
+  end
+
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])

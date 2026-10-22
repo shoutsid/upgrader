@@ -196,6 +196,31 @@ class BriefTest < Minitest::Test
     assert_includes result.to_markdown, "and 7 more in the corpus"
   end
 
+  # **The word `MultiJson` is not a claim about the multi_json gem.** The Rails 4.1 change is
+  # `activesupport` removing its MultiJSON dependency; the corpus also holds three reports about
+  # `multi_json 1.20.1`. The 4.1 body showed those three as “same failure” for a library this
+  # application does not use. The search stays the corpus's; the section keeps a report only when
+  # its library is the change's component or Rails itself.
+  def test_a_search_section_keeps_only_reports_from_the_change_s_component
+    corpus = FakeCorpus.new(searches: { "MultiJson" => {
+      "items" => [
+        { "id" => "r1", "title" => "multi_json 1.20.1 removed a name",
+          "library" => "multi_json", "match_type" => "signature" },
+        { "id" => "r2", "title" => "rails removed MultiJSON",
+          "library" => "rails", "match_type" => "signature" }
+      ], "total" => 2
+    } })
+
+    result = brief_for(corpus).call(from: "4.0.0", to: "4.1.0",
+      subjects: [{ "subject" => "MultiJson", "change_kind" => "removed",
+                   "component" => "activesupport" }])
+    section = result.sections.find { |s| s.key == "search:MultiJson" }
+
+    assert_equal ["r2"], section.items.map(&:id)
+    assert_equal 1, section.total, "the total still counts the unrelated library"
+    refute_includes result.to_markdown, "multi_json 1.20.1"
+  end
+
   # **Four meanings collapse into one reassuring sentence if you let them.** The route's own
   # `next_step` says which, so the empty section quotes it rather than paraphrasing.
   def test_an_empty_window_says_which_meaning_it_is

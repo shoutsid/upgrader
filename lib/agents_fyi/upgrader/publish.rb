@@ -336,8 +336,14 @@ module AgentsFyi
       end
 
       def moved_section
+        # The record's `from_version` is the ladder's rung (`4.0.0`); the project's own
+        # `from` is the release the repository actually pinned (`4.0.0.rc1`). The body is
+        # read as a statement about this repository, so it names the lockfile's release
+        # and leaves the rung's normalized number to the ladder.
+        from = @record&.project.is_a?(Hash) ? @record.project["from"].to_s : ""
+        from = @from_version if from.empty?
         lines = ["## What moved", ""]
-        lines << "`agents-fyi` walked one rung of the Rails ladder: **#{@from_version} → #{@to_version}**."
+        lines << "`agents-fyi` walked one rung of the Rails ladder: **#{from} → #{@to_version}**."
         if @record
           lines << ""
           lines << "The step's own verdict: `#{@record.verdict}` — #{@record.why}"
@@ -484,7 +490,13 @@ module AgentsFyi
           lines << "- this record does not carry a concern-commit series"
         end
 
-        pin = @record.stages.find { |stage| stage.stage == Record::PIN }
+        # **The pin that succeeded, not the first attempt.** A widening spends a round per
+        # conflict: the 4.1 rung's first two pin stages exited 6 and the sixth succeeded,
+        # and `find` quoted the failure as *the* pin. A reviewer read a failed command
+        # under a `passed` verdict. The last successful stage is the fact; the failed
+        # attempts remain in the full run record.
+        pins = @record.stages.select { |stage| stage.stage == Record::PIN }
+        pin = pins.reverse.find(&:ok?) || pins.last
         if pin
           lines << "- Rails pin: `#{public_stage_command(pin)}` — " \
                    "#{pin.ok? ? "exit 0" : "exit #{pin.exit_code}"}"
@@ -506,9 +518,14 @@ module AgentsFyi
           decided = counts.select { |origin, _| origin.start_with?("decision:") }.values.sum
           parts = []
           parts << "#{decided} from an accepted decision" if decided.positive?
+          # The preflight's repairs are the application's own old Gemfile: a dead protocol,
+          # a fork that no longer exists, a line a gem's release moved. They are not the
+          # service's scan, and the 4.1 body's “30 from the service's scan” read as source
+          # edits when every one of them was a dependency line.
+          parts << "#{counts['preflight']} from the preflight" if counts["preflight"].positive?
           parts << "#{counts['rule']} from this tool's own rules" if counts["rule"].positive?
           parts << "#{counts['companion']} from gems' own upgrades" if counts["companion"].positive?
-          parts << "#{counts['']} from the service's scan" if counts[""].positive?
+          parts << "#{counts['']} from the service's scan and routing" if counts[""].positive?
           lines << ""
           # **This sentence is kept word for word**: it is what a reader uses to tell a mechanical
           # rung from one an accepted decision shaped, and the tests hold it.
@@ -595,6 +612,15 @@ module AgentsFyi
           end
           lines << "- …and #{skipped.length - 15} more in the run record" if skipped.length > 15
         end
+        # **A generated default is not a migration.** The two files this rung adds most often —
+        # `cookies_serializer.rb` (`:json` in a new app) and `secrets.yml` — are written by the
+        # release for a new application. An application that already has Marshal cookies and a
+        # `secret_token.rb` has to keep the same key across the deploy and decide the serializer
+        # transition; the file above is the release's default, not that decision.
+        lines << ""
+        lines << "These are the release's generated defaults, not a migration. An application " \
+                 "with a `secret_token.rb` and live cookies must keep the same `secret_key_base` " \
+                 "across the deploy and review the cookie serializer transition before merging."
         lines.join("\n")
       end
 
@@ -700,8 +726,11 @@ module AgentsFyi
         end
         parts << "#{external} external check(s) that this walk did not run" if external.positive?
         if parts.empty?
-          "low — the suite and every declared required check passed, and no manual change was " \
-            "found in this application"
+          "low for the compatibility change measured here — the suite passed, no additional " \
+            "required check is declared, and no manual change was found in this application. " \
+            "This is the rung's compatibility verdict, not a production-readiness or security " \
+            "review: the target is the ladder's release, and a deployment still has to decide " \
+            "what it will run."
         else
           "medium — #{parts.join("; ")}. The diff is the mechanical half; read the sections above " \
             "before merging"
@@ -732,10 +761,10 @@ module AgentsFyi
             "the repository's default branch"
           end
         if @record&.commits.to_a.length > 1
-          "this request targets #{base}; merge it after that branch, and keep the concern commits " \
-            "in the order listed above"
+          "this request targets #{base}; it is the branch this rung builds on. Keep the concern " \
+            "commits in the order listed above"
         else
-          "this request targets #{base}; merge that branch first"
+          "this request targets #{base}; it is the branch this rung builds on"
         end
       end
 
@@ -893,6 +922,16 @@ module AgentsFyi
           # application's secret. A pull request is public, so the body reads the display, and an
           # old record without one still gets its `-e KEY=VALUE` pairs redacted.
           found << "#{stage.stage}: `#{public_stage_command(stage)}` — " +
+            (stage.ran ? "exit #{stage.exit_code} in #{stage.seconds.round(1)}s" : "did not run")
+        end
+        # **The compile after the pin is the one that proves the delivered bundle.** The
+        # first `assets` stage runs before the pin; listing it alone would repeat the 4.1
+        # rung's false positive. The last stage is the post-pin compile, and it is evidence
+        # a reviewer needs because the suite does not render assets.
+        assets = @record.stages.select { |stage| stage.stage == Record::ASSETS }
+        unless assets.empty?
+          stage = assets.last
+          found << "assets (last compile): `#{public_stage_command(stage)}` — " +
             (stage.ran ? "exit #{stage.exit_code} in #{stage.seconds.round(1)}s" : "did not run")
         end
         found.empty? ? ["no stage evidence was recorded"] : found

@@ -66,6 +66,30 @@ class CheckpointTest < Minitest::Test
     refute Checkpoint.dirty?(@dir), "the step's files were not all committed"
   end
 
+  # **The 4.1 rung's defect, held as a test.** `assets:precompile` runs before the first
+  # checkpoint, and `git add --all` cannot tell its `public/assets` from the application's
+  # source. The 29,758 generated lines in PR #55 were this exact shape: a pre-pin jQuery and
+  # jQuery UI bundle, its gzip siblings, and a manifest whose CSS named images the commit did
+  # not carry. A build output is not a step's change; it must stay on disk for the suite and
+  # out of the commit, and the tree must still read clean.
+  def test_generated_build_outputs_are_not_committed_and_do_not_make_the_tree_dirty
+    FileUtils.mkdir_p(File.join(@dir, "public", "assets"))
+    asset = File.join(@dir, "public", "assets", "application-generated.js")
+    File.write(asset, "// compiled before the pin\n")
+
+    refute Checkpoint.dirty?(@dir), "a build output made the tree look dirty"
+
+    File.write(File.join(@dir, "Gemfile"), %(gem "rails", "5.0.0"\n))
+    commit = Checkpoint.commit(@dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+
+    files = git("show", "--name-only", "--format=", commit).lines.map(&:strip)
+    assert_includes files, "Gemfile"
+    refute_includes files, "public/assets/application-generated.js",
+      "a generated asset entered the step's commit"
+    assert File.file?(asset), "the generated asset was removed before the suite could use it"
+    refute Checkpoint.dirty?(@dir), "the ignored build output still makes the tree dirty"
+  end
+
   # A step can pass without changing the tree — a scan with no edits, a pin already at the
   # target — and git refusing an empty commit is not a failure here: the current HEAD *is*
   # the base for the next step.

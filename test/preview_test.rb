@@ -65,6 +65,23 @@ class PreviewTest < Minitest::Test
     assert_includes body, "Full run record"
   end
 
+  # **The pin line is the attempt that succeeded.** The 4.1 rung's first two pin stages exited
+  # 6 and the sixth exited 0, but the body used `find` and quoted the first failure as *the*
+  # pin. A reviewer read a failed command under a `passed` verdict.
+  def test_the_pin_line_quotes_the_attempt_that_succeeded
+    data = record
+    data.stages << Command.new(stage: "pin", command: "bundle update rails",
+      ran: true, exit_code: 6, seconds: 1.0, output_tail: "conflict")
+    data.stages << Command.new(stage: "pin",
+      command: "bundle update rails actionpack activesupport --conservative",
+      ran: true, exit_code: 0, seconds: 2.0, output_tail: "Bundle updated!")
+
+    body = Preview.render(data, base_ref: "master")
+
+    assert_includes body, "Rails pin: `bundle update rails actionpack activesupport --conservative` — exit 0"
+    refute_includes body, "Rails pin: `bundle update rails` — exit 6"
+  end
+
   def test_the_preview_reads_the_json_the_step_writes
     body = Preview.from_json(record.to_json, base_ref: "main")
 

@@ -249,7 +249,16 @@ module AgentsFyi
         # framework. Its repairs are edits this step made; everything it will not rewrite
         # travels as a decision.
         preflight = preflight_stage(stages, step)
-        @applied.concat(preflight.repairs)
+        # **A preflight repair has an origin of its own.** It was concatenated as a
+        # `Preflight::Repair`, which has no `origin`, so the body counted every one of
+        # them as “from the service's scan” — 30 dependency-line edits under a sentence
+        # that read as source changes. The `Applier::Applied` shape is what the rest of
+        # the record already speaks, and `preflight` is the fact a reviewer needs.
+        @applied.concat(preflight.repairs.map { |repair|
+          Applier::Applied.new(path: repair.path, line: repair.line, text: repair.text,
+            after: repair.after, subject: repair.subject, origin: "preflight",
+            note: repair.note)
+        })
         @decisions.concat(preflight.decisions)
 
         # **What this project has already decided, applied before anything is measured.** A decision's
@@ -333,6 +342,15 @@ module AgentsFyi
         update(stages)
         migrate_after_update(stages)
         checkpoint("run app:update")
+        # **The first asset stage proves the baseline's environment, not the move's.** It
+        # runs before the pin, on the application's old bundle. Measured on the 4.1 rung:
+        # the old `jquery-rails 2.2.1` shipped jQuery UI, the pin resolved `3.1.5` (which
+        # removed it), the application's `application.js` still required `jquery-ui`, and
+        # the post-pin `assets:precompile` raised `Sprockets::FileNotFound` — while the
+        # run passed, because nothing compiled assets after the pin. This stage is that
+        # compile, and it is deliberately after `app:update` as well, so it sees the
+        # assets initializer the release generated.
+        verify_assets_stage(stages)
         style_stage(stages)
         checkpoint("format the application")
         boot(stages)
@@ -386,6 +404,12 @@ module AgentsFyi
       def prepare(stages)
         @worktree = @source.worktree(@repository, ref: @ref, home: @work || @home, run: run_id,
           reuse: @reuse)
+        # **Generated paths are ignored before anything can add them.** The first
+        # `assets:precompile` runs before the baseline, and the first checkpoint comes
+        # after it; without this line the checkpoint's `git add --all` carries the build
+        # output into the branch. `Checkpoint.dirty?` and `commit` call the same method so
+        # a path this step generated cannot make the tree look dirty either.
+        Checkpoint.ignore_build_outputs(@worktree.root)
         if @reuse
           # **A clean tree is not proof that the last step finished.** Concern commits move HEAD,
           # so a process killed after one leaves a clean tree sitting on a half-move. The marker
@@ -1238,7 +1262,8 @@ module AgentsFyi
         result = brief.call(from: step["from_version"], to: step["to_version"],
           gems: route.fetch("gems", []),
           subjects: (step["changes"] || []).map { |change|
-            { "subject" => change["subject"], "change_kind" => change["kind"] }
+            { "subject" => change["subject"], "change_kind" => change["kind"],
+              "component" => change["component"] }
           },
           # **The walk's own earlier answers are recall too.** A decision the project carries is
           # what this application already chose; the brief says so before the rung applies it, so a
@@ -1524,6 +1549,19 @@ module AgentsFyi
         @out.puts("  assets: #{argv.join(" ")}") if @out
         stages << command(Record::ASSETS, argv, chdir: root, env: application_env)
         stages.last
+      end
+
+      # The same compile, after the pin and `app:update`, because that is the bundle the
+      # suite and the deployment actually get. It is a separate stage in the record rather
+      # than a re-run hidden inside the first one: "the assets compiled before the move"
+      # and "the assets compiled after it" are different facts, and the second is the one
+      # that would have caught the 4.1 rung's missing jQuery UI.
+      def verify_assets_stage(stages)
+        stage = assets_stage(stages)
+        return nil if stage.nil?
+
+        stage.output_tail = "after the pin: #{stage.output_tail}"
+        stage
       end
 
       def database_stage(stages)
@@ -2722,14 +2760,22 @@ module AgentsFyi
         # brought, so a task about config files failed on a test gem. Nothing about `app:update` is
         # test-specific; a person runs it in development, which is what this does.
         answers = overwrite_answers
+        stage = nil
         begin
-          stages << command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
+          stage = command(Record::RAILS_UPDATE, runner + [task], chdir: @worktree.root,
             env: @stack.development_env(application_env),
             stdin: answers)
+          stages << stage
         ensure
           answers.close
         end
         @adopted, @conflicts = self.class.adopt_added_only(@worktree.root, before)
+        # **A conflict the prompt answered `n` to is still a conflict.** `adopt_added_only`
+        # sees only the files the generator actually changed; the ones it asked about and
+        # the walker declined are left untouched, so they never reach that comparison. The
+        # 4.1 rung's body therefore said “0 conflict(s)” while the task's own output listed
+        # eight — and a reviewer had no way to know which files kept the 4.0 version.
+        @conflicts = (@conflicts + self.class.update_conflicts(stage&.output_tail)).uniq
         apply_app_update_policy(@adopted)
         drop_engine_migrations(@adopted) if @project.nil? || @project.app_update.skip_unused_engines
       end
@@ -2830,6 +2876,16 @@ module AgentsFyi
       # Class methods rather than instance ones: they are the policy, and a policy with
       # a git repository and nothing else is a policy a test can hold still without
       # installing a bundle or booting an application.
+      # **The prompt's conflicts are a fact, even when the answer is `n`.** The task prints
+      # `conflict  config/application.rb` and then asks to overwrite; the step answers `n`
+      # for every one, so the file is unchanged and `adopt_added_only` cannot see it. This
+      # parser is what puts those paths in the record. ANSI is stripped because the task
+      # colors the label and the raw line would otherwise not match.
+      def self.update_conflicts(output)
+        text = output.to_s.gsub(/\e\[[0-9;]*m/, "")
+        text.scan(/^\s*conflict\s+(\S+)/).flatten.uniq
+      end
+
       def self.adopt_added_only(root, before)
         adopted = []
         conflicts = []

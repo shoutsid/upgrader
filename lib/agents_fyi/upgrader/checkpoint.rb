@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "open3"
 
 module AgentsFyi
@@ -36,6 +37,54 @@ module AgentsFyi
     #   survived a "back at its base commit" reset and the next attempt's patch refused to
     #   apply over them.
     module Checkpoint
+      # **Build outputs belong to the run, not to the step.** `assets:precompile`,
+      # `yarn install` and the test suite's own caches write paths a fresh tree does not
+      # have, and a step's `git add --all` has no way to tell them from the application's
+      # source. Measured on the 4.1 rung: the pre-pin `assets:precompile` wrote
+      # `public/assets`, and the “apply mechanical rules” commit carried 29,758 generated
+      # lines — a generated jQuery/jQuery UI bundle, its `.gz` siblings, and a manifest
+      # whose CSS references files that were not in the commit. They are ignored through
+      # `.git/info/exclude` rather than the application's `.gitignore`: the rule belongs to
+      # this working copy, not to the application's history, and the file it writes must
+      # never appear in the diff it is protecting.
+      BUILD_OUTPUTS = %w[
+        public/assets
+        public/packs
+        public/packs-test
+        public/vite
+        public/vite-dev
+        app/assets/builds
+        node_modules
+        tmp
+        log
+        coverage
+        storage
+      ].freeze
+
+      # The local exclude is idempotent and deliberately never committed. A path already
+      # in the application's `.gitignore` is written again here; git does not mind, and a
+      # step that runs in a clone the application's ignore file does not cover is the case
+      # this exists for.
+      def self.ignore_build_outputs(root)
+        directory = File.join(root.to_s, ".git")
+        return unless File.directory?(directory)
+
+        info = File.join(directory, "info")
+        FileUtils.mkdir_p(info)
+        path = File.join(info, "exclude")
+        existing = File.file?(path) ? File.read(path) : ""
+        present = existing.lines.map(&:strip)
+        patterns = BUILD_OUTPUTS.map { |output| "/#{output}/" }
+        missing = patterns.reject { |pattern| present.include?(pattern) }
+        return if missing.empty?
+
+        File.open(path, "a") do |file|
+          file.puts unless existing.empty? || existing.end_with?("\n")
+          file.puts("# agents-fyi upgrader: generated build outputs, never part of a step")
+          missing.each { |pattern| file.puts(pattern) }
+        end
+      end
+
       # The message a checkpoint carries, and it names the move rather than this tool:
       # `git log` on the tree is how an operator reads what a kept repository has been
       # through, and "checkpoint" says nothing about that.
@@ -51,6 +100,7 @@ module AgentsFyi
       end
 
       def self.dirty?(root)
+        ignore_build_outputs(root)
         output, _status = git(root, "status", "--porcelain")
         !output.strip.empty?
       end
@@ -82,6 +132,7 @@ module AgentsFyi
       # nowhere, and the existing HEAD *is* the base for the next step, so it is returned
       # rather than raised about.
       def self.commit(root, from:, to:, out: $stdout, concern: nil)
+        ignore_build_outputs(root)
         git(root, "add", "--all")
         output, status = git(root, "-c", "user.email=upgrader@agents.fyi",
           "-c", "user.name=agents-fyi upgrader",
