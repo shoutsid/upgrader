@@ -294,6 +294,17 @@ module AgentsFyi
           ["bin/rails", "runner", "puts Rails.version"]
         end
 
+        # **The router is asked in the application's own interpreter.** Reading `config/routes.rb`
+        # would mean reimplementing the DSL (`resources`, `concern`, `namespace`, `scope`) and being
+        # wrong about the first application that uses a form the reader did not anticipate, so the
+        # engine runs a script and this pack says how a script is run. Same predicate as `boot`: an
+        # application with no binstub has no route table this tool can ask.
+        def routes_runner(root, script:)
+          return nil unless File.executable?(File.join(root, "bin", "rails"))
+
+          ["bin/rails", "runner", script]
+        end
+
         # The environment a development-only command runs under, over whatever the application's
         # own suite environment already carries.
         def development_env(env = {})

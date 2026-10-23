@@ -123,9 +123,14 @@ class PublishTest < Minitest::Test
   class FakeApi
     attr_reader :calls
 
-    def initialize(url: "https://github.com/acme/storefront/pull/7", default_branch: "main")
+    def initialize(url: "https://github.com/acme/storefront/pull/7", default_branch: "main",
+                   previous: nil, stacks: {})
       @url = url
       @default_branch = default_branch
+      # The request whose head is the lower layer's branch, and the stacks already in GitHub.
+      # A fetch by a number the test did not name is no stack, which is the first-rung case.
+      @previous = previous
+      @stacks = stacks
       @calls = []
     end
 
@@ -137,6 +142,27 @@ class PublishTest < Minitest::Test
     def pull_request(owner:, name:, head:, base:, title:, body:)
       @calls << [:pull_request, owner, name, head, base, title, body]
       @url
+    end
+
+    def pull_request_for(owner:, name:, head:)
+      @calls << [:pull_request_for, owner, name, head]
+      @previous
+    end
+
+    def stack_for(owner:, name:, pull_request:)
+      @calls << [:stack_for, owner, name, pull_request]
+      @stacks[pull_request.to_i]
+    end
+
+    def create_stack(owner:, name:, pull_requests:)
+      @calls << [:create_stack, owner, name, pull_requests]
+      { "number" => 1, "url" => "https://api.github.com/repos/#{owner}/#{name}/stacks/1" }
+    end
+
+    def add_to_stack(owner:, name:, stack_number:, pull_requests:)
+      @calls << [:add_to_stack, owner, name, stack_number, pull_requests]
+      { "number" => stack_number,
+        "url" => "https://api.github.com/repos/#{owner}/#{name}/stacks/#{stack_number}" }
     end
   end
 
@@ -245,6 +271,109 @@ class PublishTest < Minitest::Test
     assert second.pushed, second.reason
     assert_equal "agents-fyi/upgrade-4.1.4", second.branch, "the patch's branch is not its exact release"
     assert_equal "agents-fyi/upgrade-4.1.3", second.base, "the patch was not chained on its predecessor"
+  end
+
+  # **The second request is the stack, not only the next branch.** GitHub's stacks API needs an
+  # explicit association: two chained requests are not one until it is asked. The client opens the
+  # request first — the branch and its base are the delivery — then creates the stack bottom-up
+  # from the lower request's number and this one's.
+  def test_the_second_rung_creates_a_github_stack_from_the_request_below_it
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    api = FakeApi.new(url: "#{repository}/pull/8", previous: { "number" => 7, "state" => "open" })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.1.0",
+      to_version: "4.2.0", record: passed_record(repository: repository, from: "4.1.0", to: "4.2.0"),
+      token: "ghp_secret", git: git, api: api).call
+
+    assert result.published?, result.reason
+    assert_equal "https://api.github.com/repos/acme/storefront/stacks/1", result.stack
+    create = api.calls.find { |call| call.first == :create_stack }
+    assert_equal [7, 8], create&.at(3), "the stack was not created bottom-up from the request below"
+  end
+
+  # **A first request is the bottom of the stack, whatever else has its base as a head.** The
+  # base filter is GitHub's, not this walker's, so an unrelated request from the default branch
+  # must not become the layer below this one.
+  def test_a_first_request_is_not_stacked_on_a_request_that_merely_shares_its_base
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.0"\n))
+    repository = "https://github.com/acme/storefront"
+    api = FakeApi.new(url: "#{repository}/pull/7", previous: { "number" => 3 })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.0.0.rc1",
+      to_version: "4.1.0", record: passed_record(repository: repository),
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    assert result.published?, result.reason
+    assert_empty result.stack.to_s
+    stack_calls = api.calls.select do |call|
+      %i[pull_request_for stack_for create_stack add_to_stack].include?(call.first)
+    end
+    assert_empty stack_calls, "a first request looked below itself for a stack"
+  end
+
+  # A third rung is already below a stack; it is appended to that stack rather than starting a
+  # second one, which is what keeps the map one chain rather than several pairs.
+  def test_a_later_rung_is_appended_to_the_stack_it_sits_on
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    api = FakeApi.new(url: "#{repository}/pull/9", previous: { "number" => 8 },
+      stacks: { 8 => { "number" => 42,
+        "url" => "https://api.github.com/repos/acme/storefront/stacks/42" } })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.2.0",
+      to_version: "4.3.0", record: passed_record(repository: repository, from: "4.2.0", to: "4.3.0"),
+      token: "ghp_secret", git: git, api: api).call
+
+    assert result.published?, result.reason
+    assert_equal "https://api.github.com/repos/acme/storefront/stacks/42", result.stack
+    add = api.calls.find { |call| call.first == :add_to_stack }
+    assert_equal [42, [9]], add && [add[3], add[4]], "the rung was not appended to its stack"
+  end
+
+  # A retry updates a request that is already in a stack; asking again would either duplicate the
+  # association or append the same layer twice.
+  def test_a_request_already_in_a_stack_is_left_where_it_is
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    api = FakeApi.new(url: "#{repository}/pull/8", previous: { "number" => 7 },
+      stacks: { 8 => { "number" => 42,
+        "url" => "https://api.github.com/repos/acme/storefront/stacks/42" } })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.1.0",
+      to_version: "4.2.0", record: passed_record(repository: repository, from: "4.1.0", to: "4.2.0"),
+      token: "ghp_secret", git: git, api: api).call
+
+    assert_equal "https://api.github.com/repos/acme/storefront/stacks/42", result.stack
+    assert_empty api.calls.select { |call| %i[create_stack add_to_stack].include?(call.first) },
+      "an existing stack was created or extended again"
+  end
+
+  # **The declaration may say no to the chain.** With `delivery.chain` false every request targets
+  # the declared starting ref, and no stack is looked for — a project reviewing one cumulative
+  # branch should not get a stack it never asked for.
+  def test_a_project_can_turn_the_chain_off
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    api = FakeApi.new(url: "#{repository}/pull/8")
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.1.0",
+      to_version: "4.2.0", record: passed_record(repository: repository, from: "4.1.0", to: "4.2.0"),
+      token: "ghp_secret", git: git, api: api, base_ref: "agents-fyi/baseline", chain: false).call
+
+    assert_equal "agents-fyi/baseline", result.base
+    assert_empty api.calls.select { |call| call.first == :pull_request_for },
+      "a non-chained request still looked for a lower layer"
+    assert_empty result.stack.to_s
   end
 
   def test_a_github_rung_is_pushed_with_a_token_and_opens_a_request

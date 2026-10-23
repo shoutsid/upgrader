@@ -45,10 +45,11 @@ class TestsTest < Minitest::Test
     Tests::Suite.new(kind: kind, command: command(script), reason: "a fixture, not a detected suite")
   end
 
-  def run_suite(kind:, script:, timeout: 60, env: {}, tail_bytes: 4000)
+  def run_suite(kind:, script:, timeout: 60, env: {}, tail_bytes: 4000,
+    analysis_bytes: Tests::SUITE_ANALYSIS_BYTES)
     with_app({}) do |dir|
       Tests.run(dir, suite(kind: kind, script: script), timeout: timeout, env: env,
-        tail_bytes: tail_bytes)
+        tail_bytes: tail_bytes, analysis_bytes: analysis_bytes)
     end
   end
 
@@ -166,24 +167,43 @@ class TestsTest < Minitest::Test
     assert_includes Tests.summary(result), "unverified"
   end
 
-  # **Both ends of a long output, and the middle counted.** A Ruby failure's first lines carry
-  # the exception's message and its last lines carry the frames nearest the failure — the first
-  # real walk's records showed frames and no error, because a tail-only bound had dropped the
-  # half that said what went wrong. This drives the *streaming* form (`Tests.drain`), which is
-  # the one a suite uses, and asserts the marker that says how much was not kept.
-  def test_a_long_output_keeps_its_head_and_its_tail_and_says_what_it_dropped
+  # **A suite's excerpt is the tail, where the failures are, and it says what it dropped.** A
+  # suite prints its load-time noise first and its summary last; the failure messages sit between
+  # them, and keeping the head as well was what let the 6.0 rung's record name six failing examples
+  # and none of their reasons. This drives the *streaming* form a suite uses and asserts the marker
+  # that says how much was not kept.
+  def test_a_suite_excerpt_keeps_the_tail_where_the_failures_are_and_says_what_it_dropped
     result = run_suite(
       kind: :rspec,
-      script: 'print("BEGIN-MARKER"); print("x" * 50_000); print("END-MARKER")',
+      script: 'print("DEPRECATION-NOISE"); print("x" * 50_000); print("FAILURE-AT-THE-END")',
       tail_bytes: 1000
     )
 
     assert result.passed
     assert_operator result.output_tail.bytesize, :<=, 1100
-    assert_includes result.output_tail, "BEGIN-MARKER", "the head of the output was dropped"
-    assert_includes result.output_tail, "END-MARKER"
+    refute_includes result.output_tail, "DEPRECATION-NOISE",
+      "the head is the load-time noise a failing suite's reader does not need"
+    assert_includes result.output_tail, "FAILURE-AT-THE-END"
     assert_match(/\[\.\.\.\d+ byte\(s\) dropped from the middle\.\.\.\]/, result.output_tail,
       "the record does not say how much it did not keep")
+  end
+
+  # **The repair reads a larger capture than the record keeps.** RSpec prints the failure list
+  # before the summary, and a list longer than the record's excerpt is cut at the front — measured
+  # on the biddingapp 6.0 rung, where the 20 KB tail began inside the third block and the parser
+  # saw none of the template failures. The analysis capture is the same stream under its own bound,
+  # with both ends kept, so a suite that opens with noise still has its first failure.
+  def test_the_analysis_capture_keeps_a_failure_list_the_record_tail_drops
+    result = run_suite(
+      kind: :rspec,
+      script: 'print("FAILURE-AT-THE-START\\n"); print("x" * 50_000); print("FAILURE-AT-THE-END")',
+      tail_bytes: 1000, analysis_bytes: 100_000
+    )
+
+    refute_includes result.output_tail, "FAILURE-AT-THE-START",
+      "the record's bound is the tail, and this failure is before it"
+    assert_includes result.output, "FAILURE-AT-THE-START"
+    assert_includes result.output, "FAILURE-AT-THE-END"
   end
 
   # And the excerpt keeps the head even when the *first* thing printed is enormous: the middle

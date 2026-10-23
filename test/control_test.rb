@@ -79,6 +79,29 @@ class ControlTest < Minitest::Test
     ENV.delete("UPGRADER_PROJECTS_DIR")
   end
 
+  # **A wake is a marker with a time, not a flag somebody has to clear.** The cycle in progress
+  # compares it with its own start, so a write that lands after that cycle read its feed still
+  # shortens the wait; a marker older than the cycle is already accounted for and must not keep
+  # the loop awake.
+  def test_a_wake_marker_only_wakes_a_cycle_that_started_before_it
+    path = File.join(@home, "projects", Control::WAKE_FILE)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "{}")
+    File.utime(Time.at(1000), Time.at(2000), path)
+
+    assert control.wake_since?(Time.at(1500))
+    assert control.wake_since?(Time.at(2000)), "a coarse mtime at the cycle's start was lost"
+    refute control.wake_since?(Time.at(2500))
+  end
+
+  def test_an_absent_wake_marker_is_no_wake
+    refute control.wake_since?(Time.now)
+  end
+
+  def test_the_wake_marker_lives_beside_the_switch
+    assert_equal File.join(@home, "projects", Control::WAKE_FILE), control.wake_path
+  end
+
   private
 
   def capture_check

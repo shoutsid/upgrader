@@ -33,8 +33,14 @@ module AgentsFyi
       # What happened. Five fields rather than a boolean, because a caller has to be
       # able to tell a suite that failed (a finding) from one that never started
       # (nothing established) and from one that had to be killed (also nothing).
+      # `output_tail` is what the record keeps, and `output` is what the *repair* reads. They are
+      # two bounds because they protect two things: the record is sent to the service and written
+      # into a pull request, while a repair has to see the whole failure list before it can decide
+      # anything. Measured on the biddingapp 6.0 rung: the suite printed about 60 KB of failures,
+      # the record's 20 KB excerpt began inside the list, and the parser saw three truncated blocks
+      # and none of the template failures — so the mechanism looked broken while the fixtures passed.
       Result = Struct.new(
-        :command, :ran, :passed, :exit_code, :seconds, :output_tail, :timed_out,
+        :command, :ran, :passed, :exit_code, :seconds, :output_tail, :output, :timed_out,
         keyword_init: true
       )
 
@@ -112,16 +118,29 @@ module AgentsFyi
       # the environment travels as `-e` flags rather than being inherited, because the
       # walker's own environment names paths on the host. `nil` is the native machine, kept
       # so a caller that has no machine does not have to say so twice.
-      # **A suite's excerpt is five times a command's, and the reason is what a failing
-      # example prints.** Four kilobytes is one failure message with its backtrace; a Rails
-      # suite with a dozen failures prints the messages in the middle of its output — where the
-      # head/tail bound does not reach — so the record showed a list of failing examples and
-      # none of their reasons. Twenty kilobytes is the first several failures and the summary
-      # at the end, which is what a reader (or an agent asked to repair the rung) needs.
+      # **A suite's excerpt is five times a command's, and it is the tail only.** Four kilobytes is
+      # one failure message with its backtrace; a Rails suite prints the messages between the
+      # load-time noise and the summary, so a two-ended bound keeps the noise and the list of
+      # failing examples and drops the reasons. Measured on the 6.0 rung: the record named six
+      # failing examples and not one exception, because the head was thirty lines of deprecation
+      # warnings and the tail was the summary. A *command* is the opposite — a Ruby exception's
+      # first lines are its class and message — which is why `Shell.run` keeps both ends and this
+      # does not. **Twenty kilobytes is the record's bound, not the failure list's**: a red suite's
+      # blocks are longer than that (measured: about 60 KB for six template failures), which is why
+      # the repair reads `output` and only the record reads this.
+      SUITE_EXCERPT_HEAD_SHARE = 0.0
       SUITE_EXCERPT_BYTES = 20_000
 
+      # **What the repair reads, and why it is not the record's bound.** RSpec prints its failure
+      # blocks before the summary, and a block that arrives without its header is not a failure the
+      # parser can repair. The full capture is bounded for the same reason the tail is — a suite may
+      # print hundreds of megabytes — but a megabyte is a hundred failures, and both ends are kept
+      # so a suite that starts with warnings still has its failure list in the middle.
+      SUITE_ANALYSIS_BYTES = 1_000_000
+      SUITE_ANALYSIS_HEAD_SHARE = 0.5
+
       def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: SUITE_EXCERPT_BYTES, machine: nil,
-        stack: Stacks::Rails)
+        stack: Stacks::Rails, analysis_bytes: SUITE_ANALYSIS_BYTES)
         # First, so the rescue below can always measure: a run that fails to start is
         # still a run that has a duration, and the record keeps it.
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -129,6 +148,7 @@ module AgentsFyi
         kind = suite.respond_to?(:kind) ? suite.kind : nil
         environment = stack.suite_env(kind).merge(env)
         argv, process_env = spawn_argv(command, root: root, env: environment, machine: machine)
+        analysis = Shell::Excerpt.new(bytes: analysis_bytes, head_share: SUITE_ANALYSIS_HEAD_SHARE)
 
         # **The child is `Shell`'s**, the same one a pipeline command goes through: one place decides how a
         # process group is killed and how much of an output is kept, and `Shell`'s docstring says why — two
@@ -136,15 +156,17 @@ module AgentsFyi
         # what is *suite*-specific: the command string, what the exit code means, and the excerpt's size.
         status, text, timed_out = Shell.spawn_with_deadline(
           argv, chdir: root, env: process_env, timeout: timeout,
-          excerpt: Shell::Excerpt.new(bytes: tail_bytes)
+          excerpt: Shell::Excerpt.new(bytes: tail_bytes, head_share: SUITE_EXCERPT_HEAD_SHARE),
+          analysis: analysis
         )
         if timed_out
           Result.new(
             command: command, ran: false, passed: false, exit_code: nil,
-            seconds: elapsed(started), output_tail: text, timed_out: true
+            seconds: elapsed(started), output_tail: text, output: analysis.to_s, timed_out: true
           )
         else
-          finished(command: command, status: status, text: text, seconds: elapsed(started))
+          finished(command: command, status: status, text: text, seconds: elapsed(started),
+            output: analysis.to_s)
         end
       rescue Errno::ENOENT => e
         # The command does not exist on this machine at all — no `bundle`, no
@@ -158,7 +180,8 @@ module AgentsFyi
         # needs, is not installed here", and neither says anything about the code.
         Result.new(
           command: command.to_s, ran: false, passed: false, exit_code: NOT_FOUND,
-          seconds: elapsed(started), output_tail: "#{e.class}: #{e.message}", timed_out: false
+          seconds: elapsed(started), output_tail: "#{e.class}: #{e.message}",
+          output: "#{e.class}: #{e.message}", timed_out: false
         )
       end
 
@@ -209,7 +232,7 @@ module AgentsFyi
       # this wants.
       # The text arrives already bounded — the excerpt's own `to_s` is the bound, and its two ends were kept
       # while the output streamed — so this only decides what the exit code *means*.
-      def self.finished(command:, status:, text:, seconds:)
+      def self.finished(command:, status:, text:, seconds:, output: nil)
         code = status.exitstatus
         # A signalled process has no exit status, and a suite that was killed
         # established nothing about the application — the same third answer a timeout
@@ -217,7 +240,7 @@ module AgentsFyi
         ran = !code.nil? && code != NOT_FOUND
         Result.new(
           command: command, ran: ran, passed: ran && code.zero?, exit_code: code,
-          seconds: seconds, output_tail: text, timed_out: false
+          seconds: seconds, output_tail: text, output: output || text, timed_out: false
         )
       end
 

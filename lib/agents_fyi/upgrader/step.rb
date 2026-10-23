@@ -264,6 +264,13 @@ module AgentsFyi
         # `plan_to`. Every stage downstream — the pin, the commits, the record and the branch — then
         # reads one release, and it is the one a person approved.
         step = checkpoint_step(step)
+        # **The plan names the rung it planned from; the tree names the release it is on.** A project
+        # at 4.1.16 is planned by the service as a move out of the 4.1 rung, so the plan's first
+        # `from_version` is `4.1.0` — but the branch below this checkpoint is
+        # `agents-fyi/upgrade-4.1.16`, and a record that carried the rung made `Publish` look for a
+        # base that the previous checkpoint never created and fall back to the default branch. The
+        # lockfile's release is the application fact, so it is the one the move records.
+        step = checkpoint_from(step)
 
         @out.puts("  step: #{step["name"]} (#{step["from_version"]} -> #{step["to_version"]}), " \
                   "requires Ruby #{step["requires_ruby"] || "unstated"}") if @out
@@ -385,6 +392,15 @@ module AgentsFyi
         checkpoint("format the application")
         boot(stages)
         @suite = suite(stages)
+
+        # **A red suite is repaired from the application's own facts before anyone is asked to
+        # look at it.** The failures a Rails move surfaces in templates are route call sites the
+        # application already had wrong: a helper its router does not declare, or a declared helper
+        # given a nil segment. `TemplateRepairs` derives both from the failure and the route table,
+        # `Applier` writes one checked line at a time, and the suite is run again — the execution
+        # gate is what makes the repair a fact rather than a claim. A step still red afterwards
+        # goes to the agentic repair (if the deployment has one) exactly as it did before.
+        mechanical_repairs(stages)
 
         # **The new defaults, stepped, and only after the move's own suite passed.** A red run here
         # is then about the toggle and never about the move, which is what makes "revert this one"
@@ -543,7 +559,14 @@ module AgentsFyi
         @rewound = true
         @out.puts("  working copy: put back to #{start[0, 8]} — the project starts at #{declared}, " \
                   "and this tree had been walked to #{pinned.version}") if @out
-        Lockfile.read(@worktree.root).rails
+        # **The parse has to follow the reset, or the pin plans from a tree that is not there.**
+        # `prepare` read this lock before the rewind, and a lock is what says which gems move
+        # with the framework: measured on the first real reconnect, the tree sat at 4.1.0 and the
+        # project at 4.0.0.rc1, `pin_gems` asked the 4.1.0 parse for the gems pinned at rc1, got
+        # none, and the resolve kept `activemodel` at rc1 in its snapshot while Rails moved to
+        # 4.0.13 — so the patch rung failed with `could not find compatible versions`.
+        @lockfile = Lockfile.read(@worktree.root)
+        @lockfile.rails
       rescue Lockfile::Missing, Lockfile::Unreadable => e
         @out.puts("  working copy: put back, but its Gemfile.lock could not be read: #{e.message}") if @out
         pinned
@@ -851,6 +874,16 @@ module AgentsFyi
           "name" => "#{step["name"]} (patch #{@to})")
       end
 
+      # The move's *from* is the release the lockfile pins, not the ladder rung the plan happens
+      # to be filed under. The two differ whenever the application has taken a patch release: the
+      # plan for 4.1.16 -> 4.2.11.3 is the 4.1 chapter, whose from is 4.1.0. Keeping the rung here
+      # is what made every patch walk's pull request fall back to the default branch.
+      def checkpoint_from(step)
+        return step if @from.to_s.empty? || step["from_version"].to_s == @from
+
+        step.merge("from_version" => @from)
+      end
+
       # **The maintenance pipeline, and the stages it deliberately leaves out.** There is no plan,
       # no scan, no accepted-decision edit, no `app:update`, no framework-default stepping and no
       # formatter: a patch release changes no documented API, so anything that rewrites the
@@ -907,6 +940,7 @@ module AgentsFyi
 
         boot(stages)
         @suite = suite(stages)
+        mechanical_repairs(stages)
         @checks = Array(@prepare_checks) + checks_stage(stages)
         checkpoint(nil)
 
@@ -1264,8 +1298,32 @@ module AgentsFyi
       # that does not rebuild the snapshot from scratch (the unconstrained resolve that moved
       # rake).
       def moved_gems
-        subjects = @applied.map { |edit| edit.subject.to_s }.uniq
+        subjects = @applied.select { |edit| version_move?(edit) }.map { |edit| edit.subject.to_s }.uniq
         subjects & @lockfile.specs.keys & declared_gems
+      end
+
+      # **A repair that only changes how a gem is required is not a gem that moves.** The
+      # preflight also writes `require: false` for a deploy-only gem and rewrites a `github:`
+      # source to `git:`; naming those in `bundle update` asks the resolver to move them, which
+      # is how the first real application's patch rung tried to take capistrano 3 beside
+      # `rvm-capistrano ~> 2.15` and figaro 1.3 (Ruby >= 2.5) beside a Ruby 2.1 tree. The
+      # pin's named set is the gems whose *version requirement* this step changed; a source or
+      # require-option repair keeps the lock's own version.
+      def version_move?(edit)
+        # A `Preflight::Repair` carries no origin because every one of them *is* the preflight's —
+        # and the deferred ones are rewrites of a line whose requirement moves at the rung, so they
+        # are named like any other requirement change.
+        return true unless edit.respond_to?(:origin) && edit.origin.to_s == "preflight"
+        return false if edit.after.to_s.strip.empty?
+
+        version_requirement(edit.text) != version_requirement(edit.after)
+      end
+
+      # The first quoted requirement on a `gem` line, or nil when the line states none. Read
+      # rather than parsed for the same reason `declaration_requirement` is: the line shape is
+      # the application's, and the only question is whether a version moved.
+      def version_requirement(line)
+        line.to_s[/\A\s*gem\s+["'][^"']+["']\s*,\s*["']([^"']+)["']/, 1]
       end
 
       # **A name the Gemfile no longer declares is not a name the pin may use.** The pin names every gem
@@ -1968,12 +2026,88 @@ module AgentsFyi
         announce(stage, @suite_plan.command)
         result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
           env: application_env, machine: @machine)
+        # **The repair reads this, the record reads `output_tail`.** The two bounds are different
+        # because the two readers are: a failure list longer than the record's excerpt is still a
+        # list a repair can answer, and reading the record's tail instead lost every block before
+        # the cut (see `Tests::SUITE_ANALYSIS_BYTES`).
+        @suite_output = result.output
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
           exit_code: result.exit_code, seconds: result.seconds,
           output_tail: result.output_tail)
         @progress.finish(stage: stage, status: status_for(result),
           exit_code: result.exit_code, duration_ms: milliseconds(result))
         stages.last
+      end
+
+      # **The suite's mechanical failures, repaired from the application's own route table.**
+      #
+      # A red suite is evidence about the move when the failure is attributable to it; a template
+      # whose route helper the application never declared, or whose declared helper was handed a nil
+      # segment, is a call site the rung has made fail. Both are answered from facts and not from a
+      # choice: `Routes` asks the application's router which helper serves a controller and action
+      # and in what order its parts go, and the controller says which variable each part arrives in.
+      # `TemplateRepairs` builds the line, `Applier` checks it against the file before writing, and
+      # the suite is run again — a repair nothing executed is a claim, and the record says which
+      # attempts it made (`Record::REPAIR`).
+      #
+      # **It repeats, because a template raises at its first bad line.** The biddingapp 6.0 rung
+      # needed three rounds for four edits: fixing `edit_bid_path` in `bids/show` exposed `bids_path`
+      # on the next line, and the same page's second line was only reachable after the first was
+      # repaired. One round would have left the rung red with a repair it had already derived. The
+      # bound is a measurement plus room, not a guess about how many failures an application has:
+      # a suite run per round is the cost, and an application with more call sites than this is the
+      # agentic path's work rather than a hundred silent suite runs.
+      #
+      # **A repair that made the suite green is filed as a report, like any other repair.** It is
+      # the walk's most trustworthy kind — no model made it, and its evidence is the failure the
+      # suite printed and the suite that passed after it — so it travels in `@repairs` and reaches
+      # the corpus through `Filing.file_repairs`, with the derived edits as the fix. Without that,
+      # every walk re-derived this family from scratch: the mechanism was generic and the knowledge
+      # was not.
+      MAX_MECHANICAL_ROUNDS = 5
+
+      def mechanical_repairs(stages)
+        return if @suite.nil? || !@suite.ran || @suite.exit_code.to_i.zero?
+        return if @worktree.nil? || !@machine.respond_to?(:command)
+
+        before = @suite
+        applied = []
+        rounds = 0
+        while rounds < MAX_MECHANICAL_ROUNDS && !@suite.exit_code.to_i.zero?
+          failures = SuiteFailures.parse(
+            @suite_output.to_s.empty? ? @suite.output_tail : @suite_output
+          )
+          break if failures.empty?
+
+          routes = Routes.read(machine: @machine, root: @worktree.root, env: application_env,
+            stack: @stack)
+          break if routes.empty?
+
+          edits = TemplateRepairs.for(root: @worktree.root, failures: failures, routes: routes)
+          break if edits.empty?
+
+          @control&.check!
+          result = Applier.new(@worktree.root).apply(edits)
+          @applied.concat(result.applied)
+          @refused.concat(result.refused)
+          stages << Record::Command.new(stage: Record::REPAIR,
+            command: "mechanical repairs: #{result.applied.length} template route edit(s)",
+            ran: true, exit_code: result.applied.empty? ? 1 : 0, seconds: 0.0,
+            output_tail: result.applied.map { |edit| "#{edit.path}:#{edit.line} — #{edit.note}" }
+              .concat(result.refused.map { |refusal| "refused: #{refusal.reason}" }).join("\n"))
+          @out.puts("  repair: #{result.applied.length} template route edit(s)") if @out
+          break if result.applied.empty?
+
+          applied.concat(result.applied)
+          rounds += 1
+          checkpoint("repair the suite's template routes")
+          @suite = run_suite(stages, Record::SUITE)
+        end
+        return unless rounds.positive? && @suite.ran && @suite.exit_code.to_i.zero?
+
+        outcome = Repair.mechanical_outcome(applied: applied, failure: before.output_tail,
+          suite: @suite_plan&.command)
+        @repairs << outcome unless outcome.nil?
       end
 
       # **The application's formatter, run as part of the step and before the suite.** A style
@@ -2074,7 +2208,7 @@ module AgentsFyi
         return if decisions.nil? || decisions.empty?
 
         result = Effects.new(root: @worktree.root, rung: step["to_version"],
-          source_roots: @project&.source_roots || []).apply(decisions)
+          source_roots: source_roots).apply(decisions)
         @applied.concat(result.applied)
         @refused.concat(result.refused)
         # **A rule that fires is recorded, and a rule that only waits is not.** `skip` fires only
@@ -2524,7 +2658,7 @@ module AgentsFyi
       # thousands would be a rule reading a tree rather than a file.
       def rule_sources
         sources, @truncated_sources = Rewrites.source_files(root: @worktree.root,
-          source_roots: @project&.source_roots || [])
+          source_roots: source_roots)
         sources
       end
 
@@ -2678,12 +2812,32 @@ module AgentsFyi
       # files (`config.ru`, `Rakefile`) a Rails application may need. A modular monolith that keeps
       # its models under `components/*/app/models` declares `components` and the scan sees them.
       def scan_paths(root)
-        roots = @project&.source_roots || []
+        roots = source_roots
         return Dir.glob("**/*", base: root) if roots.empty?
 
         root_files = Dir.glob("*", base: root).select { |path| File.file?(File.join(root, path)) }
         rooted = roots.flat_map { |dir| Dir.glob(File.join(dir, "**", "*"), base: root) }
         (root_files + rooted).uniq
+      end
+
+      # **The directories this step reads, and the suite is one of them.** `source_roots` is the
+      # project's declaration, and a declaration written before detection named the suite (a project
+      # connected at 4.0 has `app lib config`) is not a statement that the tests may not be read — it
+      # is a declaration made before the walker had a rule that reads them. The 5.0 rung is where that
+      # stopped being a detail: `assigns` and `assert_template` left Action Pack for
+      # `rails-controller-testing`, every call site is in `spec/`, and with the suite unscanned the
+      # bridge that declares the gem never fired and eleven controller specs failed. New connections
+      # detect `spec`/`test` themselves (`ProjectDetection::SOURCE_ROOT_CANDIDATES`); this is the same
+      # fact for the projects already connected, read from the tree rather than from the row.
+      #
+      # An empty declaration stays empty: repository-wide is what a project with no roots means, and
+      # the caller turns `[]` into the whole tree.
+      def source_roots
+        declared = Array(@project&.source_roots).map(&:to_s).reject(&:empty?)
+        return [] if declared.empty?
+
+        suites = %w[spec test].select { |dir| File.directory?(File.join(@worktree.root, dir)) }
+        (declared + suites).uniq
       end
 
       # The one edit this tool makes outside the applier, and it is one line. Only the
@@ -3001,7 +3155,12 @@ module AgentsFyi
         # them, and the pin was asked once and failed on a `rack` four other gems could have unlocked.
         # A dependency line that is the bare name is matched too, because bundler writes a
         # requirement-less dependency as just the gem.
-        named = quoted + bare
+        # **`ruby` is not a gem this lock pins, and a gem that requires a newer Ruby is not
+        # unlocked by naming it.** The last real run named `figaro` because it was the requirer
+        # on a `ruby (>= 2.5.0)` conflict, which updated figaro to 1.3 and made the Ruby 2.1
+        # resolve impossible. Filtering the conflicted names through the lock before the
+        # requirer scan drops `ruby` (and `bundler`) while keeping every gem the pin can move.
+        named = (quoted + bare) & @lockfile.specs.keys
         requirers = text.to_s.lines.each_cons(2).filter_map do |line, following|
           requirer = line[/^\s*([A-Za-z0-9_.-]+)(?:\s*\([^)]*\))?\s+was resolved to/, 1]
           next unless requirer

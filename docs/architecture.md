@@ -59,6 +59,7 @@ prepare a working copy
   -> format the application, if declared
   -> boot the application
   -> run the suite again                           (the post-move suite)
+  -> repair its route failures from the app's own router
   -> step new framework defaults, if budgeted
   -> repair a red post-move suite, if budgeted
   -> run the rest of the application's declared checks
@@ -78,6 +79,13 @@ The order is the argument:
 - **`app:update` adopts only what it adds.** A file the application already owns keeps the
   application's version and the conflict is recorded. Overwriting it is a decision, not a
   safeguard.
+- **A red suite is read as a failure before anyone is asked about it.** The suite's route
+  failures are parsed and answered from the application's own router: a template naming a helper
+  the routes do not declare is rewritten to the declared one with the controller's variables, and
+  a declared helper handed a nil required part gets its output tag guarded. Both are derived, line
+  checked by the applier and followed by the suite again; a repair that turned it green becomes a
+  repair outcome and is filed to the corpus, which is what makes the mechanism's knowledge outlive
+  the application it ran against. Only a suite still red afterwards reaches the agent.
 - **The new defaults are stepped only after the move's own suite passed.** A red run then
   belongs to the toggle and not to the move, which makes "revert this one" the right answer
   rather than a guess. Every toggle is a suite run, so `UPGRADER_DEFAULT_STEPS` is a budget.
@@ -221,9 +229,19 @@ Three behaviours make a long-running loop survivable:
   process that is up and stuck is the failure a healthcheck exists to catch.
 - **A signal stops the loop between steps**, not in the middle of one. The ledger is saved and
   the container exits; whatever was in flight is retried at the next start.
+- **The idle wait is a fallback, not the only way work starts.** Queuing a project writes a
+  marker into the projects volume the service and the walker already share, and the loop checks
+  it every half second; the configured interval still covers a deployment where that volume is
+  not mounted.
 - **A failed delivery is debt, not a failed rung.** A passed rung whose branch or pull request
   never arrived is already paid for; the next cycle retries the delivery before asking for work,
   because re-walking it would spend the rung again.
+- **The chain is the base branch, and the stack is the association beside it.** Each request
+  targets the previous checkpoint's branch, which is what makes its diff reviewable on its own;
+  the second request is also created as a GitHub stack and each later one is appended to it, which
+  is what draws the stack map and lets the layers land together. The stack is asked for only when
+  the base is a branch this walker built, and a refusal from the stacks API is logged rather than
+  failing a delivery whose branch and request are already there.
 
 A rung that does not pass is retried on a backoff (30 seconds, doubling while the same rung keeps
 failing, capped at the cycle interval). The usual reason a rung does not pass is a change

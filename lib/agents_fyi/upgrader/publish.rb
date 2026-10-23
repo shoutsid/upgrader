@@ -34,15 +34,19 @@ module AgentsFyi
     #   A token in a record is a token in a corpus, and this record is published beside the
     #   run.
     #
-    # **Native GitHub stacked-pull-request support is not a dependency, and the branch base is the
-    # stack.** The REST API this client speaks has no stack object to join; what it has is a pull
-    # request with a base branch, and a checkpoint's request based on the previous checkpoint's
-    # branch *is* the reviewable stack — GitHub renders each rung's diff against the one before it.
-    # A native-stack adapter could later associate the chain, but it would be an association beside
-    # this relationship and not a replacement for it. The delivery record carries the `base` the
-    # request actually used, which is how a reader can tell a chained request from one that fell
-    # back to the repository's default branch — the visible shape of a chain that broke, including
-    # when an earlier request in the stack was closed before this rung was published.
+    # **The branch base is the relationship, and GitHub's stack is the association beside it.** A
+    # checkpoint's request targets the previous checkpoint's branch, which is what makes each
+    # rung's diff reviewable on its own; since October 2026 GitHub also lets the same chain be a
+    # first-class *stack*, with a stack map and a merge that lands the layers together. The client
+    # asks for the association mechanically after opening the request — create the stack from the
+    # previous request and this one, or append this one to the stack the previous request is in —
+    # and a refusal from that half is a line in the log, not a failed delivery: the branch and the
+    # chain of bases are what the walk needs, and the stack is what a reviewer sees.
+    #
+    # The delivery record carries the `base` the request actually used, which is how a reader can
+    # tell a chained request from one that fell back to the repository's default branch — the
+    # visible shape of a chain that broke, including when an earlier request in the stack was closed
+    # before this rung was published — and the `stack` it joined when GitHub accepted one.
     class Publish
       # Where a one-shot step's token comes from. `serve` passes the service's short-lived
       # credential instead; the CLI reads this name for `step --publish`.
@@ -58,18 +62,19 @@ module AgentsFyi
       # What publishing did, in one value. `pushed` and `pull_request` are separate because
       # they fail separately: a branch can reach the remote and the API refuse to open a
       # request for it.
-      Result = Struct.new(:pushed, :branch, :base, :commit, :pull_request, :reason,
+      Result = Struct.new(:pushed, :branch, :base, :commit, :pull_request, :stack, :reason,
         keyword_init: true) do
         def published? = pushed && !pull_request.to_s.empty?
 
         def to_h
           { "pushed" => pushed, "branch" => branch, "base" => base, "commit" => commit,
-            "pull_request" => pull_request, "reason" => reason }
+            "pull_request" => pull_request, "stack" => stack, "reason" => reason }
         end
 
         def to_s
           if published?
-            "published: #{branch} -> #{pull_request}"
+            "published: #{branch} -> #{pull_request}" \
+              "#{stack.to_s.empty? ? "" : " (stack #{stack})"}"
           elsif pushed
             "published: #{branch} pushed, and no pull request was opened: #{reason}"
           else
@@ -91,7 +96,7 @@ module AgentsFyi
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
                      out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
-                     report_base: nil, base_ref: nil)
+                     report_base: nil, base_ref: nil, chain: true)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -126,6 +131,11 @@ module AgentsFyi
         # no previous rung's branch to chain to, and falling back to `master` put the baseline's own
         # view fixes into the 4.1 diff. Later rungs still use the previous rung's branch.
         @base_ref = base_ref.to_s
+        # **A declaration may turn the chain off.** With `delivery.chain` false every request
+        # targets the declared starting ref (or the repository's default), which is the shape a
+        # project wants when it reviews one cumulative branch; with it on — the default — each
+        # checkpoint stacks on the one below it.
+        @chain = chain != false
       end
 
       def call
@@ -168,8 +178,9 @@ module AgentsFyi
           owner: owner, name: name, head: branch, base: @base,
           title: title, body: body
         )
+        @pull_request_url = request
         Result.new(pushed: true, branch: branch, base: @base, commit: commit,
-          pull_request: request, reason: "")
+          pull_request: request, stack: link_stack, reason: "")
       rescue GitHub::Refused => e
         # **The push can succeed while the request fails, and the retry needs both facts.** The
         # first version returned `pushed: false` with no commit here, so the next cycle re-derived
@@ -215,12 +226,62 @@ module AgentsFyi
       # request needs a base and refusing to open one over a naming guess is worse than
       # saying which guess was made — the branch and the request are both in the record.
       def base_branch
+        return configured_base unless @chain
+
         previous = self.class.branch_for(@from_version, pattern: @branch_pattern)
         return previous if remote_has?(previous)
         return @base_ref if !@base_ref.empty? && remote_has?(@base_ref)
 
+        configured_base
+      end
+
+      # The branch a stack starts on: the declared starting ref when the remote has it, and the
+      # repository's own default otherwise.
+      def configured_base
+        return @base_ref if !@base_ref.empty? && remote_has?(@base_ref)
+
         remote_default_branch || api_default_branch || "main"
       end
+
+      # **The chain gets GitHub's own stack object when the repository supports it.** The base
+      # branch is still the relationship — the stack API only associates requests that already
+      # point at each other — but the association is what draws the stack map and lets a reviewer
+      # land the layers in one merge. Created on the second request and extended on every one
+      # after it, because a stack needs two layers to exist. A refusal from this half is a line
+      # in the log rather than a failed delivery: the branch and its base are the product.
+      def link_stack
+        return "" unless @chain
+        # **Only a layer this walker built can sit on another.** `@base` is the previous
+        # checkpoint's branch only when the remote had it; a first request, a declared starting
+        # ref or a default branch is the bottom of the stack even if an unrelated request happens
+        # to have that branch as its head.
+        return "" unless @base == self.class.branch_for(@from_version, pattern: @branch_pattern)
+
+        number = pull_request_number
+        return "" if number.zero?
+
+        current = api.stack_for(owner: owner, name: name, pull_request: number)
+        return current["url"].to_s if current
+
+        previous = api.pull_request_for(owner: owner, name: name, head: @base)
+        return "" if previous.nil? || previous["number"].to_i == number
+
+        stack = api.stack_for(owner: owner, name: name, pull_request: previous["number"].to_i)
+        linked = if stack
+          api.add_to_stack(owner: owner, name: name, stack_number: stack["number"],
+            pull_requests: [number])
+        else
+          api.create_stack(owner: owner, name: name,
+            pull_requests: [previous["number"].to_i, number])
+        end
+        linked.is_a?(Hash) ? linked["url"].to_s : ""
+      rescue GitHub::Refused => e
+        @out&.puts("publish: the pull request opened, but GitHub would not stack it: " \
+                   "#{redact(e.message)}")
+        ""
+      end
+
+      def pull_request_number = @pull_request_url.to_s[%r{/pull/(\d+)}, 1].to_i
 
       def remote_default_branch
         out, status = git("ls-remote", "--symref", push_url, "HEAD")
@@ -1000,6 +1061,37 @@ module AgentsFyi
           opened = call(:post, "/repos/#{owner}/#{name}/pulls",
             { "title" => title, "body" => body, "head" => head, "base" => base })
           opened["html_url"].to_s
+        end
+
+        # The request whose head is the lower layer's branch. Open first, because a stack is a
+        # chain of requests still under review; a closed one is still a fact about the branch and
+        # is the last resort rather than the first answer.
+        def pull_request_for(owner:, name:, head:)
+          rows = Array(call(:get, "/repos/#{owner}/#{name}/pulls", nil,
+            { "head" => "#{owner}:#{head}", "state" => "all", "per_page" => 100 }))
+          found = rows.grep(Hash)
+          open = found.select { |row| row["state"] == OPEN }
+          (open.empty? ? found : open).max_by { |row| row["number"].to_i }
+        end
+
+        # The stack a pull request belongs to, or nil. The endpoint is a list because a stack is
+        # read either by its own number or by one of its pull requests; the filter returns the one
+        # containing this request.
+        def stack_for(owner:, name:, pull_request:)
+          rows = Array(call(:get, "/repos/#{owner}/#{name}/stacks", nil,
+            { "pull_request" => pull_request }))
+          rows.find { |row| row.is_a?(Hash) }
+        end
+
+        # Bottom to top. Each request's base must be the previous request's head, which is exactly
+        # how this client opened them.
+        def create_stack(owner:, name:, pull_requests:)
+          call(:post, "/repos/#{owner}/#{name}/stacks", { "pull_requests" => pull_requests })
+        end
+
+        def add_to_stack(owner:, name:, stack_number:, pull_requests:)
+          call(:post, "/repos/#{owner}/#{name}/stacks/#{stack_number}/add",
+            { "pull_requests" => pull_requests })
         end
 
         private

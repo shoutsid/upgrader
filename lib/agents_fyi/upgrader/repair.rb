@@ -84,6 +84,40 @@ module AgentsFyi
         end
       end
 
+      # **A mechanical repair is a repair, and the record says so.** The suite-repair path derives
+      # its edits from the application's own route table and writes them through the same applier,
+      # so there is no model's attempt to describe; what it has is the evidence that makes a repair
+      # worth anything — the failure the suite printed before it and the suite that was green after
+      # it. It travels in the same `Outcome` and becomes a corpus report by the same door
+      # (`Filing.file_repairs`). Without this the walk's *most* trustworthy repairs, the ones no
+      # model made, were the only ones the corpus never saw.
+      def self.mechanical_outcome(applied:, failure:, suite:, before_the_move: false)
+        edits = Array(applied)
+        return nil if edits.empty?
+
+        Outcome.new(failure: failure, suite: suite, attempts: 1,
+          files: edits.map(&:path).uniq, diff: diff_for(edits),
+          before_the_move: before_the_move)
+      end
+
+      # The edits as a diff a reader can check. **Recomputed from the applied edits rather than read
+      # out of git**, because the caller checkpoints the repair before the suite is run again — a
+      # `git diff` after that is empty, and the repair's own change is the one thing a reviewer has
+      # to see. It is a rendering, not a patch a tool applies: each edit is one line replaced by
+      # what was written.
+      def self.diff_for(edits)
+        Array(edits).group_by(&:path).map do |path, group|
+          ["--- a/#{path}", "+++ b/#{path}", *group.map { |edit| hunk_for(edit) }].join("\n")
+        end.join("\n")
+      end
+
+      def self.hunk_for(edit)
+        line = edit.line.to_i
+        removed = edit.text.to_s.split("\n", -1).map { |text| "-#{text}" }
+        added = edit.after.to_s.split("\n", -1).map { |text| "+#{text}" }
+        ["@@ -#{line} +#{line} @@", *removed, *added].join("\n")
+      end
+
       Result = Struct.new(:attempts, :repaired, keyword_init: true) do
         def to_s
           return "no attempt was made" if attempts.empty?

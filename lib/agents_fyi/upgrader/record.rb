@@ -273,7 +273,7 @@ module AgentsFyi
           return [PASSED, "the suite was green before this step and green after it" \
                           "#{baseline_repair_note(stages)}"] if repairs.zero?
 
-          return [PASSED, "the suite was green before this step and green after #{repairs} agent " \
+          return [PASSED, "the suite was green before this step and green after #{repairs} " \
                           "repair attempt(s); the attempt(s) are in the record" \
                           "#{baseline_repair_note(stages)}"]
         end
@@ -297,7 +297,7 @@ module AgentsFyi
         repairs = before.count { |stage| stage.stage == REPAIR && stage.ran }
         return "" if repairs.zero?
 
-        " (the baseline was red when the step arrived: #{repairs} agent repair attempt(s) made " \
+        " (the baseline was red when the step arrived: #{repairs} repair attempt(s) made " \
           "it green before anything was moved)"
       end
 
@@ -306,7 +306,7 @@ module AgentsFyi
         attempts = stages.count { |stage| stage.stage == REPAIR && stage.ran }
         return "" if attempts.zero?
 
-        " — and #{attempts} agent repair attempt(s) did not fix it"
+        " — and #{attempts} repair attempt(s) did not fix it"
       end
 
       # The database stage's failure, as a clause for a suite-shaped verdict, or "" when
