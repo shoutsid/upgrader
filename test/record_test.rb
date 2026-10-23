@@ -204,26 +204,33 @@ class RecordTest < Minitest::Test
 
     assert_empty body["refused"]
     assert_equal "find_by_email", body["decisions"].first["subject"]
-    assert_includes record.to_s, "1 need(s) a decision"
+    assert_includes record.to_s, "1 change(s) this rung carries (1 located, 0 carried, 0 not used here)"
   end
 
-  # **A decision with a line to look at and one with nothing to look at are different work.** The
-  # first is a call site this application has; the second is a change this rung carried that the
-  # application does not use. Counting them together is how "16 need a decision" reads as sixteen
-  # edits when it is three.
-  def test_the_summary_counts_located_and_carried_decisions_apart
-    decision = lambda do |path, line, subject|
+  # **A decision with a line to look at, one with nothing to look at, and one a survey has read are
+  # three different things.** The first is a call site this application has; the second is a change
+  # this rung carried that the application does not use; the third is the same fact with a survey's
+  # finding behind it — no call site at all, and nothing a person or a rule could edit. Counting all
+  # three as "need a decision" is how "16 need a decision" reads as sixteen edits when it is three.
+  def test_the_summary_counts_located_carried_and_checked_decisions_apart
+    decision = lambda do |path, line, subject, checked|
       AgentsFyi::Upgrader::Record::Decision.new(path: path, line: line, subject: subject,
-        reason: "the reason")
+        reason: "the reason", checked: checked)
     end
     record = AgentsFyi::Upgrader::Record.new(
       repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
       verdict: "unverified", why: "no suite",
-      decisions: [decision.call("app/models/user.rb", 12, "find_by_email"),
-                  decision.call(nil, nil, "alias_attribute")]
+      decisions: [decision.call("app/models/user.rb", 12, "find_by_email", false),
+                  decision.call(nil, nil, "alias_attribute", true),
+                  decision.call(nil, nil, "schema.rb column order", false)]
     )
 
-    assert_includes record.to_s, "2 need(s) a decision (1 located, 1 carried)"
+    assert_includes record.to_s,
+      "3 change(s) this rung carries (1 located, 1 carried, 1 not used here)"
+    # **The flag is in the JSON, so a page or a reader does not have to parse the reason.**
+    checked = JSON.parse(record.to_json)["decisions"].to_h { |item| [item["subject"], item["checked"]] }
+    assert_equal({ "find_by_email" => false, "alias_attribute" => true,
+      "schema.rb column order" => false }, checked)
   end
 
   # **A run can be replayed from its JSON.** The record is the durable artifact; a dry-run review

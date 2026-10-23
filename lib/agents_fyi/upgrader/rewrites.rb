@@ -1211,10 +1211,18 @@ module AgentsFyi
         # line as a decision whose reason said the call site had been "carried unfixed since 5.0" — the
         # line already read what the rule writes. The predicate is derived from the family's own
         # argument rather than written per instance, because it is the same string the lookahead uses.
-        already ||= Regexp.new("#{Regexp.escape(call)}\\b[^\\n]*" \
-                               "#{Regexp.escape(option.sub(/\A[,\s]+/, ''))}")
+        # **The option has two spellings, because a Ruby hash does.** `:method => :delete` is the
+        # form every application that predates `method:` wrote and Rails still reads; a guard that
+        # knew only the newer one left a line that had already chosen its method counted as work.
+        # Measured on the walk's last rungs: devise's `button_to "Cancel my account",
+        # registration_path(resource_name), :data => {…}, :method => :delete` was carried as a
+        # decision from 7.0 to 8.1 while the button was already a DELETE. The lookahead uses the
+        # same expression, so a rule that recognises the line cannot write a second key beside it.
+        present = "(?:\\b#{Regexp.escape(key)}\\s*:|:\\s*#{Regexp.escape(key)}\\s*=>|" \
+                  "\\b#{Regexp.escape(key)}\\s*=>)"
+        already ||= Regexp.new("#{Regexp.escape(call)}\\b[^\\n]*#{present}")
         Rule.new(family: :option_added, subject: subject, context: context, already: already, skip: skip,
-          pattern: Regexp.new("#{ERB_OPEN.source}(?!.*\\b#{key}:)(?!.*\\bdo\\b)" \
+          pattern: Regexp.new("#{ERB_OPEN.source}(?!.*#{present})(?!.*\\bdo\\b)" \
                               "(?<call>#{Regexp.escape(call)}\\b#{named}[^,()%<]*?(?:\\s*,\\s*[^,()%<]+?)*)#{ERB_CLOSE.source}"),
           replace: "\\k<open>\\k<call>#{option}\\k<close>")
       end

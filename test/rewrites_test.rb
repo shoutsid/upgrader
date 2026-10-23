@@ -1128,7 +1128,10 @@ class RewritesTest < Minitest::Test
 
     assert_equal [%(  match "/legacy" => "legacy#index", via: :all),
       %(  match "/a" => "b#c", as: :legacy, via: :all)], routes.edits.map { |edit| edit["after"] }
-    assert_equal ["match without via:"] * 2, routes.left
+    assert_equal ["match without via:"], routes.left,
+      "a route drawn with a `do` block is the only one left: `via:` is a different edit"
+    assert_equal ["match without via:"], routes.satisfied,
+      "a route that already names its verbs is named, not left as work"
     assert_equal [%(  <%= button_to "Delete", item, method: :post %>),
       %(  <%= button_to "Delete", item, class: "btn", method: :post %>)],
       views.edits.map { |edit| edit["after"] },
@@ -1139,6 +1142,34 @@ class RewritesTest < Minitest::Test
       "a button that already names the method is named, not left as work"
     assert_includes Rewrites.gap_for("match without via:"), "which verbs this route wants"
     assert_includes Rewrites.gap_for("button_to"), "the default it already had"
+  end
+
+  # **A hash has two spellings, and the guard has to know both.** `:method => :delete` is what every
+  # application written before Ruby 1.9's hash syntax says, and Rails reads it: devise's own
+  # `button_to "Cancel my account", registration_path(resource_name), :data => {…}, :method => :delete`
+  # was carried as a decision on every rung from 7.0 to 8.1 while the button was already a DELETE —
+  # a guard that knew only `method:` could not see it, and the pattern stops at `registration_path(`,
+  # so the line was "a button whose arguments this tool cannot see the end of". It needs no edit.
+  # **And the lookahead is the same expression**, so a line the guard recognises can never receive a
+  # second key — a duplicate `:method` would silently turn the DELETE into a POST.
+  def test_a_button_that_names_its_method_in_the_old_hash_syntax_is_satisfied_not_left
+    devise = %(  <%= button_to "Cancel my account", registration_path(resource_name), :data => { :confirm => "Are you sure?" }, :method => :delete %>)
+    result = Rewrites.apply([entry(subject: "button_to", text: devise,
+      path: "app/views/devise/registrations/edit.html.erb", line: 27)])
+
+    assert_empty result.edits, "the button already names its method"
+    assert_empty result.left, "and it is read, not refused: #{devise}"
+    assert_equal ["button_to"], result.satisfied
+
+    # The same key in a line the pattern *could* match: no duplicate is written beside it.
+    short = Rewrites.apply([entry(subject: "button_to", text: %(  <%= button_to "Delete", post, :method => :delete %>))])
+    assert_empty short.edits, "a second `:method` would change what the button does"
+    assert_equal ["button_to"], short.satisfied
+
+    # And a line with neither spelling is still the edit — the widening did not consume the rule.
+    plain = Rewrites.apply([entry(subject: "button_to", text: %(  <%= button_to "Delete", item %>))])
+    assert_equal [%(  <%= button_to "Delete", item, method: :post %>)],
+      plain.edits.map { |edit| edit["after"] }
   end
 
   # The setting moved rather than disappearing, and the name is the whole edit.

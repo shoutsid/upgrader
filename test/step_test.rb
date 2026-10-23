@@ -2264,8 +2264,17 @@ class StepTest < Minitest::Test
   # documents `alias_attribute` and an application that never mentions it has no call
   # site, so a record built from the scan's `manual` list read "0 need(s) a decision"
   # beside a plan that named one.
-  def test_a_change_no_machine_may_make_is_a_decision_even_with_no_call_site_to_find
+  #
+  # **What changed is what the record says about it.** A survey exists for this subject and
+  # it read the tree: no call site, so there is nothing to edit and nothing a rule could be
+  # written for. Measured on the walk's last rungs, the decision carried "not automated yet:
+  # …" beside the survey's own "none found", which reads as work somebody skipped; it is
+  # carried now as `checked`, and the summary counts it apart from located work.
+  def test_a_change_with_no_call_site_is_carried_as_checked_rather_than_owed
     dir = track(app)
+    # The survey needs a tree to read: a repository with no Ruby source answers before the
+    # survey runs, and that path is "nobody looked" rather than "nothing found".
+    with_source(dir, "app/models/user.rb", "class User < ActiveRecord::Base\nend\n")
     payload = plan(changes: [change(subject: "alias_attribute", kind: "default_changed",
       source: "7.2", replacement: nil,
       note: "it reads the column directly")])
@@ -2280,9 +2289,28 @@ class StepTest < Minitest::Test
     assert_equal "7.2", decision.source
     assert_includes decision.reason, "reads the column directly"
     assert_nil decision.path, "a call site was invented for a name the application never uses"
-    # **The gap travels with it.** A change no rule covers is a queue entry with a reason, so the
-    # residue says what would close it rather than handing over the same blank list every rung.
+    # **The survey is the answer, and it is the answer even when it found nothing.**
+    assert decision.checked?, "a surveyed change with no call site is checked, not owed: #{decision.inspect}"
+    assert_includes decision.reason, "none found"
+    assert_includes decision.reason, "nothing to edit here"
+    refute_includes decision.reason, "not automated yet:",
+      "a gap sentence over a change this application does not use reads as skipped work"
+    assert_includes record.to_s, "1 change(s) this rung carries (0 located, 0 carried, 1 not used here)"
+  end
+
+  # **And a change nobody has surveyed keeps its gap.** The sentence above is a claim that the
+  # *tree* was read; without a survey there is nothing to base it on, and the record says which
+  # mechanism is missing rather than calling the change unused. `schema.rb column order` has a gap
+  # and no reader, which is exactly the shape.
+  def test_a_change_with_no_call_site_and_no_survey_keeps_its_gap
+    payload = plan(changes: [change(subject: "schema.rb column order", kind: "default_changed",
+      source: "7.0", replacement: nil, note: "the dump's order changes")])
+
+    decision = step(track(app), corpus: FakeCorpus.new(payload: payload)).run.decisions.first
+
+    refute decision.checked?, "nobody read this tree, so the record cannot say the change is unused"
     assert_includes decision.reason, "not automated yet:"
+    assert_includes decision.reason, "informational"
   end
 
   # And where the scan *did* find it, the decision points at the line, because that is

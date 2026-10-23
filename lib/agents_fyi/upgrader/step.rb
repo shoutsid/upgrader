@@ -2405,8 +2405,13 @@ module AgentsFyi
       # a rule that applied nothing and a rule whose change has left the ladder look identical from
       # the outside, which is the shape the design notes keep paying for.
       def apply_summary(result, decisions, rules, inert, created = [], declared = [])
+        # **The stage's count has the same three buckets the record's summary does**, for the same
+        # reason: a change the survey read and found no call site for is not a question, and a
+        # stage tail that counted it as one is the sentence a reviewer learns to skip.
+        unused = decisions.count(&:checked?)
         parts = ["applied #{result.applied.size}, refused #{result.refused.size}, " \
-                 "#{decisions.size} change(s) need a decision"]
+                 "#{decisions.size - unused} change(s) need a decision"]
+        parts << "#{unused} change(s) this application does not use" if unused.positive?
         parts << "#{rules.edits.size} by this tool's own rules (#{rules.applied.uniq.join(", ")})" if
           rules.edits.any?
         # **A line a rule's own guard recognised is named, not counted.** It is the difference between "this
@@ -2709,6 +2714,18 @@ module AgentsFyi
       # scan's own entry otherwise. The reason joins both notes when they are two, in the
       # order a reader wants them: what the guide says the change is, then what this
       # application's line looks like.
+      # **A change this application does not use is not a gap.** The gap sentence answers "what
+      # would close this", and where the survey read the tree and found none, the answer is
+      # "nothing here" — the change is carried because the rung documents it, not because a line
+      # is owed. Measured on the walk's last rungs: `alias_attribute` and
+      # `config.active_job.queue_adapter in tests` were carried with "not automated yet: …" beside
+      # a survey whose whole answer was "none found", which reads as work somebody skipped. The
+      # record counts these apart (`Record::Decision#checked?`) and the summary says so, because a
+      # list that says "needs a decision" over changes that need no edit is how a reviewer learns
+      # to skim the list.
+      UNUSED_CHANGE = "nothing to edit here: this rung carries the change and no line of this " \
+                      "application uses it"
+
       def decision(change, entry, evidence: {}, rung: nil, from: nil)
         subject = ((change && change["subject"]) || entry["subject"]).to_s
         # **The gap travels with the change, and that is the point of it.** A change no rule covers
@@ -2716,15 +2733,17 @@ module AgentsFyi
         # what would close it — so the next lighthouse (or the next agent) starts from what is
         # missing rather than from the same blank list. A permanent refusal is the settled-work trap
         # with the sign flipped (`Step#no_interpreter_stamp` is the same posture one layer down).
+        found = evidence[subject]
+        unused = entry.nil? && found && found.findings.empty?
         gap = Rewrites.gap_for(subject)
         reason = [change && change["note"], entry && entry["note"]]
                  .compact.reject { |note| note.to_s.empty? }.uniq.join(" — ")
-        reason = [reason, earlier_rung(entry, rung, from), survey_note(evidence[subject]),
-                  gap && "not automated yet: #{gap}"]
+        reason = [reason, earlier_rung(entry, rung, from), survey_note(found),
+                  unused ? UNUSED_CHANGE : (gap && "not automated yet: #{gap}")]
                  .compact.reject(&:empty?).join(" — ")
         Record::Decision.new(
           path: entry && entry["path"], line: entry && entry["line"],
-          subject: subject, reason: reason,
+          subject: subject, reason: reason, checked: unused,
           kind: (change && change["kind"]) || (entry && entry["kind"]),
           replacement: (change && change["replacement"]) || (entry && entry["replacement"]),
           source: (change && change["source"]) || (entry && entry["source"]),
