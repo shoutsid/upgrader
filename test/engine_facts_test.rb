@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
 require "agents_fyi/upgrader"
 
 # **The engine names no project, and no stack spelling outside the pack.**
@@ -89,6 +91,14 @@ class EngineFactsTest < Minitest::Test
     assert_equal "bundle exec rake rails:update", pack.update_command(five_or_newer: false)
     assert_equal "no bin/rails and no Rakefile: nothing to run", pack.no_update_reason
     assert_equal "bin/rails active_storage:install", pack.install_command("active_storage")
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      File.write(File.join(root, "bin", "rails"), "")
+      File.chmod(0o755, File.join(root, "bin", "rails"))
+      assert_equal ["bin/rails", "runner", "puts 1"], pack.routes_runner(root, script: "puts 1")
+    end
+    assert_nil pack.routes_runner("/nonexistent", script: "puts 1"),
+      "no binstub is no route table, not a command that fails for another reason"
     assert pack.five_or_newer?(Struct.new(:rails).new(Struct.new(:version).new("8.1.0")))
     refute pack.five_or_newer?(Struct.new(:rails).new(Struct.new(:version).new("4.0.0.rc1")))
   end

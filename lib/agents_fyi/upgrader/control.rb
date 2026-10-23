@@ -25,6 +25,10 @@ module AgentsFyi
     # page is where that problem is shown.
     class Control
       FILE = ".walker-control.json"
+      # **The service's other write: a project was queued.** It is a dotfile in the same
+      # directory and a marker rather than a command — the reader only needs its mtime, and
+      # nothing has to be deleted or acknowledged for a wake not to be lost.
+      WAKE_FILE = ".walker-wake.json"
 
       # The stop, as an exception rather than a return value: it has to unwind from `Step#command`
       # through pipelines that have no "aborted" branch, and a sentinel return would be read by
@@ -37,11 +41,12 @@ module AgentsFyi
         dir = ENV["UPGRADER_PROJECTS_DIR"].to_s
         dir = File.join(home.to_s, "projects") if dir.empty?
         @path = path || ENV["UPGRADER_CONTROL"] || File.join(dir, FILE)
+        @wake_path = ENV["UPGRADER_WAKE"] || File.join(File.dirname(@path), WAKE_FILE)
         @mtime = nil
         @document = nil
       end
 
-      attr_reader :path
+      attr_reader :path, :wake_path
 
       def stopped?
         document["state"] == "stopped"
@@ -57,6 +62,21 @@ module AgentsFyi
 
         sentence = reason.empty? ? "the walker was stopped from the site admin" : "the walker is stopped: #{reason}"
         raise Stopped, sentence
+      end
+
+      # **Did a project arrive while this process was resting?** The marker's mtime is compared
+      # with the moment the current cycle began, not with the nap's start: a queue write that
+      # landed while the cycle was reading its feed happened after the read and would otherwise
+      # be followed by the full wait. An absent or unreadable marker is no wake, which is the
+      # direction that keeps the loop's own interval as the fallback.
+      def wake_since?(moment)
+        stat = File.stat(@wake_path)
+        # `>=` rather than `>`: a filesystem with one-second mtime granularity can round a
+        # marker written just after the cycle's start down to the same second, and a lost wake
+        # costs the whole interval while an equal one costs one extra empty cycle.
+        stat.file? && stat.mtime >= moment
+      rescue SystemCallError
+        false
       end
 
       private

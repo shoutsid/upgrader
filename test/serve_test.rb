@@ -249,8 +249,13 @@ class ServeTest < Minitest::Test
   # The site admin's switch, as the loop sees it: `stopped?` answers from this list in order, so a
   # stop that is lifted between checks is the resume path rather than a second stop.
   class FakeControl
-    def initialize(*states) = @states = states
+    def initialize(*states, wake: false)
+      @states = states
+      @wake = wake
+    end
+
     def stopped? = @states.length > 1 ? @states.shift : @states.first
+    def wake_since?(_moment) = @wake
   end
 
   # **A stop is answered before any work and the loop waits, rather than exiting.** Exiting would
@@ -385,6 +390,8 @@ class ServeTest < Minitest::Test
     assert_equal "agents-fyi/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
     assert_equal "agents-fyi/baseline", FakePublish.calls.last[:base_ref],
       "the declaration's starting ref did not reach the publisher"
+    assert FakePublish.calls.last[:chain],
+      "the declaration's chain setting did not reach the publisher"
   end
 
   # **The loop waits only when waiting is the answer.** A passed rung has the next one ready now, and
@@ -408,6 +415,21 @@ class ServeTest < Minitest::Test
       "the backoff is not capped at the interval"
     assert_equal 600, walker.send(:delay_for, :idle, previous: 0),
       "an empty queue is not polled on the interval"
+  end
+
+  # **A queued project is a notification, not the next poll.** The interval is the fallback for a
+  # deployment where the service cannot write the projects volume; a marker written in it ends the
+  # rest at the next half-second check, so a person who has just pressed Start does not watch a
+  # ten-minute sleep.
+  def test_a_queued_project_wakes_the_idle_wait
+    out = StringIO.new
+    walker = serve(interval: 600, out: out, control: FakeControl.new(false, wake: true))
+    started = Time.now
+
+    walker.send(:nap, 600, :idle)
+
+    assert_operator Time.now - started, :<, 5, "the wake marker was slept through"
+    assert_includes out.string, "a project was queued; waking now"
   end
 
   # **`serve --record` writes what `step --record` writes.** The option was advertised and never passed,

@@ -8,10 +8,23 @@ versioning for its command-line surface and record format.
 
 ### Added
 
+- A red suite's template route failures are repaired from the application's own router — the
+  declared helper for a controller and action, with the variables its controller reads from
+  `params` — and a repair that made the suite green is filed to the corpus as a report with the
+  derived edit as its fix, so the next walk reads the failure and its answer instead of
+  re-deriving them.
 - `--version`, so an issue can name the client build without reading the source.
+- A project queued from the service wakes a sleeping `serve` loop instead of waiting out the
+  poll interval; the interval remains the fallback when the projects volume is not mounted.
 
 ### Fixed
 
+- A patch checkpoint records the release its lockfile pins as the move's `from`, so a walk that
+  starts at `4.1.16` chains each request on the branch below it instead of basing every one on
+  the default branch.
+- A chained rung is associated with GitHub's stacked-pull-request object: the second request
+  creates the stack and each later one is appended, so the layers show as one stack and can
+  merge together. A refused association is logged and leaves the branch and its request intact.
 - `--work` is honored: a step places its working copy and per-run bundle there instead of
   silently leaving them under `$UPGRADER_HOME`.
 - `UPGRADER_RVM_ROOT` and `UPGRADER_RVM_GEMSET` reach the rvm machine instead of being read only

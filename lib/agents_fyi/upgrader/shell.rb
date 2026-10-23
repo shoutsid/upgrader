@@ -133,13 +133,17 @@ module AgentsFyi
       #
       # Its own process group is load-bearing: a Rails suite forks workers and a `docker exec` may leave
       # children, and a kill aimed at the process alone leaves them holding the pipe.
-      def self.spawn_with_deadline(argv, chdir:, env: {}, stdin: File::NULL, timeout: nil, excerpt: nil)
+      # `analysis` is a second, larger excerpt for a caller that has to *read* the output rather
+      # than record it — a suite's failure list is longer than the record's bound, and the two
+      # readers want different answers from the same stream.
+      def self.spawn_with_deadline(argv, chdir:, env: {}, stdin: File::NULL, timeout: nil, excerpt: nil,
+                                   analysis: nil)
         excerpt ||= Excerpt.new
         reader, writer = IO.pipe
         pid = Process.spawn(env, *argv, chdir: chdir, pgroup: true, in: stdin, out: writer, err: writer)
         writer.close
 
-        reading = Thread.new { drain(reader, excerpt) }
+        reading = Thread.new { drain(reader, excerpt, analysis) }
         waiting = Thread.new { Process.waitpid2(pid) }
         if waiting.join(timeout)
           reading.join(2)
@@ -157,9 +161,10 @@ module AgentsFyi
       # Reads the child's output on a thread of its own and keeps only the two ends of it. Both halves are
       # load-bearing: a pipe holds 64 KB, so a command that prints more than that blocks for ever waiting for
       # a reader that only arrives after it exits; and the excerpt is bounded because this text is recorded.
-      def self.drain(reader, excerpt)
+      def self.drain(reader, excerpt, analysis = nil)
         while (chunk = reader.read(65_536))
           excerpt << chunk
+          analysis << chunk unless analysis.nil?
         end
       rescue IOError, Errno::EBADF
         # The pipe was closed under this thread, which is what happens when a run is killed and nothing is

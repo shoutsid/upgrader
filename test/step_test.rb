@@ -1163,7 +1163,7 @@ class StepTest < Minitest::Test
       repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
 
     assert_equal "passed", record.verdict
-    assert_includes record.why, "1 agent repair attempt(s)"
+    assert_includes record.why, "1 repair attempt(s)"
     repair_stage = record.stages.find { |stage| stage.stage == "repair" }
     refute_nil repair_stage, "the attempt is not in the record"
     assert_includes repair_stage.output_tail, "app/models/user.rb"
@@ -1531,6 +1531,46 @@ class StepTest < Minitest::Test
     assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
   end
 
+  # **A rewind's parse follows the reset, because the lock is what names the framework.** The
+  # pin asks the lock which gems are pinned at the release it is moving from, and a lock read
+  # before the rewind describes the tree that was walked *ahead*: measured on the first real
+  # reconnect, `pinned_at("4.0.0.rc1")` was asked of a 4.1.0 lock, named nothing, and the resolve
+  # kept `activemodel` at rc1 while Rails moved to 4.0.13 — a patch rung that failed on a
+  # `could not find compatible versions` the named set would have avoided.
+  def test_a_rewound_tree_is_pinned_from_the_lock_it_was_put_back_to
+    lock = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          activesupport (4.2.11)
+          rails (4.2.11)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rails (= 4.2.11)
+
+      BUNDLED WITH
+         2.5.22
+    LOCK
+    dir = track(app(lockfile: lock))
+    # What the earlier walk left: the rung committed, and the marker moved to it.
+    File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "5.0.0"\n))
+    File.write(File.join(dir, "Gemfile.lock"), lock.gsub("4.2.11", "5.0.0"))
+    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+    top = AgentsFyi::Upgrader::Checkpoint.head(dir).first
+    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, top)
+
+    record = step(dir, reuse: true, out: StringIO.new, project: declaration).run
+
+    assert record.passed?, record.why
+    pin = record.stages.find { |stage| stage.stage == "pin" }
+    refute_nil pin, "the step never asked the resolver to move the framework"
+    assert_includes pin.command.to_s, "activesupport",
+      "the pin read the abandoned tree's lock, so the framework's components were not named"
+  end
+
   # The other half of the same rule: a tree already at the project's release is left alone, so
   # an ordinary cycle does not pay a reset — and the ledger keeps its say about a move it settled.
   def test_a_kept_tree_at_the_project_s_release_is_not_rewound
@@ -1674,6 +1714,23 @@ class StepTest < Minitest::Test
     stages = record.stages.map(&:stage)
     assert_includes stages, "rails:update", "the minor plan's app:update did not run"
     refute_includes record.name.to_s, "5.0.0", "the plan's release leaked into the checkpoint's name"
+  end
+
+  # **The move records the tree's release, not the chapter's.** The service files the plan for a
+  # 5.0 checkpoint under the 5.0 chapter, whose `from` is `4.2.0`; the application is on `4.2.11`.
+  # A record that kept the chapter's from made the delivery look for
+  # `agents-fyi/upgrade-4.2.0`, find no such branch, and base the request on the default branch —
+  # so the walk opened a stack's worth of pull requests that were all based on master.
+  def test_a_checkpoint_records_the_lockfile_s_release_as_the_move_s_from
+    dir = track(app)
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.0"))
+
+    record = step(dir, corpus: corpus, to: "5.0.6").run
+
+    assert record.passed?, record.why
+    assert_equal "4.2.11", record.from_version,
+      "the record kept the plan's rung instead of the release the branch was built from"
+    assert_equal "5.0.6", record.to_version
   end
 
   # **A checkpoint behind the lockfile is a stale feed, not a patch move.** Pinning it would write
@@ -2379,6 +2436,27 @@ class StepTest < Minitest::Test
     assert_includes record.applied.first.after, "rails-controller-testing"
   end
 
+  # **The suite is scanned even when the project's declaration does not name it.** A project
+  # connected before detection read `spec`/`test` carries `app lib config`, and the 5.0 bridge's only
+  # call sites are in `spec/` — measured on the first real walk, where the declaration was not a
+  # statement that tests may not be read but a row written before a rule read them, and the eleven
+  # controller specs failed on `assigns has been extracted to a gem`.
+  def test_the_suite_is_scanned_when_the_declaration_predates_the_rule
+    dir = track(app)
+    with_source(dir, "spec/controllers/posts_controller_spec.rb",
+      "describe PostsController do\n  it { expect(assigns(:post)).to be_a(Post) }\nend\n")
+    project = AgentsFyi::Upgrader::Project.new(
+      { "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+        "source_roots" => %w[app lib config] }
+    )
+    corpus = FakeCorpus.new(payload: plan)
+
+    step(dir, corpus: corpus, project: project).run
+
+    assert_includes corpus.asked_files.flatten, "spec/controllers/posts_controller_spec.rb",
+      "the bridge's call sites were in a directory the declaration did not name, so none was sent"
+  end
+
   # **The one refusal here.** A test-only gem appended to the end of the file is installed in
   # production, and that is a fact about the deployment rather than about the line — so a Gemfile with
   # no block for the gem's group keeps the change as a decision.
@@ -2990,13 +3068,18 @@ class StepTest < Minitest::Test
     assert_equal "ITEM = 2\n", File.read(File.join(dir, "app/models/item.rb"))
   end
 
-  # **The scan reads the application's source roots, not the whole checkout.** A project that keeps
-  # its code under `app` and `lib` does not send its specs, its vendor tree or its CI configuration;
-  # a modular monolith that keeps models under `components` declares that root and does.
-  def test_the_scan_is_scoped_to_the_declared_source_roots
+  # **The scan reads the application's source roots and its own suite, not the whole checkout.**
+  # A project that keeps its code under `app` and `lib` does not send its vendor tree or its CI
+  # configuration; a modular monolith that keeps models under `components` declares that root and
+  # does. The suite is read whatever the declaration says, because the framework's test-side API is
+  # called there and nowhere else: `assigns`/`assert_template` moved into a gem at 5.0 and every call
+  # site of the change is in `spec/` — a declaration written before that rule existed
+  # (`app lib config`) meant the bridge's evidence was never sent.
+  def test_the_scan_is_scoped_to_the_declared_source_roots_and_the_suite
     dir = track(app)
     with_source(dir, "app/models/item.rb", "class Item\nend\n")
     with_source(dir, "spec/models/item_spec.rb", "describe Item do\nend\n")
+    with_source(dir, "vendor/bundle/item.rb", "class Item\nend\n")
     project = AgentsFyi::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
@@ -3008,7 +3091,10 @@ class StepTest < Minitest::Test
 
     sent = corpus.asked_files.first
     assert_includes sent, "app/models/item.rb"
-    refute_includes sent, "spec/models/item_spec.rb"
+    assert_includes sent, "spec/models/item_spec.rb",
+      "the project's own suite was not read, so a test-side change has no evidence"
+    refute_includes sent, "vendor/bundle/item.rb",
+      "a declared root scopes the scan and vendor is not one"
   end
 
   def test_an_app_update_file_the_project_skips_is_removed_and_recorded
@@ -3119,5 +3205,25 @@ class StepTest < Minitest::Test
     refute_nil install, "the step never installed the bundle"
     assert_equal "postgresql", install.last["BUNDLE_WITH"],
       "the adapter's optional group was not part of the bundle"
+  end
+
+  # **A repair that only changes how a gem is required does not ask the resolver to move it.**
+  # Measured on the first real application's patch rung: `capistrano` was named in
+  # `bundle update` because the preflight had written `require: false` on its line, the resolve
+  # took capistrano 3 beside `rvm-capistrano ~> 2.15.4`, and a patch release that changes no
+  # documented API failed at the pin. The named set is the gems whose *requirement* moved.
+  def test_a_require_option_repair_is_not_a_gem_the_pin_asks_to_move
+    s = step(Dir.tmpdir)
+    applied = lambda do |after|
+      AgentsFyi::Upgrader::Applier::Applied.new(
+        path: "Gemfile", line: 2, text: %(gem "capistrano"\n), after: after,
+        subject: "capistrano", origin: "preflight", note: nil
+      )
+    end
+
+    refute(s.send(:version_move?, applied.call(%(gem "capistrano", require: false\n))),
+      "a require-option repair names a gem the lock should keep where it is")
+    assert(s.send(:version_move?, applied.call(%(gem "capistrano", "~> 3.0"\n))),
+      "a requirement that moved is a gem the pin must name")
   end
 end

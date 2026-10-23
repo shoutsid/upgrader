@@ -175,6 +175,9 @@ module AgentsFyi
         pause = 0
         until @stop
           cycle += 1
+          # The moment this cycle began, for the wake marker's comparison: a queue write that
+          # lands after the feed read must still shorten the wait that follows.
+          @cycle_started_at = Time.now
           outcome = cycle_outcome
           @environment&.write
           @projects_feed.write
@@ -411,11 +414,12 @@ module AgentsFyi
       def publish(record, project: nil)
         root = record.worktree.to_s.empty? ? @home : record.worktree
         pattern = project&.delivery&.branch
+        chain = project.nil? ? true : project.delivery.chain
         publisher = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
           token: github_token(record.repository), branch_pattern: pattern,
-          report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref
+          report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref, chain: chain
         )
         result = publisher.call
         @out.puts("serve: #{record.repository} — #{result}")
@@ -423,7 +427,7 @@ module AgentsFyi
         # the bytes the pull request would carry rather than reimplementing `Publish#body` in Rails.
         brief = publisher.respond_to?(:preview_body) ? publisher.preview_body : nil
         remember_delivery(record, result, root: root, pattern: pattern,
-          base_ref: project&.base_ref, brief: brief)
+          base_ref: project&.base_ref, chain: chain, brief: brief)
         # **A boolean, because the walk's next branch depends on this one.** A plain git remote is a
         # delivered branch with no request, which is complete rather than failed — that distinction
         # already lives on the ledger's answer and is reused here rather than decided twice.
@@ -446,7 +450,7 @@ module AgentsFyi
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
-      def remember_delivery(record, result, root:, pattern:, base_ref: nil, brief: nil)
+      def remember_delivery(record, result, root:, pattern:, base_ref: nil, chain: true, brief: nil)
         state = {
           "attempted" => true,
           "delivered" => delivered?(result, record.repository),
@@ -460,13 +464,17 @@ module AgentsFyi
           # visible shape of a broken stack and the fact the path page needs to say so.
           "base" => result.base,
           "pull_request" => result.pull_request,
+          # **GitHub's own stack, when the association was accepted.** The API can refuse it and
+          # the branch is still a delivery; the field is how a page tells the two apart.
+          "stack" => result.stack,
           "reason" => result.reason,
           # The rendered review brief is evidence a person reads, not a second renderer in the
           # service. It is kept with the delivery because that is where the branch and PR are.
           "brief" => brief.to_s,
           "root" => root.to_s,
           "branch_pattern" => pattern.to_s,
-          "base_ref" => base_ref.to_s
+          "base_ref" => base_ref.to_s,
+          "chain" => chain
         }
         @ledger&.deliver(
           repo: record.repository, commit: record.commit,
@@ -513,12 +521,14 @@ module AgentsFyi
           project = project_for(entry.repo)
           base_ref = delivery["base_ref"].to_s
           base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
+          chain = delivery.key?("chain") ? delivery["chain"] != false :
+            (project.nil? ? true : project.delivery.chain)
           publisher = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
             out: @out, token: github_token(entry.repo),
             branch_pattern: delivery["branch_pattern"],
-            report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref
+            report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref, chain: chain
           )
           result = publisher.call
           @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
@@ -528,6 +538,7 @@ module AgentsFyi
             "branch" => result.branch,
             "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
             "pull_request" => result.pull_request,
+            "stack" => result.stack,
             "reason" => result.reason,
             "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : delivery["brief"].to_s
           )
@@ -769,7 +780,13 @@ module AgentsFyi
         @out.puts("serve: sleeping #{seconds}s (#{reason})")
         @progress.cycle(note: "waiting #{seconds}s — #{reason}")
         deadline = Time.now + seconds
-        sleep(0.5) until @stop || Time.now >= deadline
+        since = @cycle_started_at || Time.now
+        woken = false
+        sleep(0.5) until @stop || Time.now >= deadline || (woken = @control.wake_since?(since))
+        return unless woken && !@stop
+
+        @out.puts("serve: a project was queued; waking now")
+        @progress.cycle(note: "woken by a queued project")
       end
 
       def install_traps

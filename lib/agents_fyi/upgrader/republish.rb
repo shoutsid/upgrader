@@ -44,12 +44,14 @@ module AgentsFyi
           project = Project.find_by_repository(entry.repo)
           base_ref = delivery["base_ref"].to_s
           base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
+          chain = delivery.key?("chain") ? delivery["chain"] != false :
+            (project.nil? ? true : project.delivery.chain)
           publisher = @publish_class.new(
             root: delivery["root"], repository: entry.repo,
             from_version: entry.from_version, to_version: entry.to_version,
             record: record, commit: delivery["commit"].to_s, token: @token, out: @out,
             branch_pattern: delivery["branch_pattern"], report_base: @report_base,
-            base_ref: base_ref
+            base_ref: base_ref, chain: chain
           )
           result = publisher.call
           # **A rewritten body is a new delivery fact.** The service's rendered review brief is a
@@ -61,6 +63,7 @@ module AgentsFyi
               "branch" => result.branch.to_s.empty? ? delivery["branch"] : result.branch,
               "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
               "pull_request" => result.pull_request.to_s.empty? ? delivery["pull_request"] : result.pull_request,
+              "stack" => result.stack.to_s.empty? ? delivery["stack"] : result.stack,
               "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : delivery["brief"].to_s
             )
             ledger.deliver(repo: entry.repo, commit: entry.commit, from_version: entry.from_version,

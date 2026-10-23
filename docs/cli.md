@@ -85,13 +85,13 @@ agents-fyi-upgrader step --repo . --to 7.1.0 --record ./out
 |---|---|
 | `--repos OWNER/NAME[@REF]` | a repository to walk. Repeatable; a comma-separated list is also accepted. Empty means the service's queue is asked. |
 | `--heartbeat FILE` | the file `serve` touches every cycle; a healthcheck reads its age. |
-| `--interval SECONDS` | how long the loop waits when there is nothing to do. Default: `600`. |
+| `--interval SECONDS` | how long the loop waits when there is nothing to do. Default: `600`; a project queued from the service wakes it early, and this is the fallback. |
 | `--step-timeout SECONDS` | the ceiling for one application suite. Default: the step's own. |
 | `--cycles N` | stop after `N` cycles. The default is never. |
 | `--walk` | chain rungs within a cycle, and read an empty `--to` as the top of the ladder. |
 | `--rungs N` | how many rungs `--walk` chains in one cycle. Default: `3`. |
 | `--force` | ignore a settled ledger entry for this run. |
-| `--publish` | deliver each passed rung as a branch and a pull request. |
+| `--publish` | deliver each passed rung as a branch and a pull request. A chained rung also joins the one below it as a GitHub stack. |
 | `--record DIR` | write one record per move (`<repository>-<from>-<to>.json`), plus its patch. The repository part is readable: a URL such as `https://github.com/owner/application.git` becomes `owner-application`, and a local path uses its basename. |
 | `--suite-env FILE` | as above. |
 

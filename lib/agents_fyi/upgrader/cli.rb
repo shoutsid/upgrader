@@ -349,10 +349,19 @@ module AgentsFyi
           return step_status(record)
         end
 
+        # **The declaration travels with a hand-run publish too.** The record carries the project
+        # it was walked under, so a `step --publish` opens the same chained, stacked request the
+        # loop would; without it the first rung ignored the declared starting ref and every
+        # request targeted the default branch.
+        fields = record.project.is_a?(Hash) ? record.project : {}
+        delivery = fields["delivery"].is_a?(Hash) ? fields["delivery"] : {}
         result = Publish.new(
           root: record.worktree, repository: options[:repo],
           from_version: record.from_version, to_version: record.to_version,
-          record: record, out: @out, token: @env[Publish::ENV_TOKEN]
+          record: record, out: @out, token: @env[Publish::ENV_TOKEN],
+          base_ref: @project&.base_ref || fields["base_ref"],
+          branch_pattern: @project&.delivery&.branch || delivery["branch"],
+          chain: (@project ? @project.delivery.chain : delivery["chain"] != false)
         ).call
         @out.puts(result.to_s)
         return step_status(record) if result.published? || result.pushed

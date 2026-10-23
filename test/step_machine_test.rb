@@ -2,6 +2,8 @@
 
 require "minitest/autorun"
 require "fileutils"
+require "json"
+require "rbconfig"
 require "stringio"
 require "tmpdir"
 require "agents_fyi/upgrader"
@@ -444,6 +446,22 @@ class StepMachineTest < Minitest::Test
     def stamp = "ruby #{era} (era-#{era}@sha256:#{"f" * 64})"
   end
 
+  # **A machine whose router answers from the fixture.** The real read runs `bin/rails runner`
+  # inside the step's container; this answers the same JSON from this process, so the repair loop's
+  # rounds are driven without a Rails application. Every other command stays the ordinary fake.
+  class RouteMachine < FakeMachine
+    def initialize(era, rows)
+      super(era)
+      @rows = rows
+    end
+
+    def command(argv, chdir:, env: {})
+      return super unless argv.include?("runner")
+
+      [[RbConfig.ruby, "-e", "print #{JSON.generate(@rows).inspect}"], {}]
+    end
+  end
+
   # A machine that can install a package, which is the container's one privilege: `apt` writes
   # outside the working copy, so it runs as root and everything else does not.
   class RootMachine < FakeMachine
@@ -502,6 +520,58 @@ class StepMachineTest < Minitest::Test
     ERAS.to_h { |era| [era, RootMachine.new(era)] }
   end
 
+  # The two view lines the 6.0 rung's real tree has, and the controller that says which instance
+  # variable each route part arrives in.
+  def write_bids(dir)
+    FileUtils.mkdir_p(File.join(dir, "app", "views", "bids"))
+    FileUtils.mkdir_p(File.join(dir, "app", "controllers"))
+    File.write(File.join(dir, "app", "views", "bids", "edit.html.erb"), <<~ERB)
+      <h1>Editing bid</h1>
+
+      <%= render 'form' %>
+
+      <%= link_to 'Show', @bid %> |
+      <%= link_to 'Back', bids_path %>
+    ERB
+    File.write(File.join(dir, "app", "controllers", "bids_controller.rb"), <<~RUBY)
+      class BidsController < ApplicationController
+        private
+
+        def set_category = @category = Category.find_by_url(params[:category_id])
+        def set_item = @item = Item.find(params[:item_id])
+        def set_bid = @bid = Bid.find(params[:id])
+      end
+    RUBY
+  end
+
+  # A red suite in the formatter's own shape: the wrapper, the application frame, and the cause the
+  # repair reads. This is the fixture's real block with the name and line the round is about.
+  def failed_suite(line, source, message)
+    text = <<~TEXT
+      Failures:
+
+        1) BidsController GET #edit responds with HTTP 200 status
+           Failure/Error: #{source}
+
+           ActionView::Template::Error:
+             #{message}
+           # ./app/views/bids/edit.html.erb:#{line}:in `_app_views_bids_edit_html_erb'
+           # ------------------
+           # --- Caused by: ---
+           # NoMethodError:
+           #   #{message}
+           #   ./app/views/bids/edit.html.erb:#{line}:in `_app_views_bids_edit_html_erb'
+
+    TEXT
+    AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
+      exit_code: 1, seconds: 0.1, output_tail: text, timed_out: false)
+  end
+
+  def green_suite
+    AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
+      exit_code: 0, seconds: 0.1, output_tail: "3 examples, 0 failures", timed_out: false)
+  end
+
   def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
            to: "4.1.0", out: nil, project: nil)
     Step.new(
@@ -511,6 +581,39 @@ class StepMachineTest < Minitest::Test
       runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) },
       project: project
     )
+  end
+
+  # **The repair repeats, because a template raises at its first bad line.** `bids/edit` has two
+  # undeclared helpers: the first red suite names line 5, the repair writes it, and the next run
+  # names line 6 — which a single-round version never saw, leaving the rung red with a repair it had
+  # already derived. Both rounds are stages in the record and travel as one repair outcome, so the
+  # corpus receives one report with both edits rather than two half-answers.
+  def test_the_mechanical_repair_repeats_until_the_suite_is_green_and_reports_one_outcome
+    dir = app
+    write_bids(dir)
+    rows = [
+      { "name" => "category_item_bids", "controller" => "bids", "action" => "index",
+        "parts" => %w[category_id item_id] },
+      { "name" => "category_item_bid", "controller" => "bids", "action" => "show",
+        "parts" => %w[category_id item_id id] }
+    ]
+    tests = FakeTests.new(results: [
+      green_suite,
+      failed_suite(5, "<%= link_to 'Show', @bid %> |", "undefined method `bid_path'"),
+      failed_suite(6, "<%= link_to 'Back', bids_path %>", "undefined method `bids_path'"),
+      green_suite
+    ])
+    record = step(dir, machines: ERAS.to_h { |era| [era, RouteMachine.new(era, rows)] },
+      tests: tests).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_equal 2, record.stages.count { |stage| stage.stage == "repair" },
+      "each round is a stage, or the record cannot say how the rung was reached"
+    assert_equal 1, record.repairs.size
+    assert_equal ["app/views/bids/edit.html.erb"], record.repairs.first.files
+    edited = File.read(File.join(dir, "app", "views", "bids", "edit.html.erb"))
+    assert_includes edited, "category_item_bid_path(@category, @item, @bid)"
+    assert_includes edited, "category_item_bids_path(@category, @item)"
   end
 
   # **A 3.2 walk pins the 7.0 line, not its first release.** Rails 7.0.0's activesupport

@@ -446,4 +446,40 @@ class RepairTest < Minitest::Test
     refute File.exist?(File.join(@root, "opencode.json")),
       "a config file written into the worktree would be in the patch and is not read there"
   end
+
+  # **A mechanical repair is an outcome too**, so the corpus's most trustworthy evidence — a real
+  # failure, a fix nobody guessed at, and a suite that went green after it — reaches the same
+  # report door a model's repair does. There is no attempt to describe, so the count is one and the
+  # diff is rendered from the edits: the caller checkpoints before re-running the suite, which
+  # leaves `git diff` empty.
+  def test_a_mechanical_repair_carries_the_failure_the_edits_and_the_suite_that_passed
+    edits = [
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 5,
+        text: "<%= link_to 'Show', @bid %> |",
+        after: "<%= link_to 'Show', category_item_bid_path(@category, @item, @bid) %> |",
+        origin: "suite-repair"),
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 6,
+        text: "<%= link_to 'Back', bids_path %>",
+        after: "<%= link_to 'Back', category_item_bids_path(@category, @item) %>",
+        origin: "suite-repair")
+    ]
+
+    outcome = Repair.mechanical_outcome(applied: edits, failure: "1) BidsController GET #edit\n",
+      suite: "bundle exec rspec")
+
+    assert_equal "1) BidsController GET #edit\n", outcome.failure
+    assert_equal "bundle exec rspec", outcome.suite
+    assert_equal 1, outcome.attempts
+    assert_equal ["app/views/bids/edit.html.erb"], outcome.files
+    refute outcome.before_the_move
+    assert_includes outcome.diff, "--- a/app/views/bids/edit.html.erb"
+    assert_includes outcome.diff, "-<%= link_to 'Show', @bid %> |"
+    assert_includes outcome.diff, "+<%= link_to 'Show', category_item_bid_path(@category, @item, @bid) %> |"
+  end
+
+  # A repair that wrote nothing is not a repair: there is no failure to report as resolved and no
+  # file the resolution names.
+  def test_no_edits_is_no_outcome
+    assert_nil Repair.mechanical_outcome(applied: [], failure: "red", suite: "rspec")
+  end
 end
