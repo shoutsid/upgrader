@@ -79,6 +79,7 @@ configured without changing its command.
 | `UPGRADER_TO` | empty | the deployment-wide Rails release every move ends at. Empty uses each account project's own `to`; `UPGRADER_WALK` reads empty as the ladder top. A row with no destination is skipped. |
 | `UPGRADER_INTERVAL` | `600` | seconds between cycles when there is nothing to do. |
 | `UPGRADER_STEP_TIMEOUT` | `3600` | the ceiling for one application suite; a step runs several commands and may outlive it. |
+| `UPGRADER_DISK_WRITE_BPS` / `UPGRADER_DISK_READ_BPS` | empty (no cap) | the cgroup `io.max` rate each era container is started with, e.g. `40mb`. A step is the heaviest writer on a shared daemon — `bundle install` and `assets:precompile` write onto the same virtual disk the service's PostgreSQL reads from — so a deployment that serves an application while it walks sets these and the walk gets slower instead of the site. The device is discovered from the home's mount, not configured. Empty disables the cap. |
 | `UPGRADER_WALK` | empty | set to any non-empty value to pass `--walk`. |
 | `UPGRADER_RUNGS` | empty / `3` | rungs `--walk` may chain in one cycle. |
 | `UPGRADER_PUBLISH` | empty | set to any non-empty value to pass `--publish`. |

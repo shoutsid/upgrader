@@ -103,6 +103,79 @@ module AgentsFyi
       # somewhere nobody looked.
       class Unavailable < StandardError; end
 
+      # **A step may not take the disk the service it talks to answers on.**
+      #
+      # A step is the heaviest writer on this daemon: `bundle install` unpacks a hundred gems into
+      # a mounted volume and `assets:precompile` writes thousands of small files, all on the same
+      # virtual disk as the deployment's PostgreSQL and its Rails process. Measured on the
+      # deployment this was written for: while a 5.2 -> 6.0 rung installed and precompiled, the
+      # Docker VM reported `full avg300=75%` I/O pressure — three quarters of the time every
+      # runnable task was waiting on the disk — the site's own `/app/projects/:id/live` polls took
+      # 50 to 495 seconds, three of them finishing in the same second the stall cleared, and
+      # `docker run` itself hung at container creation. Guest memory was fine (13.4 GiB of 16
+      # available) and the host disk was idle, so the only resource contended was the VM's queue.
+      #
+      # `--device-write-bps`/`--device-read-bps` are cgroup `io.max` throttles: they bound *this
+      # container's* throughput, so the site's queries keep their latency while a rung installs,
+      # and the walk simply takes longer. The device is discovered rather than configured, because
+      # it differs by deployment (`/dev/vda1` in a Docker Desktop VM, `/dev/nvme0n1p2` on a host)
+      # and a wrong name here would silently disable the cap.
+      #
+      # **Off unless a deployment names a rate.** A walk on somebody's own machine is their disk
+      # and their choice; the compose file is what turns this on for a deployment that shares its
+      # daemon with a served application. A cap set with no block device behind the home is stated
+      # and skipped rather than failing the step: a limit that cannot be applied is not evidence
+      # about the release.
+      module DiskLimit
+        READ_ENV = "UPGRADER_DISK_READ_BPS"
+        WRITE_ENV = "UPGRADER_DISK_WRITE_BPS"
+
+        # The mount table a device is read from, injectable so a suite states it.
+        MOUNTS = "/proc/mounts"
+
+        # The rates a deployment named, keyed by the flag they become.
+        def self.from_env(env = ENV)
+          { "read" => env[READ_ENV].to_s.strip, "write" => env[WRITE_ENV].to_s.strip }
+            .reject { |_, rate| rate.empty? }
+        end
+
+        # The `docker run` flags, in the order the daemon takes them.
+        def self.argv(home:, limits:, out: nil, mounts: MOUNTS)
+          return [] if limits.nil? || limits.empty?
+
+          device = device_for(home, mounts)
+          if device.nil?
+            out&.puts("  disk: no block device behind #{home}, so the I/O cap is not applied")
+            return []
+          end
+
+          limits.flat_map { |kind, rate| ["--device-#{kind}-bps", "#{device}:#{rate}"] }
+        end
+
+        # The innermost block device the home is on: the longest mount target that is a prefix
+        # of it. A path matched by no `/dev/` mount is nil rather than a guess at the root.
+        def self.device_for(home, mounts = MOUNTS)
+          home = File.expand_path(home.to_s)
+          best = nil
+          File.foreach(mounts) do |line|
+            source, target = line.split(" ", 3)
+            next if source.nil? || target.nil? || !source.start_with?("/dev/")
+            next unless under?(home, target)
+
+            best = [target.length, source] if best.nil? || target.length > best.first
+          end
+          best&.last
+        rescue SystemCallError
+          nil
+        end
+
+        def self.under?(path, target)
+          return true if target == "/"
+
+          path == target || path.start_with?("#{target}/")
+        end
+      end
+
       # **Every call this tool makes to the daemon is bounded.** A `docker` CLI call blocks while the
       # daemon's containerd snapshot and task path is held, and it does not fail, it waits — so an
       # unbounded one is not a slow step, it is a walk that stops. Measured on this deployment three
@@ -151,9 +224,14 @@ module AgentsFyi
 
         def initialize(entry:, home:, out: nil, runner: Shell, uid: Process.uid, gid: Process.gid,
                        name: nil, run_id: nil, inspector: Open3, volume: nil,
-                       self_marker: SELF_MARKER)
+                       self_marker: SELF_MARKER, disk_limits: nil, mounts: DiskLimit::MOUNTS)
           @entry = entry
           @home = File.expand_path(home)
+          # nil asks the environment; a hash (including an empty one, which disables the cap) is
+          # what the caller said — the same rule `volume:` follows, and for the same reason: a
+          # test that pinned nothing would pass or fail with the developer's own environment.
+          @disk_limits = disk_limits.nil? ? DiskLimit.from_env : disk_limits
+          @mounts = mounts
           @out = out
           @runner = runner
           @uid = uid
@@ -365,6 +443,7 @@ module AgentsFyi
           ["docker", "run", "-d", "--rm", "--name", @name,
            "--label", "#{LABEL}=#{@name}",
            "--label", "#{PID_LABEL}=#{Process.pid}",
+           *DiskLimit.argv(home: @home, limits: @disk_limits, mounts: @mounts, out: @out),
            *mount_argv,
            "-e", "HOME=#{CONTAINER_HOME}",
            "-e", "TMPDIR=#{CONTAINER_TMP}",
@@ -608,8 +687,10 @@ module AgentsFyi
 
         def initialize(home:, run_id: nil, out: nil, runner: Shell, pg_port: nil, redis_port: nil,
                        uid: Process.uid, gid: Process.gid, volume: nil, self_marker: SELF_MARKER,
-                       name: nil, inspector: Open3)
+                       name: nil, inspector: Open3, disk_limits: nil, mounts: DiskLimit::MOUNTS)
           @home = File.expand_path(home)
+          @disk_limits = disk_limits.nil? ? DiskLimit.from_env : disk_limits
+          @mounts = mounts
           @out = out
           @runner = runner
           @uid = uid
@@ -691,6 +772,7 @@ module AgentsFyi
           ["docker", "run", "-d", "--rm", "--name", @name,
            "--label", "#{LABEL}=#{@name}",
            "--label", "#{PID_LABEL}=#{Process.pid}",
+           *DiskLimit.argv(home: @home, limits: @disk_limits, mounts: @mounts, out: @out),
            "-p", "127.0.0.1:#{@pg_port}:#{PG_PORT}",
            "-p", "127.0.0.1:#{@redis_port}:#{REDIS_PORT}",
            *mount_argv,

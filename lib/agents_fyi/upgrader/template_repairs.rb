@@ -76,10 +76,15 @@ module AgentsFyi
         }
       end
 
-      # `undefined method 'bid_path' for ...`, in either the wrapper's message or its cause's.
+      # `undefined method 'bid_path' for ...`, in either the wrapper's message or its cause's —
+      # and the second spelling Ruby uses for a call with no receiver. `link_to 'Back', bids_path`
+      # is a bare method call, so it raises `NameError: undefined local variable or method
+      # 'bids_path'`; matching only `undefined method` repaired the polymorphic link on the line
+      # above and left this one, which cost the 6.0 rung's run its repair budget with four failures
+      # still red (measured on the deployment this was written for).
       def self.undefined_helper(failure)
         failure.messages.each do |message|
-          found = message[/undefined method [`'](\w+_path)'/, 1]
+          found = message[/(?:undefined method|undefined local variable or method) [`'](\w+_path)'/, 1]
           return found if found
         end
         nil

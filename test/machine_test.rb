@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "stringio"
 require "tmpdir"
 require "agents_fyi/upgrader"
 
@@ -71,11 +72,20 @@ class MachineTest < Minitest::Test
   # `start!` creates the two directories the container's environment points at — so the
   # tests get a temporary one rather than a path that reads well and does not exist.
   def container(home: nil, runner: nil, inspector: FakeInspector.new, volume: "",
-                self_marker: "/nonexistent-self-marker", **kwargs)
+                self_marker: "/nonexistent-self-marker", out: nil, disk_limits: nil,
+                mounts: Machine::DiskLimit::MOUNTS, **kwargs)
     home ||= temp_home
     Machine::Container.new(entry: entry(**kwargs), home: home, runner: runner || FakeShell.new,
       uid: 1000, gid: 1000, run_id: "run1", inspector: inspector, volume: volume,
-      self_marker: self_marker)
+      self_marker: self_marker, out: out, disk_limits: disk_limits, mounts: mounts)
+  end
+
+  # A mount table as the kernel writes one, so the device a cap names is stated by the test
+  # rather than read from the machine running it.
+  def mounts_file(*lines)
+    path = File.join(temp_home, "mounts")
+    File.write(path, lines.join("\n") + "\n")
+    path
   end
 
   def temp_home
@@ -320,6 +330,52 @@ class MachineTest < Minitest::Test
     run_argv = shell.calls.first[:argv].join(" ")
     assert_includes run_argv, "--label org.agentsfyi.upgrader.step=agentsfyi-step-run1-2-2"
     assert_includes run_argv, "--label org.agentsfyi.upgrader.pid=#{Process.pid}"
+  end
+
+  # **A deployment that shares its daemon with a served application caps the step's disk rate.**
+  # The flags are the contract: `io.max` is what keeps a `bundle install` from queueing every
+  # query the application's own PostgreSQL makes, and a cap that named no device would be
+  # silently absent rather than visible in the argv.
+  def test_a_step_carries_the_disk_rate_the_deployment_named
+    started = { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] }
+    shell = FakeShell.new(answers: started)
+    machine = container(runner: shell, disk_limits: { "read" => "80mb", "write" => "40mb" },
+      mounts: mounts_file("/dev/vda1 / ext4 rw,relatime 0 0"))
+
+    machine.start!(stage: "interpreter", stages: [])
+
+    argv = shell.calls.first[:argv]
+    assert_includes argv.join(" "), "--device-read-bps /dev/vda1:80mb"
+    assert_includes argv.join(" "), "--device-write-bps /dev/vda1:40mb"
+    assert_operator argv.index("--device-write-bps"), :<, argv.index("--mount"),
+      "the cap is after the mount, so a daemon parsing the command sees the mount first"
+  end
+
+  # The home is what the cap is about, and a volume or a bind can sit on its own mount: the
+  # innermost mount is the device the writes will actually reach.
+  def test_the_innermost_mount_behind_the_home_names_the_device
+    home = temp_home
+    shell = FakeShell.new(answers: { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] })
+    machine = container(home: home, runner: shell, disk_limits: { "write" => "40mb" },
+      mounts: mounts_file("/dev/vda1 / ext4 rw 0 0", "/dev/vdb1 #{home} ext4 rw 0 0"))
+
+    machine.start!(stage: "interpreter", stages: [])
+
+    assert_includes shell.calls.first[:argv].join(" "), "--device-write-bps /dev/vdb1:40mb"
+  end
+
+  # A cap with no device behind the home is stated and skipped: the step still runs, because a
+  # limit that could not be applied is not evidence about the release.
+  def test_a_cap_with_no_block_device_is_stated_and_skipped
+    out = StringIO.new
+    shell = FakeShell.new(answers: { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] })
+    machine = container(runner: shell, out: out, disk_limits: { "write" => "40mb" },
+      mounts: mounts_file("tmpfs / tmpfs rw 0 0", "proc /proc proc rw 0 0"))
+
+    assert machine.start!(stage: "interpreter", stages: [])
+
+    assert_empty shell.calls.first[:argv].grep(/--device-\w+-bps/)
+    assert_includes out.string, "no block device behind"
   end
 
   # A container whose owner is gone is removed; a container whose owner is running — a step

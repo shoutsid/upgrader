@@ -103,6 +103,27 @@ class TemplateRepairsTest < Minitest::Test
     assert_equal "category_item_bid", route_for("bid_path").name
   end
 
+  # **A bare helper fails as a NameError, not as a NoMethodError.** `link_to 'Back', bids_path` is a
+  # call with no receiver, so Ruby answers `undefined local variable or method 'bids_path'` — the
+  # spelling the first repair round did not recognise, which left the 6.0 rung's four remaining
+  # failures unrepaired and spent the run. The failure is built here rather than copied because
+  # the recording is the *first* round's output; this spelling only appears once the line above it
+  # has been repaired.
+  def test_a_bare_helper_is_recognised_by_the_name_error_ruby_reports
+    failure = AgentsFyi::Upgrader::SuiteFailures::Failure.new(
+      name: "BidsController GET #edit responds with HTTP 200 status",
+      error: "ActionView::Template::Error",
+      message: "undefined local variable or method `bids_path' for #<#<Class:0x0>:0x0>",
+      frames: [["./app/views/bids/edit.html.erb", 6]]
+    )
+
+    edit = AgentsFyi::Upgrader::TemplateRepairs.for(root: @root, failures: [failure],
+      routes: routes).first
+
+    refute_nil edit, "the bare helper was not recognised as an undefined route helper"
+    assert_equal "<%= link_to 'Back', category_item_bids_path(@category, @item) %>", edit["after"]
+  end
+
   # The same distinction at the line: a bare collection helper is replaced by the declared
   # collection route, with the parents' variables the controller already reads from `params`.
   def test_a_collection_helper_is_repaired_to_the_declared_collection
