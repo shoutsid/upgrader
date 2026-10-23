@@ -97,12 +97,13 @@ class RepairTest < Minitest::Test
     end
   end
 
-  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil, models: nil)
+  def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil, models: nil,
+             home: nil)
     reruns = suites.dup
     Repair.new(
       root: @root, evidence: evidence,
       budget: (models ? budget(attempts: attempts, models: models) : budget(attempts: attempts)),
-      env: env, out: nil, runner: agent, config_dir: config_dir,
+      env: env, out: nil, runner: agent, config_dir: config_dir, home: home,
       rerun: -> { reruns.shift || FakeSuite.new(ok: false, output: "still red") },
       on_attempt: on_attempt
     )
@@ -361,6 +362,7 @@ class RepairTest < Minitest::Test
     assert_includes prompt, "Do not edit the tests"
     assert_includes prompt, "Do not hand-edit Gemfile.lock"
     assert_includes prompt, "Do not try to run it yourself"
+    assert_includes prompt, "there is no shell"
   end
 
   def test_the_agent_command_names_the_agent_the_model_and_the_prompt_s_size
@@ -369,10 +371,27 @@ class RepairTest < Minitest::Test
     result = repair(agent: agent, suites: [FakeSuite.new(ok: true)]).run
 
     argv = agent.calls.first[:argv]
-    assert_equal %w[opencode run --standalone --agent repair], argv.first(5)
-    assert_equal ["--model", "opencode-go/deepseek-v4.1-flash"], argv[5, 2]
-    assert_includes result.attempts.first.command, "opencode run --agent repair --model opencode-go/deepseek-v4.1-flash"
+    assert_equal %w[opencode run --dir], argv.first(3)
+    assert_equal @root, argv[3], "the agent's directory is the worktree, not the image it runs in"
+    assert_equal %w[--agent repair], argv[4, 2]
+    assert_equal ["--model", "opencode-go/deepseek-v4.1-flash"], argv[6, 2]
+    refute_includes argv, "--standalone",
+      "the installed client answers that flag with its help text and runs no model"
+    assert_includes result.attempts.first.command, "opencode run --dir #{@root} --agent repair"
+    assert_includes result.attempts.first.command, "--model opencode-go/deepseek-v4.1-flash"
     assert_includes result.attempts.first.command, "bytes"
+  end
+
+  # **The agent's home is the one the container can write.** The deployment runs this image
+  # with `read_only: true`; opencode's first write was `mkdir /home/upgrader/.local`, which
+  # answered `EROFS: read-only file system` before any model call. The client's own home is
+  # on the cache volume, so it is the home every attempt gets.
+  def test_the_agent_runs_with_the_client_s_writable_home
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)], home: "/var/lib/upgrader").run
+
+    assert_equal "/var/lib/upgrader", agent.calls.first[:env]["HOME"]
   end
 
   # **The environment the live path hands this class is `ENV`, not a Hash.** `ENV` answers

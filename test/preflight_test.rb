@@ -452,6 +452,44 @@ class PreflightTest < Minitest::Test
     assert_equal 0, result.repairs.count { |repair| repair.subject == "git://" }
   end
 
+  # **A shorthand with no branch means `master`, and `master` is often gone.** Bundler 1.x expanded
+  # `github: "owner/name"` to git://… with the default branch `master`; a 2013 repository whose
+  # default branch is now `main` re-resolves the source under that name and fails with `Revision
+  # master does not exist`. The lockfile names the commit the shorthand meant, so the repair
+  # carries it — the same source at the same commit, and the branch lookup never happens. Measured
+  # at the 4.0.13 checkpoint of the first real application: the install succeeded from the lock
+  # and the pin died on the shorthand it had just rewritten.
+  def test_a_github_shorthand_without_a_branch_is_pinned_to_the_locked_revision
+    dir = app(gemfile: <<~GEM, lockfile: <<~LOCK)
+      source "https://rubygems.org"
+      gem "rails", "4.0.0.rc1"
+      gem "simple_form", github: "plataformatec/simple_form"
+      gem "devise", github: "plataformatec/devise", branch: "rails4"
+    GEM
+      GIT
+        remote: git://github.com/plataformatec/simple_form.git
+        revision: 962d56cba3a1f0f5b0d3eb4b1c8d9e0f1a2b3c4d
+        specs:
+          simple_form (3.0.0.rc)
+
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          rails (4.0.0.rc1)
+    LOCK
+
+    result = preflight(dir, corpus: FakeCorpus.new)
+
+    gemfile = read(dir, "Gemfile")
+    assert_includes gemfile,
+      %(gem "simple_form", git: "https://github.com/plataformatec/simple_form.git", ) +
+        %(ref: "962d56cba3a1f0f5b0d3eb4b1c8d9e0f1a2b3c4d")
+    assert_includes gemfile, %(gem "devise", git: "https://github.com/plataformatec/devise.git", branch: "rails4"),
+      "a line that names its own branch must keep it rather than gain a ref"
+    repair = result.repairs.find { |candidate| candidate.text.include?("simple_form") }
+    assert_includes repair.note, "master"
+  end
+
   def test_a_valid_github_line_is_left_alone_when_the_protocol_rule_cannot_apply
     # A `path:` source is not the library's to reinterpret, and a line with no dead protocol
     # is not touched at all.

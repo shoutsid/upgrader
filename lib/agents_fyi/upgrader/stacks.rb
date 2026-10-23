@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require "erb"
+require "uri"
+require "yaml"
+
 module AgentsFyi
   module Upgrader
     # **The Rails knowledge, in one place.** A *stack* is what a set of releases changes and how a
@@ -29,6 +33,21 @@ module AgentsFyi
         # adapter and the usernames, starts PostgreSQL and Redis on localhost, and reports what it
         # started. A native machine has no services stage at all.
         SERVICES = "agents-fyi-services"
+
+        # **The gem a database adapter is, and the only fact needed to find the group it lives in.**
+        # A `database.yml` cannot name a Bundler group — the same application may support more than
+        # one database and declare each client in an optional group — but the adapter it names is
+        # the one the suite will load, so the gem behind that adapter is the one the bundle must
+        # carry. `postgis` is PostgreSQL's adapter with a spatial type, not a gem of its own.
+        DATABASE_GEMS = {
+          "postgresql" => "pg", "postgres" => "pg", "postgis" => "pg",
+          "mysql2" => "mysql2", "mysql" => "mysql2", "trilogy" => "trilogy",
+          "sqlite3" => "sqlite3"
+        }.freeze
+
+        # `bundle exec rubocop -A` names a gem's executable. A command that does not start that
+        # way (`bin/rails assets:precompile`) names a file in the application, not a gem.
+        BUNDLE_EXEC = /\Abundle\s+exec\s+([A-Za-z0-9_.-]+)/
 
         # The suite candidates, in the order they are tried, and **the order is the decision**.
         # Read top to bottom:
@@ -117,6 +136,86 @@ module AgentsFyi
         end
 
         def services_command = [SERVICES]
+
+        # **The groups this application's own commands need the bundle to carry.** The database
+        # adapter decides one; every declared gate command that runs a gem's executable decides
+        # another. The engine asks and applies; which gem belongs to which adapter, and that a
+        # `bundle exec` names one, is this pack's knowledge. A command whose executable is not a
+        # dependency (a `standardrb` provided by `standard`, an app-local binstub) adds nothing,
+        # and detection falling back to nothing is the old behaviour rather than a refusal.
+        def bundle_groups(root, commands: [])
+          gems = []
+          adapter = database_adapter(root)
+          gems << DATABASE_GEMS[adapter.to_s] if adapter
+          Array(commands).each do |command|
+            executable = command.to_s[BUNDLE_EXEC, 1]
+            gems << executable if executable
+          end
+          BundleGroups.for(root).needed(gems.compact.uniq)
+        end
+
+        # **The adapter the application will actually connect with.** The test environment is read
+        # first because that is the suite's; development is the fallback because that is
+        # `app:update`'s and a fresh application often configures one block and aliases the rest.
+        # A file this cannot parse falls back to the plain-text scan `services.sh` also keeps, so
+        # a `database.yml` with an ERB construct this reader cannot follow still names its
+        # adapter rather than reading as "this application has no database".
+        def database_adapter(root)
+          path = File.join(root.to_s, "config", "database.yml")
+          return nil unless File.file?(path)
+
+          text = begin
+            File.read(path, encoding: "utf-8")
+          rescue SystemCallError
+            return nil
+          end
+          config = begin
+            source = ERB.new(text).result
+            YAML.respond_to?(:unsafe_load) ? YAML.unsafe_load(source) : YAML.load(source)
+          rescue StandardError
+            nil
+          end
+
+          if config.is_a?(Hash)
+            %w[test development production].each do |name|
+              section = config[name]
+              next unless section.is_a?(Hash)
+
+              adapter = adapter_in(section)
+              return adapter if adapter
+            end
+          end
+          text[/adapter:\s*["']?([A-Za-z0-9_]+)/, 1]
+        end
+
+        # The adapter a section names, directly or in one of the connections a Rails 7.1
+        # multi-database file nests under it.
+        def adapter_in(section)
+          direct = section["adapter"].to_s.strip
+          return direct unless direct.empty?
+
+          section.each_value do |value|
+            next unless value.is_a?(Hash)
+
+            adapter = value["adapter"].to_s.strip
+            return adapter unless adapter.empty?
+          end
+          adapter_from_url(section["url"])
+        end
+
+        # The scheme a `url:` names, spelled as an adapter. A URL with no scheme is not a
+        # database this can identify.
+        def adapter_from_url(url)
+          scheme = URI.parse(url.to_s).scheme.to_s
+          case scheme
+          when "postgres", "postgresql" then "postgresql"
+          when "mysql", "mysql2" then "mysql2"
+          when "sqlite3" then "sqlite3"
+          else scheme.empty? ? nil : scheme
+          end
+        rescue URI::InvalidURIError
+          nil
+        end
 
         def suite_candidates = SUITES
 

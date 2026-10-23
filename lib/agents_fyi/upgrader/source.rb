@@ -173,11 +173,19 @@ module AgentsFyi
       # unpacked into and executed from. So the path carries the era, and two eras never share one.
       # `machine:` is required rather than defaulted: a call site that forgot it would silently share
       # again, which is the bug this exists to prevent.
+      # **The groups a walk does not install by default, and the one list that says so.** A
+      # development group is where an application keeps its generators, consoles and linters; it is
+      # not what a rung is measured against, and installing it on every era spends a bundle for
+      # tools no suite loads. `Stacks::Rails.bundle_groups` removes a group from this list when a
+      # command the walk actually runs needs a gem from it — a declared formatter is a gate, and a
+      # gate whose executable is not installed is a step nobody can verify.
+      WITHOUT_GROUPS = %w[development].freeze
+
       def bundle_env(machine:)
         { "BUNDLE_PATH" => File.join(home, "bundles", Digest::SHA256.hexdigest(root)[0, 16],
           era_of(machine)),
          "BUNDLE_GEMFILE" => File.join(root, "Gemfile"),
-         "BUNDLE_WITHOUT" => "development",
+         "BUNDLE_WITHOUT" => WITHOUT_GROUPS.join(" "),
          "BUNDLE_BUILD__NOKOGIRI" => "--use-system-libraries" }
       end
 

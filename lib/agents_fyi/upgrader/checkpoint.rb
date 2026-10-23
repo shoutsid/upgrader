@@ -117,6 +117,32 @@ module AgentsFyi
         File.file?(path) ? File.read(path).strip : nil
       end
 
+      # **Where this walk began, which is not where it last passed.** `base` moves with every
+      # passing rung, so it is the right answer for "what does the next step start from" and the
+      # wrong one for "put this repository back to the release its project is on". The two were
+      # the same commit until the first rung passed, and telling them apart is what a reconnect
+      # needs (see `Step#rewind_to_declared`): a project connected again starts at the release the
+      # application is on, while the kept tree sits at the top of the previous walk.
+      #
+      # The commit is found rather than recorded: every commit this tool makes says so in its
+      # subject, so the parent of the oldest one is the clone point — and a tree the loop has not
+      # stepped in yet is already there. `git log` rather than the shallow boundary, because a
+      # local path's kept clone is not shallow and its repository's own first commit is not where
+      # this walk started.
+      TOOL_PREFIX = "agents-fyi upgrader: "
+
+      def self.origin(root)
+        found, status = git(root, "log", "--reverse", "--format=%H", "--grep=#{TOOL_PREFIX}")
+        oldest = status&.success? ? found.lines.map(&:strip).find { |line| !line.empty? } : nil
+        if oldest
+          parent, parent_status = git(root, "rev-parse", "--verify", "--quiet", "#{oldest}^")
+          return parent.strip if parent_status&.success?
+        end
+
+        start = head(root).first.to_s.strip
+        start.empty? ? nil : start
+      end
+
       def self.remember_base(root, commit)
         return if commit.to_s.empty?
 

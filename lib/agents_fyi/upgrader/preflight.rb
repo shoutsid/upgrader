@@ -326,6 +326,7 @@ module AgentsFyi
 
       def protocol_repairs
         repairs = []
+        revisions = git_revisions
         SOURCES.each do |name|
           path = File.join(@root, name)
           next unless File.file?(path)
@@ -333,7 +334,7 @@ module AgentsFyi
           lines = File.binread(path).split("\n", -1)
           changed = false
           lines.each_with_index do |line, index|
-            after, subject, note = protocol_line(line)
+            after, subject, note = protocol_line(line, revisions)
             next if after.nil?
 
             lines[index] = after
@@ -352,7 +353,14 @@ module AgentsFyi
       # shorthand is *expanded* rather than swapped, because there is no scheme to swap — and
       # the line's own quoting and every other option it carries (a `branch:`, most often)
       # are kept exactly as written; only the source is rewritten.
-      def protocol_line(line)
+      #
+      # **A shorthand with no branch or ref is pinned to the commit the lockfile names.** The
+      # shorthand's implicit branch is `master`, and a 2013 repository's default branch has long
+      # since become `main` — so `bundle update`, which re-reads the Gemfile, asked for `master`,
+      # found nothing and failed with `Revision master does not exist`. Measured at the 4.0.13
+      # checkpoint of the first real application: the install succeeded from the lock and the
+      # pin, which is the stage that moves Rails, died on the shorthand it had just rewritten.
+      def protocol_line(line, revisions = {})
         if line.include?("git://")
           return [line.gsub("git://", "https://"), "git://",
             "GitHub stopped accepting the git:// protocol in 2022; https:// is the same " \
@@ -360,17 +368,51 @@ module AgentsFyi
         end
         return [nil, nil, nil] unless line.include?("github:")
 
+        pinned = false
         after = line.sub(GITHUB_OPTION) do
           quote = Regexp.last_match(1)
           remote = Regexp.last_match(2).strip.delete_suffix(".git")
-          %(git: #{quote}https://github.com/#{remote}.git#{quote})
+          url = "https://github.com/#{remote}.git"
+          revision = revisions[normalize_remote(url)]
+          pinned = !revision.to_s.empty? && !line.match?(/\b(?:branch|ref|tag):/)
+          ref = pinned ? ", ref: #{quote}#{revision}#{quote}" : ""
+          %(git: #{quote}#{url}#{quote}#{ref})
         end
         return [nil, nil, nil] if after == line
 
-        [after, "github:",
-          "Bundler expands github: to git://github.com/... — the same protocol GitHub " \
+        note = "Bundler expands github: to git://github.com/... — the same protocol GitHub " \
           "stopped accepting in 2022 — so the shorthand becomes the git: remote it stands " \
-          "for, over https://"]
+          "for, over https://"
+        if pinned
+          note += ", pinned to the revision the lockfile names, because the shorthand's " \
+            "implicit `master` branch no longer exists on every repository"
+        end
+        [after, "github:", note]
+      end
+
+      # The revision each git source is locked at, keyed by its remote without a scheme.
+      #
+      # The lockfile is the only place a 2013 Gemfile records which commit its shorthand meant;
+      # reading it before a rewrite is why the pin can name that commit rather than a branch the
+      # repository renamed out from under it.
+      def git_revisions
+        path = File.join(@root, "Gemfile.lock")
+        return {} unless File.file?(path)
+
+        revisions = {}
+        remote = nil
+        File.binread(path).each_line do |line|
+          case line
+          when /\A  remote: (\S+)/ then remote = normalize_remote(Regexp.last_match(1))
+          when /\A  revision: (\S+)/ then revisions[remote] = Regexp.last_match(1) if remote
+          when /\A[A-Z]/ then remote = nil
+          end
+        end
+        revisions
+      end
+
+      def normalize_remote(url)
+        url.to_s.strip.sub("git://", "https://").delete_suffix(".git")
       end
 
       # How many names one digest question may carry. Mirrored from the route

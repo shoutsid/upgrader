@@ -133,6 +133,10 @@ module AgentsFyi
         # a forced attempt is never read as an ordinary one. The loop never passes it: a walk
         # that ignored its own memory would re-derive every rung every cycle.
         @force = force
+        # Whether this step put a kept tree back to where its project says the walk is. It is not
+        # `@force`: that is an operator's "walk this rung again", while this is a tree that belongs
+        # to an earlier walk and settles nothing about the moves this one is about to make.
+        @rewound = false
         # Where a retry waits. Injected so the suite does not spend the backoff it asserts.
         @pause = pause || ->(seconds) { sleep(seconds) }
         # The stack pack: what a release changes and how a command is spelled for it.
@@ -277,18 +281,7 @@ module AgentsFyi
         # no longer accepts, a fork that has been deleted, a pin that cannot sit beside the
         # framework. Its repairs are edits this step made; everything it will not rewrite
         # travels as a decision.
-        preflight = preflight_stage(stages, step)
-        # **A preflight repair has an origin of its own.** It was concatenated as a
-        # `Preflight::Repair`, which has no `origin`, so the body counted every one of
-        # them as “from the service's scan” — 30 dependency-line edits under a sentence
-        # that read as source changes. The `Applier::Applied` shape is what the rest of
-        # the record already speaks, and `preflight` is the fact a reviewer needs.
-        @applied.concat(preflight.repairs.map { |repair|
-          Applier::Applied.new(path: repair.path, line: repair.line, text: repair.text,
-            after: repair.after, subject: repair.subject, origin: "preflight",
-            note: repair.note)
-        })
-        @decisions.concat(preflight.decisions)
+        apply_preflight(stages, step)
 
         # **What this project has already decided, applied before anything is measured.** A decision's
         # effect is how this application *is*, not part of the move: it runs on every walk, in the
@@ -420,6 +413,19 @@ module AgentsFyi
 
       private
 
+      # The local files a fresh clone is missing, copied from the repository's own examples, and a
+      # stage whether or not anything was copied: a reader of a record should be able to tell "this
+      # tree had its own configuration" from "this tree was configured from the examples".
+      def bootstrap_local_config(stages)
+        seeds, failures = Bootstrap.seed(@worktree.root, out: @out)
+        return if seeds.empty? && failures.empty?
+
+        stages << Record::Command.new(stage: Record::BOOTSTRAP,
+          command: "local configuration from the repository's examples",
+          ran: failures.empty?, exit_code: failures.empty? ? 0 : nil, seconds: 0.0,
+          output_tail: (seeds + failures).map(&:sentence).join("\n"))
+      end
+
       # A working copy, and the two facts about the application that decide whether the
       # rest is worth doing.
       #
@@ -469,8 +475,16 @@ module AgentsFyi
           @record_commit = @worktree.commit.to_s
           @record_commit = @base_commit if @record_commit.empty?
         end
+        # **The clone is configured before anything reads it.** `config/database.yml` decides
+        # whether the services stage starts a database at all, and an application's own settings
+        # file decides whether `bin/rails` can boot; both are git-ignored and shipped as examples,
+        # and the rule that creates them is `Bootstrap`'s. It sits after the reset above so a tree
+        # put back to its base is seeded again, and before the lockfile read for no particular
+        # reason other than that everything after this point may run an application command.
+        bootstrap_local_config(stages)
         @lockfile = Lockfile.read(@worktree.root)
         pinned = @lockfile.rails
+        pinned = rewind_to_declared(pinned) if @reuse
         unless pinned
           return Record.refused(
             repository: @repository, commit: record_commit, worktree: @worktree.root,
@@ -493,6 +507,46 @@ module AgentsFyi
         Record.refused(repository: @repository, from_version: "unknown", to_version: rung_to, why: e.message)
       end
 
+      # **A walk's position is the project's, not the tree's.** A kept tree is one repository's
+      # and outlives the project that walked it: connecting the same repository again starts a new
+      # project at the release the application is on, while the tree still sits at the top of the
+      # earlier walk. Planning from the tree asked the ladder for `8.1.4 -> 4.0.13`, which it
+      # rightly refused — and a refusal is a fact about the move, so the queue row settled and the
+      # new project could never move again. The declaration wins, because it is what the person
+      # connected; the tree is put back to the commit its walk began at.
+      #
+      # The moves the old tree settled above that commit are not this walk's history either, so
+      # `@rewound` tells `settled_entry` to re-derive them. Without it every rung would answer
+      # "already settled", the project's `from_version` would never advance, and the loop would
+      # report a finished walk over an application nobody upgraded — finished and stuck look
+      # identical from outside, which is the failure this project keeps finding.
+      def rewind_to_declared(pinned)
+        declared = @project&.from.to_s
+        return pinned if declared.empty? || pinned.nil?
+        return pinned unless version_ahead?(pinned.version, declared)
+
+        start = Checkpoint.origin(@worktree.root).to_s
+        return pinned if start.empty? || start == @base_commit
+
+        Checkpoint.reset(@worktree.root, to: start)
+        Checkpoint.remember_base(@worktree.root, start)
+        @base_commit = start
+        @record_commit = start
+        @rewound = true
+        @out.puts("  working copy: put back to #{start[0, 8]} — the project starts at #{declared}, " \
+                  "and this tree had been walked to #{pinned.version}") if @out
+        Lockfile.read(@worktree.root).rails
+      rescue Lockfile::Missing, Lockfile::Unreadable => e
+        @out.puts("  working copy: put back, but its Gemfile.lock could not be read: #{e.message}") if @out
+        pinned
+      end
+
+      def version_ahead?(version, other)
+        Gem::Version.new(version.to_s) > Gem::Version.new(other.to_s)
+      rescue ArgumentError
+        false
+      end
+
       # The ledger entry for this move, and whether it is settled *for the machine that
       # would run it now*. The expected machine is computed cheaply — the era the selection
       # would try first, or this process — and never by starting a container: the check
@@ -507,6 +561,7 @@ module AgentsFyi
           @out.puts("  ledger: #{entry.verdict} for this move is set aside (--force)") if @out
           return [entry, false]
         end
+        return [entry, false] if @rewound
 
         settled = @ledger.settled?(
           repo: @repository, commit: record_commit,
@@ -611,7 +666,7 @@ module AgentsFyi
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
-          config_dir: File.join(@home, "repair"),
+          config_dir: File.join(@home, "repair"), home: @home,
           on_attempt: ->(attempt) { stages << repair_stage(attempt) }
         ).run
         @out.puts("  repair: #{result}") if @out && !result.attempts.empty?
@@ -669,6 +724,30 @@ module AgentsFyi
       # entry be scoped to a rung: measured, the digest's `devise ~> 3.0.0` is the line 4.0 and 4.1 need
       # and the wrong one at 4.2. With neither fact available a conditioned entry is a *note* rather
       # than a silent pass.
+      # **Making the Gemfile installable is a precondition of measuring, not a change the rung is
+      # judged for, and both pipelines need it.** The caller decides what happens to the repairs
+      # next — a rung commits them beside its accepted decisions, a patch checkpoint commits them on
+      # their own — but the edits and the stage are the same in both places. They were one copy in
+      # the rung pipeline alone, and that is how a patch checkpoint came to install the
+      # application's Gemfile as it stood: an application whose sources name the `git://` protocol
+      # GitHub retired in 2022 had every era rejected for the protocol's reason, and the record
+      # blamed the interpreter matrix for it.
+      def apply_preflight(stages, step)
+        preflight = preflight_stage(stages, step)
+        # **A preflight repair has an origin of its own.** It was concatenated as a
+        # `Preflight::Repair`, which has no `origin`, so the body counted every one of
+        # them as “from the service's scan” — 30 dependency-line edits under a sentence
+        # that read as source changes. The `Applier::Applied` shape is what the rest of
+        # the record already speaks, and `preflight` is the fact a reviewer needs.
+        @applied.concat(preflight.repairs.map { |repair|
+          Applier::Applied.new(path: repair.path, line: repair.line, text: repair.text,
+            after: repair.after, subject: repair.subject, origin: "preflight",
+            note: repair.note)
+        })
+        @decisions.concat(preflight.decisions)
+        preflight
+      end
+
       def preflight_stage(stages, step)
         corpus = @corpus || Corpus.new(base: @api)
         @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
@@ -753,6 +832,9 @@ module AgentsFyi
       # application would be this tool making a change nobody documented. What is left is the part
       # of a rung that measures — the environment, the exact pin, the boot, the suite and the rest
       # of the application's declared gate — and `Record.verdict` decides it like any other run.
+      # The preflight is the one edit that does run, and it is not an exception to that rule: a
+      # Gemfile that cannot be installed cannot be measured, and its repairs are mechanical,
+      # attributed and carried in the record beside the run they made possible.
       def patch_run(stages)
         step = patch_stage
         @out.puts("  patch update: #{@from} -> #{@to} — no documented changes; the suite is the evidence") if @out
@@ -762,6 +844,14 @@ module AgentsFyi
           @out.puts("  already settled: #{entry.verdict} — #{entry.note}") if @out
           return nil
         end
+
+        # **The environment, before the interpreter probe.** `choose_machine` picks an era by
+        # installing the application's bundle, so a Gemfile that cannot be installed as it stands
+        # rejects every era for that reason and the record blames the matrix for a fact about the
+        # application's own sources. The repairs are committed here so the baseline below measures
+        # the tree the probe measured.
+        apply_preflight(stages, step)
+        checkpoint("preflight")
 
         choice = choose_machine(stages, step)
         return finish(choice) if choice.is_a?(Record)
@@ -975,15 +1065,15 @@ module AgentsFyi
         drop_unrunnable_bundler(machine, stages)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-          env: @worktree.bundle_env(machine: machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
+          env: bundle_env(machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
         stages << stage
         if (version = missing_bundler(stage))
           stages << command(Record::BUNDLE,
             ["gem", "install", "--user-install", "bundler", "-v", version, "--no-document"],
-            chdir: @worktree.root, env: @worktree.bundle_env(machine: machine), machine: machine,
+            chdir: @worktree.root, env: bundle_env(machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
-            env: @worktree.bundle_env(machine: machine), machine: machine)
+            env: bundle_env(machine), machine: machine)
           stages << stage
         end
         return stage if stage.ok?
@@ -1014,7 +1104,7 @@ module AgentsFyi
 
           tried += broken
           stage = command(Record::BUNDLE, ["bundle", "update", *broken], chdir: @worktree.root,
-            env: @worktree.bundle_env(machine: machine), machine: machine,
+            env: bundle_env(machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << stage
           break if stage.ok?
@@ -1061,7 +1151,7 @@ module AgentsFyi
         return if after.nil?
 
         probe = command(Record::BUNDLE, %w[bundle --version], chdir: @worktree.root,
-          env: @worktree.bundle_env(machine: machine), machine: machine)
+          env: bundle_env(machine), machine: machine)
         return if probe.ok?
 
         stages << probe
@@ -1137,7 +1227,7 @@ module AgentsFyi
         gems = gems.dup
         PIN_ROUNDS.times do
           attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
-            chdir: @worktree.root, env: @worktree.bundle_env(machine: machine || @machine), machine: machine,
+            chdir: @worktree.root, env: bundle_env(machine || @machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
           return attempt if attempt.ok?
@@ -1597,8 +1687,45 @@ module AgentsFyi
       # suite expects, the bundle this run installed, and the deployment's own values for the
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
-        @tests.machine_test_env(@stack).merge(@worktree.bundle_env(machine: @machine))
+        @tests.machine_test_env(@stack).merge(bundle_env(@machine))
           .merge(project_env).merge(@suite_env)
+      end
+
+      # **The bundle's own groups, detected rather than assumed.** The tool's path settings are
+      # what make this run's bundle this run's, and they win; the groups are what the application
+      # declares and what its commands need, and `Stacks::Rails.bundle_groups` reads them from the
+      # Gemfile through Bundler's DSL. `BUNDLE_WITH` is what installs an optional group, and a
+      # group this removes from `BUNDLE_WITHOUT` is installed because the application's own gate
+      # runs an executable from it — the formatter a project declared, the adapter its database.yml
+      # names. With no detection the environment is exactly the walk's old one, which is the
+      # fallback a Gemfile the DSL refuses deserves.
+      def bundle_env(machine)
+        env = @worktree.bundle_env(machine: machine)
+        groups = bundle_groups
+        return env if groups.groups.empty?
+
+        names = groups.groups.map(&:to_s)
+        optional = groups.optional.map(&:to_s).uniq
+        excluded = Source::WITHOUT_GROUPS - names
+        env = env.merge("BUNDLE_WITHOUT" => excluded.join(" "))
+        env["BUNDLE_WITH"] = optional.join(" ") unless optional.empty?
+        env
+      end
+
+      def bundle_groups
+        @bundle_groups ||= @stack.bundle_groups(@worktree.root, commands: bundle_commands)
+      end
+
+      # The commands whose executables the bundle has to provide: the application's own suite, its
+      # declared gate, and the formatter and checker the project calls its style. A command that
+      # is not `bundle exec <gem>` contributes nothing (the pack decides), and a project with none
+      # of them contributes nothing at all.
+      def bundle_commands
+        commands = [@project&.suite&.command]
+        Array(@project&.checks).each { |check| commands << check.command }
+        commands << @project&.style&.format
+        commands << @project&.style&.check
+        commands.compact
       end
 
       # `KEY=VALUE` lines, `#` comments and blank lines ignored, and a missing file is an

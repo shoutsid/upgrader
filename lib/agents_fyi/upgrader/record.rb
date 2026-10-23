@@ -28,6 +28,13 @@ module AgentsFyi
       # The stages, named, because "the step failed" is not actionable and "bundle
       # update failed" is. They are used as stage labels on a `Command`.
       PREPARE = "prepare"
+      # **The local configuration a fresh clone does not have.** A repository git-ignores its
+      # `config/database.yml`, a `.env`, a fork's own settings file and ships an `.example` beside
+      # each; the walker creates the missing target before anything reads it (`Bootstrap`). Its own
+      # stage because a reader has to be able to tell configuration this tool prepared from
+      # configuration the application arrived with, and because the store is what starts the
+      # database the services stage looks for.
+      BOOTSTRAP = "bootstrap"
       # What an old application's Gemfile needs before it can be installed at all: a
       # `git://` remote GitHub stopped accepting in 2022, a fork that no longer exists, a
       # pin that cannot sit beside the framework. A stage rather than a silent

@@ -1500,6 +1500,55 @@ class StepTest < Minitest::Test
     assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
   end
 
+  # **A project's declaration is where its walk is, and a kept tree outlives a project.**
+  # Measured on a reconnect: the repository was connected again at the release its Gemfile names
+  # (4.2.11) while the loop's tree still sat at the top of the earlier walk (5.0.0). Planning from
+  # the tree asked for a backwards move, which the ladder rightly refused — and a refusal is a fact
+  # about the move, so the queue row settled and the new project could never move again. The tree
+  # is put back to the commit its walk began at, and the moves that walk settled above it are
+  # re-derived because they are not this walk's history.
+  def test_a_kept_tree_ahead_of_the_project_is_put_back_to_the_declared_release
+    dir = track(app)
+    # What the earlier walk left: the rung committed, and the marker moved to it.
+    File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "5.0.0"\n))
+    File.write(File.join(dir, "Gemfile.lock"), LOCKFILE.sub("rails (4.2.11)", "rails (5.0.0)"))
+    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+    top = AgentsFyi::Upgrader::Checkpoint.head(dir).first
+    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, top)
+
+    ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby test")
+    ledger.record(repo: "acme/storefront", commit: AgentsFyi::Upgrader::Checkpoint.origin(dir),
+      from_version: "4.2.11", to_version: "5.0.0", verdict: "passed", baseline: 0)
+
+    out = StringIO.new
+    record = step(dir, reuse: true, out: out, ledger: ledger, project: declaration).run
+
+    refute_nil record, "the rewound walk was skipped by the settled entry of the walk it replaced"
+    assert_equal "4.2.11", record.from_version,
+      "the step planned from the abandoned tree's release rather than the project's"
+    assert_includes out.string, "put back to", "the rewind was silent"
+    refute_equal top, record.commit, "the record named the abandoned walk's commit as its base"
+    assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
+  end
+
+  # The other half of the same rule: a tree already at the project's release is left alone, so
+  # an ordinary cycle does not pay a reset — and the ledger keeps its say about a move it settled.
+  def test_a_kept_tree_at_the_project_s_release_is_not_rewound
+    dir = track(app)
+    out = StringIO.new
+    record = step(dir, reuse: true, out: out, project: declaration).run
+
+    assert record.passed?, record.why
+    assert_equal "4.2.11", record.from_version
+    refute_includes out.string, "put back to"
+  end
+
+  def declaration
+    AgentsFyi::Upgrader::Project.new(
+      { "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0" }
+    )
+  end
+
   # A hand-run step never resets anything: it takes a fresh copy per run (the fake source
   # hands back the fixture itself, so a reset here would eat the test's own files), and
   # the flag is threaded all the way to the source rather than assumed.
@@ -1537,8 +1586,10 @@ class StepTest < Minitest::Test
   # **A patch checkpoint is maintenance, and the stages it leaves out are the point.** A patch release
   # documents no change the ladder could apply, so the run pins, boots and measures: no plan to fetch,
   # no scan, no accepted-decision edit, no `app:update` and no framework defaults. If any of those ran,
-  # the tool would be changing an application for a release that documents no change to it.
-  def test_a_patch_checkpoint_runs_the_maintenance_pipeline_and_nothing_else
+  # the tool would be changing an application for a release that documents no change to it. The
+  # preflight does run: it is the repair that makes the Gemfile installable at all, not a change for
+  # the release, and the interpreter probe is itself an install.
+  def test_a_patch_checkpoint_runs_the_maintenance_pipeline_and_repairs_only_the_environment
     dir = track(app)
     corpus = FakeCorpus.new(payload: plan)
     runner = FakeRunner.new
@@ -1553,13 +1604,41 @@ class StepTest < Minitest::Test
     assert_equal 2, tests.seen.size, "a patch run is a baseline and one suite"
 
     stages = record.stages.map(&:stage)
+    assert_includes stages, "preflight", "the patch run installed a Gemfile it never made installable"
     assert_includes stages, "baseline"
     assert_includes stages, "pin"
     assert_includes stages, "suite"
-    assert_empty stages & %w[preflight apply decisions rails:update defaults style],
+    assert_empty stages & %w[apply decisions rails:update defaults style],
       "a patch run took a rung's stages: #{stages.inspect}"
     assert_empty runner.calls.grep(/app:update|rails:update/), "a patch run ran app:update"
     assert_empty (corpus.upgrade_calls || []), "a patch run asked the ladder for a plan"
+  end
+
+  # **A patch checkpoint cannot measure a Gemfile it cannot install, and the protocol is the
+  # application's fact rather than the rung's.** The preflight's repairs run in both pipelines for
+  # the reason the rung's own test states: the machine choice *is* a `bundle install`, so a dead
+  # `git://` remote rejects every era and the record blames the matrix for it. This is the run that
+  # proved it — an application on 4.0.0.rc1 whose lockfile still named the retired protocol.
+  def test_a_patch_checkpoint_repairs_an_uninstallable_gemfile_before_the_install
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "cancan", git: "git://github.com/moriz/cancan.git"
+    GEM
+    corpus = FakeCorpus.new(payload: plan, migrations: [
+      { "gem" => "cancan", "kind" => "replaced", "replacement" => "cancancan",
+        "requirement" => "~> 1.9", "mechanical" => true,
+        "note" => "the Rails-4 fork is gone", "source" => "the index" }
+    ])
+
+    record = step(dir, corpus: corpus, to: "4.2.12").run
+
+    stages = record.stages.map(&:stage)
+    assert_operator stages.index("preflight"), :<, stages.index("bundle"),
+      "the install ran before the Gemfile was made installable"
+    assert_equal %w[cancan git://], record.applied.map(&:subject).sort,
+      "a patch checkpoint ran without the repairs that let its bundle install"
+    assert_includes record.patch, %(gem "cancancan", "~> 1.9")
   end
 
   # **The plan says which minor moved; the checkpoint says which patch is installed.** A latest-patch
@@ -2986,5 +3065,41 @@ class StepTest < Minitest::Test
 
     assert_equal({ "i18n" => "0.6.4" }, held,
       "a declared gem is the application's line and cannot be held twice")
+  end
+
+  # **A fresh clone is configured before anything reads it, and the record says so.** The measured
+  # failure was two stages deep: `config/database.yml` is git-ignored and ships as an example, the
+  # services stage found no file and started no PostgreSQL, and the baseline failed on a database
+  # the walk had never tried to provide. The copy is detected from the repository's own ignore
+  # rules and example, and the bundle's groups follow from the adapter the copy names.
+  def test_a_git_ignored_database_example_is_seeded_before_the_bundle_and_recorded
+    dir = track(app(gemfile: <<~GEM))
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      group :postgresql, optional: true do
+        gem "pg", "1.6.3"
+      end
+    GEM
+    File.write(File.join(dir, ".gitignore"), "config/database.yml\n")
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "database.yml.example"), <<~YAML)
+      test:
+        adapter: postgresql
+        database: app_test
+    YAML
+    commit(dir, "the database example")
+    runner = FakeRunner.new
+
+    record = step(dir, runner: runner, tests: CapturingTests.new).run
+
+    assert File.file?(File.join(dir, "config", "database.yml")),
+      "the walk measured a tree it had not configured"
+    bootstrap = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::BOOTSTRAP }
+    refute_nil bootstrap, "the record does not say the tree was configured"
+    assert_includes bootstrap.output_tail, "config/database.yml.example"
+    install = runner.envs.find { |command, _env| command == "bundle install" }
+    refute_nil install, "the step never installed the bundle"
+    assert_equal "postgresql", install.last["BUNDLE_WITH"],
+      "the adapter's optional group was not part of the bundle"
   end
 end

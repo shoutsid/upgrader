@@ -115,7 +115,7 @@ module AgentsFyi
         tail = text(stage&.output_tail, record: record)
         change = change_for(record)
         {
-          "title" => title_for(record: record, first: Record.first_line(tail)),
+          "title" => title_for(record: record, first: failure_head(stage: stage, tail: tail)),
           # **The change the rung names, when it names one.** The ladder gives a change a
           # component (`activerecord`, `actionpack`, …), and the report's library is that
           # component rather than the meta-gem — the corpus's observed half is read one library
@@ -415,6 +415,29 @@ module AgentsFyi
 
       def self.head_of(text)
         clip(text.to_s.lines.first(HEAD_LINES).join.strip, HEAD_CHARS)
+      end
+
+      # **The line a suite failure is titled by is its first failing example, not the first
+      # line it printed.** A suite's excerpt keeps both of its ends, and a Rails 5 run opens
+      # with deprecation warnings — measured on the first real walk, where a 4.2.0 -> 5.0.7.2
+      # rung that failed eleven controller specs was filed as "… upgrade failed: DEPRECATION
+      # WARNING: Accessing mime types via constants is deprecated", which is the title every
+      # 5.0 rung in every application would get. The corpus compares reports when it decides a
+      # finding is a duplicate, so a title made of noise is also how a *different* failure gets
+      # refused as one already recorded. `Failed examples:` is the block that names what broke;
+      # a suite printing no such block falls back to its summary line, and anything that is not
+      # a suite to its first line, which is what a command's first line always meant.
+      def self.failure_head(stage:, tail:)
+        text = tail.to_s
+        return Record.first_line(text) unless stage&.stage == Record::SUITE
+
+        lines = text.lines.map(&:strip)
+        start = lines.index("Failed examples:")
+        example = start && lines[(start + 1)..].find { |line| !line.empty? }
+        example ||= lines.reverse.find do |line|
+          line.match?(/\d+ (?:examples?|runs), .*\b(?:failures?|errors?)\b/)
+        end
+        example || Record.first_line(text)
       end
 
       # What this run did, in the order it did it, from the recorded commands alone.

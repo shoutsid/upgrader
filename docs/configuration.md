@@ -341,6 +341,28 @@ off, the setting names a path the container cannot see, and the repository's sui
 while the container reports healthy. `UPGRADER_SUITE_ENV_FILE` remains for a deployment that
 already has a file inside the container.
 
+### What a fresh clone is missing
+
+A clone is the repository, not a working application. A file the repository git-ignores — a Rails
+application's `config/database.yml`, a fork's own settings file, a `.env` — and ships a tracked
+`<name>.example` or `<name>.sample` beside is local configuration the repository's own README tells
+a person to create. The walker copies the missing target before it reads anything, and records the
+copy as a `bootstrap` stage; an existing target is never overwritten, a file git does not ignore is
+not local configuration, and an example the repository does not track is not the repository's
+statement. `config/database.yml` is the one that matters most: the services stage reads it to
+decide which server to start, so a walk that skipped this measured a suite about a database nobody
+had provided.
+
+**The bundle's groups are read from the application, not declared here.** A gem in an
+`optional: true` group is installed only when `BUNDLE_WITH` names that group; a gem in the
+`development` group is not installed at all under the walk's `BUNDLE_WITHOUT`. The walker reads
+the Gemfile through Bundler's own DSL and adds the group that carries a gem it actually needs:the gem behind the adapter the application's `database.yml` names (the suite will load it), or the
+executable a project command runs (`bundle exec rubocop`). `pg` declared in
+`group :postgresql, optional: true` beside `adapter: postgresql` is the measured case — without
+it the baseline failed on a gem the application had declared all along — and a declared formatter
+whose gem is development-only left every rung `unverified` rather than measured. A Gemfile the
+DSL refuses falls back to the environment every walk had before this rule existed.
+
 ## Repair
 
 A step whose baseline is red, or whose post-move suite goes red, can ask an agent for help. The

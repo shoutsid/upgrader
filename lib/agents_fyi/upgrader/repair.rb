@@ -136,7 +136,7 @@ module AgentsFyi
       end
 
       def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
-                     on_attempt: nil, before_the_move: false, config_dir: nil)
+                     on_attempt: nil, before_the_move: false, config_dir: nil, home: nil)
         @root = root
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
@@ -162,6 +162,14 @@ module AgentsFyi
         # brief has to say which, because the model's first question is "did I do this?".
         @before_the_move = before_the_move
         @config_dir = config_dir.to_s
+        # **The agent's home, and it is the client's own directory rather than the user's.**
+        # The deployment runs this container with a read-only root and a home under it,
+        # so opencode's first attempt to write `~/.local` answered `EROFS: read-only file
+        # system` and every repair failed before the model saw the tree. The writable home
+        # is the directory the client already owns — the one the config lives in — and it
+        # is also where a credential belongs: a token in an image layer is a token in
+        # every container that image starts.
+        @home = home.to_s
       end
 
       def run
@@ -227,7 +235,18 @@ module AgentsFyi
       end
 
       def run_agent(prompt, model)
-        argv = [@binary, "run", "--standalone", "--agent", @agent]
+        # **No `--standalone`, because the flag is gone from the client this runs.** The
+        # argument was accepted by an older `opencode run` and is a usage error in the
+        # version the image installs, which printed the help and exited before the model
+        # ever saw the tree — an attempt that "ran" in the record and changed nothing, for
+        # ever. The test that pinned the argv now pins the version that answers.
+        #
+        # **`--dir`, because the agent's shell is not the project root it reads.** `chdir`
+        # starts the process in the worktree, but opencode resolves its project from the
+        # server's directory: a live repair read and edited `/app` — this image's own
+        # source — while the record said "no file changed" and the tree was untouched.
+        # `--dir` is the flag that makes the worktree the project.
+        argv = [@binary, "run", "--dir", @root, "--agent", @agent]
         argv += ["--model", model] unless model.empty?
         argv << prompt
         # **`to_h`, because the live caller hands this `ENV`.** `ENV` answers `[]`, `each` and
@@ -236,6 +255,7 @@ module AgentsFyi
         # nor the method's real subject. Every test had passed a Hash, which is why the first
         # live repair was where this was found.
         env = @env.to_h.merge("OPENCODE_CONFIG" => config_path(model))
+        env["HOME"] = @home unless @home.empty?
         answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)
         exit_code, output, outcome = answer
         # An injected runner answers `[exit_code, output]`, the way the first tests wrote it;
@@ -271,7 +291,8 @@ module AgentsFyi
       end
 
       def command_label(prompt, model)
-        "#{@binary} run --agent #{@agent}#{model.to_s.empty? ? "" : " --model #{model}"} " \
+        "#{@binary} run --dir #{@root} --agent #{@agent}" \
+          "#{model.to_s.empty? ? "" : " --model #{model}"} " \
           "(prompt: #{prompt.bytesize} bytes)"
       end
 
@@ -330,7 +351,8 @@ module AgentsFyi
         lines << "The suite command is: #{e[:suite_command]}"
         lines << "It runs under #{e[:interpreter]}#{e[:image].to_s.empty? ? "" : " (#{e[:image]})"}, which you"
         lines << "cannot run from your shell — the harness runs it after you finish, and tries again"
-        lines << "with your patch. Do not try to run it yourself."
+        lines << "with your patch. Do not try to run it yourself. You can read, search and edit files;"
+        lines << "there is no shell, so a command like `ls` or `find` is not available either."
         lines << ""
         unless applied.empty?
           lines << "What the move has changed so far (from its own record):"

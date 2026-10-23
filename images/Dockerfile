@@ -108,6 +108,18 @@ RUN set -eux; \
     if [ "$codename" = "trixie" ]; then \
       apt-get install -y --no-install-recommends postgresql-17-pgvector; \
     fi; \
+    # **ImageMagick's config scripts are off PATH on Debian, and rmagick 2.x finds the
+    # library by running one of them.** The Debian 8 base installs IM 6.8's scripts under
+    # `/usr/lib/<arch>/ImageMagick-<version>/bin-Q16/`, which is not on PATH, so
+    # `rmagick 2.13.2`'s extconf answers "Can't find Magick-config" even with
+    # `libmagickwand-dev` installed — measured on the 4.0 checkpoint of the first real
+    # application, where the era was rejected for a missing header rather than for the move.
+    # Link all four spellings, whichever the base provides; a base that already has them on
+    # PATH is unchanged because the link points at the same script.
+    for name in Magick-config MagickCore-config MagickWand-config Wand-config; do \
+      config="$(find /usr/lib -maxdepth 4 -name "$name" -type f 2>/dev/null | head -1)"; \
+      if [ -n "$config" ]; then ln -sf "$config" "/usr/local/bin/$name"; fi; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
 

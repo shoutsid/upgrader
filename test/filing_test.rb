@@ -246,6 +246,36 @@ class FilingTest < Minitest::Test
     assert_includes payload["environment"], "9f2c1ab8"
   end
 
+  # **A suite that opens with warnings is titled by its first failing example.** A suite's
+  # excerpt keeps both ends, and a Rails 5 run prints deprecation warnings before anything
+  # fails — measured on the first real walk, where a 4.2.0 -> 5.0.7.2 rung's eleven controller
+  # failures were filed as "… upgrade failed: DEPRECATION WARNING: Accessing mime types via
+  # constants is deprecated", the title every 5.0 rung in every application would get, and the
+  # one the corpus then compares a new finding against. The `problem` still says the output
+  # *began* with the warning, because it did; only the title names what broke.
+  def test_a_suite_that_opens_with_warnings_is_titled_by_its_first_failing_example
+    tail = [
+      "DEPRECATION WARNING: Accessing mime types via constants is deprecated",
+      "DEPRECATION WARNING: `config.static_cache_control` is deprecated",
+      "",
+      "  1) BidsController POST #create redirects to the correct url",
+      "     Failure/Error: expect(response).to redirect_to(bid_path(id))",
+      "",
+      "201 examples, 11 failures",
+      "",
+      "Failed examples:",
+      "",
+      "rspec ./spec/controllers/bids_controller_spec.rb:82 # BidsController POST #create"
+    ].join("\n")
+
+    payload = AgentsFyi::Upgrader::Filing.report_for(record: suite_failed_record(tail: tail))
+
+    assert_includes payload["title"], "rspec ./spec/controllers/bids_controller_spec.rb:82"
+    refute_includes payload["title"], "DEPRECATION WARNING"
+    assert_includes payload["problem"], "DEPRECATION WARNING"
+    assert_includes payload["trace"], "201 examples, 11 failures"
+  end
+
   # **A rung that carried one change names it, even when the failure's text does not.**
   # There is only one documented change the step could have been about, and the report's
   # library, subject, kind and replacement are the plan's facts rather than a traceback guess.
