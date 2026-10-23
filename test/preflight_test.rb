@@ -365,6 +365,35 @@ class PreflightTest < Minitest::Test
     assert_empty result.deferred
   end
 
+  # **Two lines for one gem, and the era decides which one is written.** The digest states json twice —
+  # `~> 1.8` below 3.1, where the app's old line builds and parses, and `~> 2.6` from 3.1, where 1.8.6's
+  # `JSON.parse(source, opts)` raises `given 2, expected 1` inside sprockets' manifest read and the
+  # application never finishes `initialize!`. The clauses are disjoint, so exactly one rewrite lands: a
+  # pair that could both apply would leave the later entry deciding the file, which is the ordering this
+  # shape exists to avoid.
+  def test_a_gem_with_two_lines_is_rewritten_once_and_by_the_line_its_era_names
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "7.1.6"\ngem "json", "~> 1.7.7"\n)
+    drawn = ->(requirement, condition) {
+      entry(gem: "json", replacement: "json", requirement: requirement, condition: condition)
+    }
+    entries = [
+      drawn.call("~> 1.8", { "ruby_at_least" => "2.2", "ruby_below" => "3.1" }),
+      drawn.call("~> 2.6.0", { "ruby_at_least" => "3.1" })
+    ]
+
+    old = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    preflight(old, corpus: FakeCorpus.new(entries: entries), ruby: "2.7.8")
+    assert_includes read(old, "Gemfile"), %(gem "json", "~> 1.8")
+    refute_includes read(old, "Gemfile"), "2.6.0"
+
+    new = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    applied = preflight(new, corpus: FakeCorpus.new(entries: entries), ruby: "3.1.7")
+    assert_includes read(new, "Gemfile"), %(gem "json", "~> 2.6.0")
+    refute_includes read(new, "Gemfile"), "1.8"
+    assert_equal 1, applied.repairs.size,
+      "one line was rewritten, not two: the clauses are disjoint"
+  end
+
   # **A gem can be too *old* for the interpreter as well as too new for it.** `ruby_below` catches
   # the case where the newest installable release is wrong; `ruby_at_least` catches the other one —
   # a release whose own source will not compile on the interpreter the rung requires. Measured on
