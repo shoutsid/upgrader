@@ -44,6 +44,12 @@ ARG BUNDLER=2.6.9
 # * `build-essential`, `pkg-config` — native gems with no prebuilt binary (`libv8`,
 #   `rmagick`, `json` in the old eras, `pg` everywhere). An era image without a compiler is
 #   an image that cannot install the applications it exists for.
+# * `cmake` — `rugged` vendors libgit2 and builds it with CMake; `pronto` depends on
+#   `rugged`, and an application that keeps its linter in `group :development` (`rubocop`
+#   beside `pronto`) makes the whole group load-bearing for its style gate. Measured on the
+#   diaspora walk at the 6.1→7.0 rung: every era's `bundle install` died in rugged's build
+#   with `cmake: not found`, and the rung was reported unverified — for a build tool, not
+#   for the move.
 # * `libpq-dev` — the `pg` gem's headers.
 # * `libyaml-dev`, `libssl-dev`, `zlib1g-dev`, `libreadline-dev` — psych, OpenSSL, gzip and
 #   IRB: the four every Ruby build and most C extensions reach for.
@@ -99,7 +105,7 @@ RUN set -eux; \
         ;; \
     esac; \
     apt-get update; \
-    packages="build-essential pkg-config libpq-dev libyaml-dev libssl-dev zlib1g-dev \
+    packages="build-essential pkg-config cmake libpq-dev libyaml-dev libssl-dev zlib1g-dev \
       libreadline-dev libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
       postgresql postgresql-client redis-server imagemagick libmagickwand-dev libidn-dev \
       nodejs npm ca-certificates"; \

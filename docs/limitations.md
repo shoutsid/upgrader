@@ -36,13 +36,17 @@ has not published.
 shaped for another stack — the pack would own what a release changes and how a command is spelled —
 but a second pack is not implemented. A non-Rails application is not walkable today.
 
-## The toolchain is carried, not spent
+## The toolchain is partly spent
 
-`toolchain` (Ruby, Node, PostgreSQL, native extensions, apt packages) is validated, quoted and
-recorded. The overlay image that would use it to reproduce an application's build environment is
-a later phase. Until then, a native extension that needs a system library must be present on the
-machine or in the era image, and a missing one shows up as a bundle or suite failure rather than
-as a reproduced environment.
+`toolchain` is validated, quoted and recorded. **`apt` is installed**: the packages a repository's
+own build declares (`apt-get install` in a workflow, a `Dockerfile`, `.travis.yml` or
+`.gitlab-ci.yml`) are installed in the era container before `bundle install`, because a native gem
+that needs a header the image does not carry fails the rung for a reason the repository already
+stated. That is the whole of what is spent: `ruby`, `node`, `postgres`, `extensions` and `native`
+are still carried rather than reproduced, and the overlay image that would use them is a later
+phase. A package the repository does not declare, and the image does not carry, is still a bundle
+failure rather than a reproduced environment — and a native or rvm walk installs none of it, so a
+missing header there is a failure a container walk would not have.
 
 ## `app:update` adopts only added files
 

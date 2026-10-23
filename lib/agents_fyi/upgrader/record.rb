@@ -53,6 +53,13 @@ module AgentsFyi
       # not build on this interpreter, an index that is unreachable — and a record that
       # hid it would report a red baseline with no way to tell why.
       BUNDLE = "bundle"
+      # **The system packages the application's own build declares.** A repository that installs
+      # `libidn11-dev` in its CI says its native gems need it, and the era image is not that
+      # repository's CI: measured on the diaspora walk, the 6.1→7.0 rung could not build
+      # `idn-ruby` because the image had no `idn.h`, and nothing in the record said the
+      # application had asked for the header. A stage of its own because a package install that
+      # failed and a bundle that failed are different facts, and the second is a consequence.
+      PACKAGES = "packages"
       # The services a Rails suite expects — PostgreSQL, Redis — started inside the step's
       # own container. A required stage: a suite that ran without its database failed for a
       # reason nobody reading the record could see, and "the suite was green before and red

@@ -1549,6 +1549,24 @@ class StepTest < Minitest::Test
     )
   end
 
+  # **A native machine cannot install a package, and says so rather than skipping it.** `apt` needs
+  # root, and a walk that took root on somebody's laptop is not this tool's decision; the
+  # declaration still travels into the record, so a bundle that fails for a missing header has a
+  # named cause rather than an unexplained one.
+  def test_a_native_machine_records_the_system_packages_it_did_not_install
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "toolchain" => { "apt" => ["libidn11-dev"] }
+    })
+    record = step(track(app), project: project).run
+
+    stage = record.stages.find { |command| command.stage == AgentsFyi::Upgrader::Record::PACKAGES }
+    refute_nil stage, "the declaration never reached the record"
+    refute stage.ran, "a native machine ran an apt install"
+    assert_includes stage.output_tail, "not a container"
+    assert_includes stage.command, "libidn11-dev"
+  end
+
   # A hand-run step never resets anything: it takes a fresh copy per run (the fake source
   # hands back the fixture itself, so a reset here would eat the test's own files), and
   # the flag is threaded all the way to the source rather than assumed.

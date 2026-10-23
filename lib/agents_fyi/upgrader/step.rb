@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "open3"
+require "shellwords"
 
 module AgentsFyi
   module Upgrader
@@ -79,7 +80,7 @@ module AgentsFyi
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil, pause: nil, stack: nil, project: nil
+        progress: nil, pause: nil, stack: nil, project: nil, control: nil
       )
         @repository = repository
         @to = to
@@ -146,6 +147,10 @@ module AgentsFyi
         # environment *names* the suite reads and the stack; the entry points that have a
         # declaration pass it (the design notes call this the adapter).
         @project = project
+        # **The operator's stop switch, checked at every command boundary.** `nil` is a hand-run
+        # step, which no deployment switch controls — a stop on the site admin is about the walk,
+        # not about a person asking what a move costs — and `serve` always passes one.
+        @control = control
         @stack = stack || Stacks.for(project&.stack || "rails")
         # **The application's own environment, when the deployment knows it.** A repository
         # that carries no secrets is the ordinary case, not the exception: this walk's first
@@ -164,6 +169,9 @@ module AgentsFyi
       end
 
       def run
+        # **A stop lands before the first command too.** The clone is a network read, and a step
+        # started against a stopped deployment has spent it for nothing.
+        @control&.check!
         stages = []
         @applied = []
         @refused = []
@@ -634,6 +642,7 @@ module AgentsFyi
       # `passed` only because the *suite* says so afterwards — the model's word is never what
       # passes a rung, and the attempt is in the record either way.
       def repair(stages, step, subject:, rerun:, before_the_move: false)
+        @control&.check!
         return nil if subject.nil? || !subject.ran || subject.ok?
         # A post-move repair is only meaningful against a green baseline: with a red one, the
         # failure is the application's and there is nothing to attribute to the move. The
@@ -641,7 +650,7 @@ module AgentsFyi
         return nil if !before_the_move && (@baseline.nil? || !@baseline.ok?)
 
         repairer = @repair || Repair
-        budget = repairer.budget(@env)
+        budget = repair_budget(repairer.budget(@env))
         return nil if budget.nil?
 
         result = repairer.new(
@@ -682,6 +691,22 @@ module AgentsFyi
         # The re-run happened inside the loop (`rerun` assigns the ivar it was built around),
         # so what this returns is the *latest* reading of the stage, green or not.
         before_the_move ? @baseline : @suite
+      end
+
+      # **The account's permission is a veto, and its model chain is an override.** A project whose
+      # account has not permitted a model repair gets none, however the deployment is configured —
+      # that is the "mechanical first" rule an account states for its own walks. The deployment's
+      # own attempts remain the budget, so a permission without a configured agent still spends
+      # nothing; and an account that names a chain replaces the deployment's, which is what makes
+      # the model a setting rather than a constant.
+      def repair_budget(budget)
+        permission = @project&.repair
+        return budget if permission.nil?
+        return nil if permission.off?
+        return budget if budget.nil?
+
+        chain = permission.model_chain
+        chain.empty? ? budget : budget.merge(models: chain)
       end
 
       # What the repair did, from the attempts and the tree it left: the files each attempt changed,
@@ -1062,6 +1087,7 @@ module AgentsFyi
       # the interpreter probe (`choose_machine`), which is why it takes the machine rather
       # than defaulting to the one the step settled on.
       def install_bundle(stages, machine = @machine)
+        install_packages(stages, machine)
         drop_unrunnable_bundler(machine, stages)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
@@ -1114,6 +1140,43 @@ module AgentsFyi
         return stage if moved_gems.empty?
 
         conservative_update(stages, moved_gems, stage: Record::BUNDLE, machine: machine)
+      end
+
+      # **The packages the application's own build declares, installed in the machine that will
+      # build its gems.** A repository's CI is the place it says which native headers its gems
+      # need, and the era image cannot carry every repository's list: measured on the diaspora
+      # walk, the workflow installed `libidn11-dev` and the 6.1→7.0 rung could not build
+      # `idn-ruby` until the step installed it too.
+      #
+      # A machine that is not a container is *told*, not silently skipped: a native or rvm walk
+      # would need `sudo` to install a package, and this tool does not take that decision on
+      # somebody's laptop. The declaration still travels into the record, so a reader can see
+      # what the application asked for and that this machine did not supply it.
+      def install_packages(stages, machine)
+        packages = Array(@project&.toolchain&.apt).map(&:to_s).reject(&:empty?).uniq
+        return if packages.empty?
+
+        line = "apt-get update && apt-get install -y --no-install-recommends " \
+               "#{packages.shelljoin}"
+        unless machine.respond_to?(:root_command)
+          @out&.puts("  packages: #{packages.join(", ")} — declared by the application's build, " \
+                     "and this machine is not a container, so they were not installed")
+          stages << Record::Command.new(stage: Record::PACKAGES, command: line, ran: false,
+            exit_code: nil, seconds: 0.0,
+            output_tail: "not installed: this machine is not a container (`apt` needs root, and " \
+                         "a native walk does not take it)")
+          return
+        end
+
+        @out&.puts("  packages: #{packages.join(", ")}") if @out
+        stage = command(Record::PACKAGES, ["sh", "-lc", line], chdir: @worktree.root,
+          machine: machine, root: true, display: ["apt-get", "install", *packages])
+        stages << stage
+        if !stage.ok? && @out
+          @out.puts("  packages: #{Record.first_line(stage.output_tail)} — the bundle is attempted " \
+                    "anyway, and this stage says why it may fail")
+        end
+        stage
       end
 
       # **Every gem the installer was building a native extension for, because it builds them in
@@ -1901,6 +1964,7 @@ module AgentsFyi
       # silently runs against whatever the image happens to have. The `machine` is what
       # decides whether that directory is on this host or inside the step's container.
       def run_suite(stages, stage)
+        @control&.check!
         announce(stage, @suite_plan.command)
         result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
           env: application_env, machine: @machine)
@@ -1920,6 +1984,8 @@ module AgentsFyi
       def style_stage(stages)
         policy = @project&.style
         return if policy.nil? || policy.format.to_s.empty?
+
+        @control&.check!
 
         announce(Record::STYLE, policy.format)
         result = @tests.run(@worktree.root,
@@ -3501,15 +3567,27 @@ module AgentsFyi
       end
 
       def command(stage, argv, chdir:, env: {}, machine: nil, stdin: File::NULL,
-                  excerpt_bytes: Shell::TAIL_BYTES)
+                  excerpt_bytes: Shell::TAIL_BYTES, root: false, display: nil)
+        # **The boundary the record measures.** A stop request is answered here: the command in
+        # flight finishes, the next one never starts, and the exception unwinds to the loop, which
+        # leaves the rung unsettled and idles. Everything the step would have written after this
+        # point — the record, the patch, the verdict — is not written, because the move was not
+        # measured.
+        @control&.check!
         runner_machine = machine || @machine
         # **The application's own argv, kept before the machine wraps it.** The record carries both —
         # `command` is what ran and `display` is what it was asked to do — and a filed report reads
         # `display` (`Record::Command#readable`), because a reader wading through `--user 10003:999`
         # and a container id to reach "the pin exited 7" has been told the plumbing rather than the
         # fact. Nothing is dropped: the run's own page and the API's `argv` still read `command`.
-        display = argv
-        argv, env = runner_machine.command(argv, chdir: chdir, env: env) if runner_machine
+        display ||= argv
+        if runner_machine
+          argv, env = if root && runner_machine.respond_to?(:root_command)
+            runner_machine.root_command(argv, chdir: chdir, env: env)
+          else
+            runner_machine.command(argv, chdir: chdir, env: env)
+          end
+        end
         announce(stage, display.join(" "))
         result = @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
           timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)

@@ -246,6 +246,40 @@ class ServeTest < Minitest::Test
   # operator's SIGTERM — used to leave the last one behind, so the panel said "running this" until
   # `STALLED_SECONDS` (twenty minutes) caught up. Measured on the deployment: the walk finished at
   # 17:45 and the file still named a step at 17:52 with nothing running.
+  # The site admin's switch, as the loop sees it: `stopped?` answers from this list in order, so a
+  # stop that is lifted between checks is the resume path rather than a second stop.
+  class FakeControl
+    def initialize(*states) = @states = states
+    def stopped? = @states.length > 1 ? @states.shift : @states.first
+  end
+
+  # **A stop is answered before any work and the loop waits, rather than exiting.** Exiting would
+  # let `restart: unless-stopped` start it again into the same switch — a crash loop that looks
+  # healthy — so the assertion here is both that no step was built and that the loop came back.
+  def test_a_stopped_switch_walks_nothing_and_waits_for_a_resume
+    out = StringIO.new
+    serve(cycles: 1, control: FakeControl.new(true, false), out: out).run
+
+    assert_empty FakeStep.calls, "a step was built while the walker control said stopped"
+    assert_includes out.string, "waiting for the walker control to resume"
+    assert_includes out.string, "running again"
+  end
+
+  # The exception a real `Step` raises at its next command boundary reaches the loop and leaves
+  # the rung unsettled: nothing is recorded and the next cycle is the one that tries again.
+  def test_a_step_stopped_mid_command_is_not_settled
+    out = StringIO.new
+    ledger = Ledger.load(File.join(home, "ledger.json"))
+    stop = AgentsFyi::Upgrader::Control::Stopped.new("the walker is stopped: clearing the queue")
+
+    serve(cycles: 1, out: out, control: FakeControl.new(false), ledger: ledger).tap do |loop|
+      loop.define_singleton_method(:walk) { raise stop }
+    end.run
+
+    assert_includes out.string, "clearing the queue"
+    assert_equal 0, ledger.size, "a stopped step settled a rung it never measured"
+  end
+
   def test_a_stopped_loop_leaves_nothing_in_flight
     progress = AgentsFyi::Upgrader::Progress.new(home: home)
     progress.stage(repo: "https://example.test/app", from: "5.2.0", to: "6.0.0",
@@ -260,12 +294,12 @@ class ServeTest < Minitest::Test
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
             ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil,
-            project: nil, publish_class: FakePublish)
+            project: nil, publish_class: FakePublish, control: nil, step_class: FakeStep)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
-      ledger: ledger, cycles: cycles, corpus: corpus, step_class: FakeStep,
+      ledger: ledger, cycles: cycles, corpus: corpus, step_class: step_class,
       walk: walk, publish: publish, rungs: rungs, publish_class: publish_class, force: force,
-      record: record, project: project, environment: nil)
+      record: record, project: project, environment: nil, control: control)
   end
 
   # **The account project, not the deployment, decides the destination and suite.** The queue names

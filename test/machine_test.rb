@@ -106,6 +106,22 @@ class MachineTest < Minitest::Test
     assert_empty env, "a container command's environment is the flags, not this process's"
   end
 
+  # **A package installed for the application runs as root, and nothing else does.** The image
+  # installs its own packages at build time; a package the application's workflow declares arrives
+  # after the container is up, and `apt-get install` cannot write outside the working copy as the
+  # walker's uid.
+  def test_a_package_install_is_the_one_command_that_runs_as_root
+    machine = container(home: "/home/walker")
+    machine.instance_variable_set(:@container_id, "abc123")
+    argv, env = machine.root_command(["sh", "-lc", "apt-get install -y libidn11-dev"],
+      chdir: "/home/walker/work/tree", env: {})
+
+    assert_equal "0:0", argv[argv.index("--user") + 1]
+    assert_equal ["sh", "-lc", "apt-get install -y libidn11-dev"], argv.last(3)
+    assert_empty env
+    refute_includes argv, "1000:1000", "a root command carried the walker's uid as well"
+  end
+
   # The run's bundle lives under the walker's home on the host and under the mount inside the
   # container, and the two paths are the same directory: a `BUNDLE_PATH` that named the host
   # path would be a path the interpreter inside cannot see, and the bundle it installed would

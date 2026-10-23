@@ -23,7 +23,13 @@ module AgentsFyi
       # believes is in force is the failure this class exists to prevent.
       FIELDS = %w[slug repo base_ref from to path_policy next_checkpoint stack suite services
         env_names eras delivery decisions brief_decisions source_roots checks toolchain style
-        app_update].freeze
+        app_update repair].freeze
+
+      # **The account's permission for a model repair, published with the project.** The service's
+      # feed carries it on every row because it is the account's setting applied to this project;
+      # `off` is the mechanical default and the absence of a field (a feed from before this
+      # existed) is the deployment's own switch, which is what every walk had.
+      REPAIR_POLICIES = %w[off fallback].freeze
 
       # **Where a walk stops next, and by which rule.** A project connected before paths existed has
       # neither field and walks to `to`, exactly as it always did; the two are optional on purpose,
@@ -126,6 +132,16 @@ module AgentsFyi
       # The application's build facts. They are carried and quoted now; the overlay image that
       # spends them is a later phase, and a field that is declared but not yet consumed is still a
       # fact a reviewer can check against the application's CI.
+      # The account's repair permission and the model chain it names. `off` is a decision (no
+      # model, however the deployment is configured); `fallback` is a permission the deployment's
+      # budget still has to allow. An empty chain means the deployment's `UPGRADER_REPAIR_MODEL`.
+      Repair = Struct.new(:policy, :models, keyword_init: true) do
+        def off? = policy == "off"
+        def fallback? = policy == "fallback"
+        def model_chain = Array(models)
+        def to_h = { "policy" => policy, "model" => model_chain.join(",") }.compact
+      end
+
       Toolchain = Struct.new(:ruby, :node, :postgres, :extensions, :apt, :native,
         keyword_init: true) do
         def to_h
@@ -160,7 +176,7 @@ module AgentsFyi
 
       attr_reader :slug, :repo, :base_ref, :from, :to, :path_policy, :next_checkpoint, :stack, :suite,
         :services, :env_names, :eras, :delivery, :decisions, :brief_decisions, :source_roots,
-        :checks, :toolchain, :style, :app_update, :path
+        :checks, :toolchain, :style, :app_update, :repair, :path
 
       # The declaration named by a slug, from the projects directory.
       #
@@ -268,6 +284,7 @@ module AgentsFyi
         @checks = read_checks(fields["checks"])
         @toolchain = read_toolchain(fields["toolchain"])
         @style = read_style(fields["style"])
+        @repair = read_repair(fields["repair"])
         @app_update = read_app_update(fields["app_update"])
       end
 
@@ -281,7 +298,8 @@ module AgentsFyi
           "decisions" => decisions, "brief_decisions" => brief_decisions,
           "source_roots" => source_roots,
           "checks" => checks.map(&:to_h), "toolchain" => toolchain&.to_h,
-          "style" => style&.to_h, "app_update" => app_update.to_h
+          "style" => style&.to_h, "app_update" => app_update.to_h,
+          "repair" => repair&.to_h
         }.compact
       end
 
@@ -566,6 +584,28 @@ module AgentsFyi
           apt: read_names(value["apt"] || [], "toolchain.apt"),
           native: read_names(value["native"] || [], "toolchain.native")
         )
+      end
+
+      # **The two facts are one object, because a policy without a model is a permission nobody
+      # can use.** An unknown policy is refused rather than read as `off`: a typo that silently
+      # disables a permission somebody just granted is the "setting that does nothing" this class
+      # refuses everywhere else.
+      def read_repair(value)
+        return nil if value.nil?
+
+        raise Invalid, "repair must be an object, not #{value.class}" unless value.is_a?(Hash)
+
+        unknown = value.keys - %w[policy model]
+        raise Invalid, "unknown repair field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        policy = value["policy"].to_s.strip
+        unless REPAIR_POLICIES.include?(policy)
+          raise Invalid, "repair.policy is #{policy.inspect}; this build knows " \
+                         "#{REPAIR_POLICIES.join(", ")}"
+        end
+
+        Repair.new(policy: policy,
+          models: value["model"].to_s.split(/[,\s]+/).reject(&:empty?))
       end
 
       def read_style(value)

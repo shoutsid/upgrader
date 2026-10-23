@@ -64,7 +64,7 @@ module AgentsFyi
                      contribute: true, walk: false, publish: false, rungs: nil,
                      publish_class: Publish, suite_env: nil, services: nil, env: ENV,
                      environment: Environment,
-                     force: false, record: nil, project: nil)
+                     force: false, record: nil, project: nil, control: nil)
         @api = api
         @home = home
         @to = to
@@ -98,6 +98,12 @@ module AgentsFyi
         # named for the move it made (`<repo>-<from>-<to>.json`), so a walk of several rungs writes one
         # file each rather than overwriting the one before it.
         @record = record
+        # **The site admin's stop switch.** A file in the projects volume both containers already
+        # mount; `nil` builds the reader for this home, and the suite injects a fake so the stop
+        # path is driven without a deployment. A loop started by hand reads the same file, which
+        # is deliberate: a person running `serve` against a stopped deployment should be told so
+        # rather than walking past a switch somebody meant.
+        @control = control || Control.new(home: @home)
         @rungs = rungs || DEFAULT_RUNGS_PER_CYCLE
         # Injectable so the suite can drive "a passed rung is published" without a token, a
         # remote or a network — the class itself is `publish_test.rb`'s subject.
@@ -169,7 +175,7 @@ module AgentsFyi
         pause = 0
         until @stop
           cycle += 1
-          outcome = walk
+          outcome = cycle_outcome
           @environment&.write
           @projects_feed.write
           touch
@@ -200,6 +206,35 @@ module AgentsFyi
         return "the project's own repository (#{@project.repo})" unless @project.nil? || @project.repo.to_s.empty?
 
         "the work list comes from the service's queue"
+      end
+
+      # **A stop is answered between commands, and the loop then waits rather than exits.**
+      # Exiting would hand the container to `restart: unless-stopped`, which starts it again into
+      # the same stop — a crash loop that looks healthy from the outside. Waiting keeps one
+      # process, one heartbeat and one place the resume is read.
+      def cycle_outcome
+        return hold("nothing will be walked while the site admin's stop is in force") if @control.stopped?
+
+        walk
+      rescue Control::Stopped => e
+        hold(e.message)
+      end
+
+      # The loop's stopped state, written where the site admin reads it. The heartbeat keeps
+      # moving because the container is alive and healthy; what stopped is the walking, and the
+      # progress note is the sentence that says so.
+      def hold(note)
+        return :stopped if @stop
+
+        @out.puts("serve: #{note} — waiting for the walker control to resume")
+        @progress.cycle(note: "stopped — #{note}")
+        touch
+        until @stop || !@control.stopped?
+          sleep 5
+          touch
+        end
+        @out.puts("serve: the walker control is running again") unless @stop
+        :stopped
       end
 
       def walk
@@ -615,7 +650,7 @@ module AgentsFyi
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
-          record: @record, project: project
+          record: @record, project: project, control: @control
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
@@ -718,7 +753,8 @@ module AgentsFyi
       #   it. So that delay starts at `BACKOFF_FLOOR` and doubles while the same rung keeps not
       #   passing, capped at the interval; a passed rung resets it.
       def delay_for(outcome, previous:)
-        return 0 if outcome == :worked
+        # A stopped cycle already waited for the resume; a second wait would delay the walk after it.
+        return 0 if %i[worked stopped].include?(outcome)
         return [previous.zero? ? BACKOFF_FLOOR : previous * 2, @interval].min if outcome == :blocked
 
         @interval

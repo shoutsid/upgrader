@@ -301,6 +301,16 @@ module AgentsFyi
           [exec_argv(["sh", "-lc", command.to_s], chdir: chdir, env: env), {}]
         end
 
+        # **One command as root, and only one kind of command: apt.** An era image installs its
+        # packages as root at build time, and a step later needs a package the application's own
+        # build declared (`Record::PACKAGES`). The alternative — baking every application's native
+        # headers into every era image — is a list that grows per repository and still misses the
+        # next one. Everything else a step runs stays on the walker's uid, because a package
+        # manager is the only command here that must write outside the working copy.
+        def root_command(argv, chdir:, env: {})
+          [exec_argv(argv, chdir: chdir, env: env, user: "0:0"), {}]
+        end
+
         def interpreter = "ruby #{entry.ruby}"
 
         # The interpreter's own version, for the routing question ("can these gems run on
@@ -412,10 +422,10 @@ module AgentsFyi
         # host side. Every other command is unaffected (they are handed `File::NULL`), and `-t` is
         # deliberately absent: a tty would make a generator decorate its output and would make a killed
         # process leave the terminal in a strange state.
-        def exec_argv(argv, chdir:, env:)
+        def exec_argv(argv, chdir:, env:, user: "#{@uid}:#{@gid}")
           workdir = translate(chdir)
           flags = env.flat_map { |name, value| ["-e", "#{name}=#{translate_value(value)}"] }
-          ["docker", "exec", "--interactive", "--user", "#{@uid}:#{@gid}", "--workdir", workdir, *flags,
+          ["docker", "exec", "--interactive", "--user", user, "--workdir", workdir, *flags,
            @container_id, *argv]
         end
 

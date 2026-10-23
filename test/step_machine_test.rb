@@ -444,6 +444,12 @@ class StepMachineTest < Minitest::Test
     def stamp = "ruby #{era} (era-#{era}@sha256:#{"f" * 64})"
   end
 
+  # A machine that can install a package, which is the container's one privilege: `apt` writes
+  # outside the working copy, so it runs as root and everything else does not.
+  class RootMachine < FakeMachine
+    def root_command(argv, chdir:, env: {}) = [["fake-root", era, *argv], {}]
+  end
+
   # A queue that asks for a later release than the next rung: the plan still starts at the
   # rung, and the record must say so rather than the destination.
   class TwoStepCorpus < FakeCorpus
@@ -490,6 +496,10 @@ class StepMachineTest < Minitest::Test
 
   def machines(&block)
     ERAS.to_h { |era| [era, FakeMachine.new(era, **(block ? yield(era) : {}))] }
+  end
+
+  def root_machines
+    ERAS.to_h { |era| [era, RootMachine.new(era)] }
   end
 
   def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
@@ -1206,6 +1216,30 @@ class StepMachineTest < Minitest::Test
     assert pins.last.ok?, pins.last.output_tail
     assert_includes File.read(File.join(dir, "Gemfile")), %(gem "responders", "~> 2.0")
     assert_equal "passed", record.verdict, record.why
+  end
+
+  # **The application's own build declares its system packages, and the walk installs them before
+  # the bundle.** Measured on diaspora at the 6.1→7.0 rung: its workflow installs `libidn11-dev`,
+  # the era image had no `idn.h`, and `bundle install` died in `idn-ruby` — a rung reported
+  # unverified for a header the repository had asked for all along.
+  def test_the_declared_system_packages_are_installed_before_the_bundle
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
+      "toolchain" => { "apt" => %w[libidn11-dev cmake] }
+    })
+    runner = FakeRunner.new
+
+    record = step(app, machines: root_machines, runner: runner, project: project).run
+
+    packages = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PACKAGES }
+    assert_equal 1, packages.length, "the packages stage ran once per started era: #{packages.length}"
+    install = packages.first
+    assert install.ok?, install.output_tail
+    assert_includes install.command, "fake-root 2.1 sh -lc apt-get update"
+    assert_includes install.command, "--no-install-recommends libidn11-dev cmake"
+    before = record.stages.index(install)
+    bundle = record.stages.index { |stage| stage.command.include?("bundle install") }
+    assert_operator before, :<, bundle, "the bundle was tried before the packages it needs"
   end
 
   # **A step prunes before it installs, not only when an operator asks.** The home it mounts

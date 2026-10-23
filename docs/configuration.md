@@ -53,6 +53,21 @@ Repair is off by default because it is the only setting here that spends money. 
 also needs an authenticated model in the agent's own configuration; the deployment's home volume
 is the place for that credential, never the image.
 
+`UPGRADER_REPAIR_MODEL` is the deployment's fallback, not the only answer: a project the service
+feeds carries a `repair` object, and its `model` replaces this variable for that walk. A row with
+no model means the account's chain, and an empty account chain means this variable — so a
+measured `UPGRADER_REPAIR_MODEL` stays in force until somebody names a chain against a project.
+
+### The operator's stop switch
+
+`serve` reads `UPGRADER_PROJECTS_DIR/.walker-control.json` before every command it runs. The
+service's site admin writes it (`{"state":"stopped","reason":…}`), and a stop takes effect at
+the next command boundary: the command in flight finishes, the step records nothing, the ledger
+keeps the rung unsettled, and the loop idles until the file says `running`. The container is not
+signalled — a container stop would wait out a bundle resolve or a suite — and an absent or
+unreadable file means running, so a walk with no control mounted behaves as it always has.
+`UPGRADER_CONTROL` names a different file for a deployment that keeps the switch elsewhere.
+
 ### The service loop's entrypoint
 
 These are read by `entrypoint.sh`, not by the Ruby client. They exist so a container can be
@@ -352,6 +367,15 @@ not local configuration, and an example the repository does not track is not the
 statement. `config/database.yml` is the one that matters most: the services stage reads it to
 decide which server to start, so a walk that skipped this measured a suite about a database nobody
 had provided.
+
+**System packages the application declares are installed before its bundle.** `toolchain.apt` is
+read from the repository's own build — an `apt-get install` line in a GitHub workflow, a
+`Dockerfile`, `.gitlab-ci.yml` or `.travis.yml` — and the step installs that list in the era
+container (`apt-get install -y --no-install-recommends …`, recorded as a `packages` stage) before
+`bundle install`. A native or rvm machine cannot do it (`apt` needs root, and this tool does not
+take root on a host), so it records the declaration as not installed rather than skipping it
+silently. The era images still carry the common build tools; the declaration is for what one
+application needs and another does not — `libidn11-dev` for `idn-ruby`, `cmake` for `rugged`.
 
 **The bundle's groups are read from the application, not declared here.** A gem in an
 `optional: true` group is installed only when `BUNDLE_WITH` names that group; a gem in the
