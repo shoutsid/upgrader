@@ -153,8 +153,18 @@ module AgentsFyi
       # either way.
       Decision = Struct.new(
         :path, :line, :subject, :reason, :kind, :replacement, :source, :component, :change_key,
+        :checked,
         keyword_init: true
-      )
+      ) do
+        # **A change this application does not use is carried, not owed.** `checked` is set where
+        # the survey read the tree and found no call site at all, so the decision has nothing for
+        # a person to look at and no automation gap to fill — measured on the walk's last rungs,
+        # where `alias_attribute` and `config.active_job.queue_adapter in tests` were listed as
+        # "need(s) a decision" beside a survey whose answer was "none found". The record counts
+        # them apart (`to_s`) and the JSON carries the flag, so a reader or a page that wants the
+        # three buckets does not have to parse the reason.
+        def checked? = checked ? true : false
+      end
 
       # One thing that ran, and what it said. `ran` and `passed` are separate because
       # a command that never started established nothing: not a failure, not a pass.
@@ -502,7 +512,8 @@ module AgentsFyi
                                                      "replacement" => change.replacement,
                                                      "source" => change.source,
                                                      "component" => change.component,
-                                                     "change_key" => change.change_key } },
+                                                     "change_key" => change.change_key,
+                                                     "checked" => change.checked? } },
           "changes" => @changes,
           "expected" => @expected,
           "fired_rules" => @fired_rules,
@@ -671,7 +682,8 @@ module AgentsFyi
           Decision.new(path: change["path"], line: change["line"], subject: change["subject"],
             reason: change["reason"], kind: change["kind"],
             replacement: change["replacement"], source: change["source"],
-            component: change["component"], change_key: change["change_key"])
+            component: change["component"], change_key: change["change_key"],
+            checked: change["checked"] == true)
         end
       end
 
@@ -795,16 +807,19 @@ module AgentsFyi
         end
         lines << "   baseline: #{describe(@baseline)}"
         stages.each { |stage| lines << "   #{stage.stage}: #{describe(stage)}" }
-        # **A decision with a line to look at and a decision with nothing to look at are different
-        # work.** The first is a call site this application has; the second is a change this rung
-        # carried that the application does not use — a reviewer reads the first and ticks the
-        # second. Counting them together is how "16 need a decision" reads as sixteen edits when it
-        # is three.
+        # **A decision with a line to look at and one with nothing to look at are different work, and
+        # the third bucket is the one that was missing.** A located decision is a call site this
+        # application has; a carried one is a change this rung documents that the application does
+        # not use; a *checked* one is the same fact where a survey read the tree and said so — no
+        # call site at all, and nothing a person or a rule could edit. The summary used to call all
+        # of them "need(s) a decision", which is how a reviewer learns to skim the list; the walk's
+        # last rungs carried two changes that needed nothing and said so.
         located = @decisions.count { |decision| !decision.path.to_s.empty? }
-        carried = @decisions.size - located
+        unused = @decisions.count(&:checked?)
+        carried = @decisions.size - located - unused
         lines << "   applied #{@applied.size} edit(s), refused #{@refused.size}, " \
-                 "#{@decisions.size} need(s) a decision" \
-                 "#{@decisions.empty? ? "" : " (#{located} located, #{carried} carried)}"}"
+                 "#{@decisions.size} change(s) this rung carries" \
+                 "#{@decisions.empty? ? "" : " (#{located} located, #{carried} carried, #{unused} not used here)}"}"
         # **The applied list holds three kinds of edit, and only two of them have an origin.** A preflight
         # repair (`Preflight::Repair`) is a Gemfile line this step rewrote on the digest's authority,
         # and it has no `origin` because there is no other side to tell it apart from; a scanned or
