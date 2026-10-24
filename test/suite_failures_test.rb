@@ -9,6 +9,12 @@ require "agents_fyi/upgrader/suite_failures"
 class SuiteFailuresTest < Minitest::Test
   FIXTURE = File.expand_path("fixtures/rspec_60_biddingapp.txt", __dir__)
 
+  # **The other dialect: a failed expectation.** Copied whole from diaspora's 7.1.6 rung, where
+  # Rails 7.1 stopped writing a redirect's body and three examples read the redirect's target out
+  # of it. There is no `SomeError:` line in any of the three, which is the shape the parser had to
+  # learn.
+  DIASPORA = File.expand_path("fixtures/rspec_71_diaspora.txt", __dir__)
+
   # Not `failures`: Minitest::Test already owns that name for the assertions that failed.
   def parsed = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
 
@@ -46,5 +52,29 @@ class SuiteFailuresTest < Minitest::Test
 
   def test_the_failed_examples_list_is_not_a_failure_block
     assert_equal 3, parsed.size
+  end
+
+  # **An expectation failure prints no class line, and its own sentence is the failure.** Before
+  # this the file and the line parsed and the sentence was nil, so a repair could see that an
+  # expectation at line 113 failed and not what it said — which is the whole of the evidence the
+  # redirect-body repair is made from.
+  def test_an_expectation_failure_is_read_without_an_exception_class
+    first = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(DIASPORA)).first
+
+    assert_equal "spec/controllers/api/openid_connect/authorizations_controller_spec.rb", first.file
+    assert_equal 113, first.line
+    assert_equal 'expect(response.body).to match("error=invalid_scope")', first.source
+    assert_nil first.error
+    assert_equal 'expected "" to match "error=invalid_scope"', first.message
+  end
+
+  # A raised exception still reads as it did: the class line follows `Failure/Error:` and takes the
+  # message branch ahead of the detail this parser now expects there.
+  def test_a_class_line_still_names_the_exception
+    first = parsed.first
+
+    assert_equal "ActionView::Template::Error", first.error
+    assert_equal "undefined method `bid_path' for #<#<Class:0x00005578e9acc7d8>:0x00005578e910c7e8>",
+      first.message
   end
 end
