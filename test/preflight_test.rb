@@ -81,9 +81,10 @@ class PreflightTest < Minitest::Test
   end
 
   def entry(gem:, kind: "replaced", replacement: nil, requirement: nil, mechanical: true,
-            note: "the digest's reason", source: "the index", condition: nil)
-    { "gem" => gem, "kind" => kind, "replacement" => replacement, "requirement" => requirement,
-      "mechanical" => mechanical, "note" => note, "source" => source, "when" => condition }
+            note: "the digest's reason", source: "the index", condition: nil, forced: false)
+    row = { "gem" => gem, "kind" => kind, "replacement" => replacement, "requirement" => requirement,
+            "mechanical" => mechanical, "note" => note, "source" => source, "when" => condition }
+    forced ? row.merge("forced" => true) : row
   end
 
   def setup
@@ -214,6 +215,44 @@ class PreflightTest < Minitest::Test
     assert_empty result.repairs
     assert(result.notes.any? { |note| note.include?("downgrade") }, result.notes.inspect)
     assert_includes read(dir, "Gemfile"), %(gem "json", "2.19.3")
+  end
+
+  # **And the exception is the rung that cannot carry the line.** Diaspora pins `minitest 6.0.3`,
+  # activesupport 7.2.4 declares `minitest >= 5.1, < 6`, and the pin printed `version solving has
+  # failed` before any stage past it ran. The digest's `forced` flag is what says the application
+  # being above the line is the fact being repaired rather than the regression the guard refuses.
+  def test_a_forced_entry_moves_a_line_the_application_sits_above
+    gemfile = %(source "https://rubygems.org"\ngem "minitest", "6.0.3"\n)
+    lockfile = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          minitest (6.0.3)
+
+      DEPENDENCIES
+        minitest (= 6.0.3)
+
+      BUNDLED WITH
+         2.5.9
+    LOCK
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "minitest", replacement: "minitest", requirement: "~> 5.25.0",
+        condition: { "rails_at_least" => "7.2" }, forced: true)
+    ])
+    dir = app(gemfile: gemfile, lockfile: lockfile)
+
+    held = preflight(dir, corpus: corpus, ruby: "3.2", rails: "7.2.4")
+
+    # A `rails_at_least` clause is the rung's, so the line waits for the pin — and the point of the
+    # flag is that it gets there at all, where the guard would have answered "downgrade" instead.
+    assert_equal %w[minitest], held.deferred.map { |deferred| deferred["gem"] }, held.notes.inspect
+    refute(held.notes.any? { |note| note.include?("downgrade") }, held.notes.inspect)
+
+    applied = Preflight.new(root: dir, corpus: corpus, ruby: "3.2", rails: "7.2.4")
+      .declare_deferred(held.deferred)
+
+    assert_equal 1, applied.repairs.size
+    assert_includes read(dir, "Gemfile"), %(gem "minitest", "~> 5.25.0")
   end
 
   # **A rung-scoped declaration's companion travels with it to the pin.** The logger line is in the
