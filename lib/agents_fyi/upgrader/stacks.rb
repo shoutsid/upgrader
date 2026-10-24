@@ -234,9 +234,16 @@ module AgentsFyi
 
         # The runner and the task together: `[["bin/rails"], "app:update"]`, or nil when the
         # application has neither binstub nor Rakefile.
+        #
+        # **The binstub is looked for, not its mode bit.** Whether `bin/rails` is executable is a
+        # property of how the tree was committed or mounted (0644 across the whole directory in
+        # `rails_modular_monolith`, and every file on a volume without file modes), and the step runs a
+        # non-executable script through its own shebang's interpreter (`Step#runnable`). Asking
+        # `File.executable?` here skipped `app:update` for the whole walk: the rung's own config
+        # changes were reported as "no bin/rails" on an application that has one.
         def app_update(root, five_or_newer:)
           if five_or_newer
-            return [["bin/rails"], "app:update"] if File.executable?(File.join(root, "bin", "rails"))
+            return [["bin/rails"], "app:update"] if File.file?(File.join(root, "bin", "rails"))
 
             return nil
           end
@@ -318,7 +325,7 @@ module AgentsFyi
         end
 
         def boot(root)
-          return nil unless File.executable?(File.join(root, "bin", "rails"))
+          return nil unless File.file?(File.join(root, "bin", "rails"))
 
           ["bin/rails", "runner", "puts Rails.version"]
         end
@@ -329,7 +336,7 @@ module AgentsFyi
         # engine runs a script and this pack says how a script is run. Same predicate as `boot`: an
         # application with no binstub has no route table this tool can ask.
         def routes_runner(root, script:)
-          return nil unless File.executable?(File.join(root, "bin", "rails"))
+          return nil unless File.file?(File.join(root, "bin", "rails"))
 
           ["bin/rails", "runner", script]
         end

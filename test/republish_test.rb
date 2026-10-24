@@ -61,6 +61,10 @@ class RepublishTest < Minitest::Test
           text: "old", after: "new", origin: "companion")],
         decisions: [Record::Decision.new(path: "app/y.rb", line: 2, subject: "button_to",
           reason: "the call site")],
+        commits: [{ "concern" => "pin Rails", "commit" => "c" * 40, "message" => "the pin" }],
+        accepted_decisions: [{ "id" => "d1", "question" => "Vendor the gem?",
+          "answer" => "vendor it", "accepted_by" => "operator:1",
+          "effects" => [{ "kind" => "patch" }] }],
         patch: "diff")
       stem = Record.stem(REPO, "4.0.0", "4.1.0")
       FileUtils.mkdir_p(File.join(home, "records"))
@@ -78,6 +82,12 @@ class RepublishTest < Minitest::Test
       assert_equal "app/y.rb", call[:record].decisions.first.path
       assert_includes call[:record].brief.to_markdown, "a known failure"
       refute_includes call[:record].stages.first.readable, "SECRET"
+      # **The reconstruction is the whole record, not the fields the body used to read.** A hand-
+      # rebuilt record dropped these three, and the bodies it published said a record with a
+      # concern-commit series had none and lost the accepted decision's question.
+      assert_equal ["pin Rails"], call[:record].commits.map { |commit| commit["concern"] }
+      assert_equal "Vendor the gem?", call[:record].accepted_decisions.first["question"]
+      assert_equal "the suite was green", call[:record].why
     end
   end
 end

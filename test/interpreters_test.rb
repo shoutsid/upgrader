@@ -112,6 +112,39 @@ class InterpretersTest < Minitest::Test
     assert_equal "2.2", names(three, declared: "2.2.0", locked: "2.1.0").first
   end
 
+  # **A Gemfile's `ruby` line is a requirement, and reading it as a version made it no hint at
+  # all.** `ruby '~> 2.2.0'` is the shape applications write; `Gem::Version` cannot place it, so the
+  # walk started at the oldest era and spent a bundle resolve on every one below the declaration.
+  # Measured on `rails_modular_monolith`, whose `~> 3.2.0` cost five bundle installs and five apt
+  # installs before the era it names was tried.
+  def test_a_declared_ruby_requirement_starts_at_the_first_era_it_accepts
+    assert_equal "2.2", names(three, declared: "~> 2.2.0").first
+    assert_equal "2.5", names(three, declared: ">= 2.5").first
+  end
+
+  # A bare version is a *floor*, not an equality: `ruby "2.2.0"` is what a developer had installed,
+  # and the matrix's 2.2 entry is 2.2.10 — so reading it as `= 2.2.0` would answer "nothing here is
+  # enough" for the era that is.
+  def test_a_declared_ruby_with_no_operator_is_a_floor_and_not_an_equality
+    assert_equal "2.2", names(three, declared: "2.2.0").first
+    assert_equal %w[2.2 2.5 2.1], names(three, declared: "2.2.0")
+  end
+
+  # A requirement no era satisfies still starts at the newest, for the reason a version above the
+  # whole matrix does: "nothing here is known to be enough" is answered by the closest thing the
+  # machine has rather than by a 2013 interpreter.
+  def test_a_requirement_the_matrix_cannot_satisfy_starts_at_the_newest_era
+    assert_equal "2.5", names(three, declared: "~> 4.0").first
+  end
+
+  # `.ruby-version` is the weakest of the three declarations — what a developer happened to install —
+  # so it is read only when the Gemfile and the lockfile say nothing, and it is never a floor.
+  def test_the_dot_ruby_version_is_a_hint_only_when_nothing_else_declares_one
+    assert_equal "2.5", names(three, dot: "2.5.4").first
+    assert_equal "2.2", names(three, declared: "2.2.0", dot: "2.5.4").first
+    assert_equal "2.1", names(three, locked: "2.1.0", dot: "2.5.4").first
+  end
+
   # Above the matrix is "nothing here is known to be enough", and the newest era is the
   # closest thing to an answer: an application declaring Ruby 3.3 starts at the newest era
   # rather than at the oldest, because the alternative is three bundle resolves spent

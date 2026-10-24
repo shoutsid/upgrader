@@ -66,7 +66,7 @@ class PublishTest < Minitest::Test
   def passed_record(repository:, from: "4.0.0.rc1", to: "4.1.0", verdict: "passed",
                     decisions: [], refused: [], applied: [], brief: nil, checks: [],
                     commits: [], app_update: nil, accepted_decisions: [], toolchain: nil,
-                    repairs: [])
+                    repairs: [], project: nil)
     Record.new(
       repository: repository, commit: "abc12345", from_version: from, to_version: to,
       name: "Rails 4.1", verdict: verdict,
@@ -77,6 +77,7 @@ class PublishTest < Minitest::Test
       era: "2.1", decisions: decisions, refused: refused, applied: applied, brief: brief,
       checks: checks, commits: commits, app_update: app_update,
       accepted_decisions: accepted_decisions, toolchain: toolchain, repairs: repairs,
+      project: project,
       stages: [
         Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 0,
           seconds: 42.0, output_tail: "12 examples, 0 failures"),
@@ -124,13 +125,16 @@ class PublishTest < Minitest::Test
     attr_reader :calls
 
     def initialize(url: "https://github.com/acme/storefront/pull/7", default_branch: "main",
-                   previous: nil, stacks: {})
+                   previous: nil, stacks: {}, chain: {})
       @url = url
       @default_branch = default_branch
       # The request whose head is the lower layer's branch, and the stacks already in GitHub.
       # A fetch by a number the test did not name is no stack, which is the first-rung case.
       @previous = previous
       @stacks = stacks
+      # The bases further down, keyed by the branch they are the head of. A walk that follows
+      # more than one base needs more than one answer.
+      @chain = chain
       @calls = []
     end
 
@@ -141,12 +145,12 @@ class PublishTest < Minitest::Test
 
     def pull_request(owner:, name:, head:, base:, title:, body:)
       @calls << [:pull_request, owner, name, head, base, title, body]
-      @url
+      { "html_url" => @url, "base" => base }
     end
 
     def pull_request_for(owner:, name:, head:)
       @calls << [:pull_request_for, owner, name, head]
-      @previous
+      @chain[head.to_s] || @previous
     end
 
     def stack_for(owner:, name:, pull_request:)
@@ -178,6 +182,25 @@ class PublishTest < Minitest::Test
       if @failures.positive?
         @failures -= 1
         raise Publish::GitHub::Refused, "could not reach https://api.github.com: SocketError"
+      end
+
+      super
+    end
+  end
+
+  # **The stack call the walk actually lost once.** GitHub answers 409 while another request is
+  # modifying the stack, and a resolver that is briefly absent raises the same class.
+  class FlakyStackApi < FakeApi
+    def initialize(failures:, **kwargs)
+      super(**kwargs)
+      @failures = failures
+    end
+
+    def add_to_stack(**arguments)
+      if @failures.positive?
+        @failures -= 1
+        raise Publish::GitHub::Refused,
+          "https://api.github.com/repos/acme/storefront/stacks/42/add answered 409: Conflict"
       end
 
       super
@@ -334,6 +357,86 @@ class PublishTest < Minitest::Test
     assert_equal "https://api.github.com/repos/acme/storefront/stacks/42", result.stack
     add = api.calls.find { |call| call.first == :add_to_stack }
     assert_equal [42, [9]], add && [add[3], add[4]], "the rung was not appended to its stack"
+  end
+
+  # **One refused link used to cost the walk its stack for good.** Measured on diaspora: the
+  # 8.0.5.1 layer's association was refused once, so 8.1.4 found a loose request below it and
+  # created a second stack from the pair — 7.0.10/7.1.6/7.2.4 in stack 11 and 8.0.5.1/8.1.4 in
+  # stack 15. The walk follows the bases past the loose layer to the first stacked one and appends
+  # both layers in one call.
+  def test_a_rung_rejoins_the_chain_when_the_one_below_it_was_never_stacked
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "8.1.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-8.0.0")
+    api = FakeApi.new(url: "#{repository}/pull/14",
+      previous: { "number" => 13, "state" => "open",
+                  "base" => { "ref" => "agents-fyi/upgrade-7.2.0" } },
+      chain: { "agents-fyi/upgrade-7.2.0" => { "number" => 12, "state" => "open",
+        "base" => { "ref" => "agents-fyi/upgrade-7.1.0" } } },
+      stacks: { 12 => { "number" => 11,
+        "url" => "https://api.github.com/repos/acme/storefront/stacks/11" } })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "8.0.0",
+      to_version: "8.1.0", record: passed_record(repository: repository, from: "8.0.0", to: "8.1.0"),
+      token: "ghp_secret", git: git, api: api).call
+
+    assert result.published?, result.reason
+    assert_equal "https://api.github.com/repos/acme/storefront/stacks/11", result.stack
+    add = api.calls.find { |call| call.first == :add_to_stack }
+    assert_equal [11, [13, 14]], add && [add[3], add[4]],
+      "the loose layer was not carried into the stack with this one: #{api.calls.inspect}"
+    assert_empty api.calls.select { |call| call.first == :create_stack },
+      "a second stack was created beside the one that already held the chain"
+  end
+
+  # And when no layer of the chain is stacked, the whole chain becomes one stack rather than the
+  # pair at the top of it — the same failure in the other direction.
+  def test_a_chain_of_unstacked_rungs_becomes_one_stack_from_its_bottom
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    api = FakeApi.new(url: "#{repository}/pull/9",
+      previous: { "number" => 8, "state" => "open",
+                  "base" => { "ref" => "agents-fyi/upgrade-4.1.0" } },
+      chain: {
+        "agents-fyi/upgrade-4.1.0" => { "number" => 7, "state" => "open",
+          "base" => { "ref" => "agents-fyi/upgrade-4.0.0" } },
+        "agents-fyi/upgrade-4.0.0" => { "number" => 6, "state" => "open",
+          "base" => { "ref" => "main" } }
+      })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.2.0",
+      to_version: "4.3.0", record: passed_record(repository: repository, from: "4.2.0", to: "4.3.0"),
+      token: "ghp_secret", git: git, api: api).call
+
+    assert result.published?, result.reason
+    create = api.calls.find { |call| call.first == :create_stack }
+    assert_equal [6, 7, 8, 9], create&.at(3),
+      "the stack was not created from the bottom of the chain: #{api.calls.inspect}"
+  end
+
+  # **A stack call is a network call, and the failure measured here was transient.** The refused
+  # association is retried, and the retry re-reads first so a refusal *after* a successful write
+  # cannot create the duplicate this exists to prevent.
+  def test_a_refused_stack_link_is_retried
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
+    repository = "https://github.com/acme/storefront"
+    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    api = FlakyStackApi.new(failures: 1, url: "#{repository}/pull/9",
+      previous: { "number" => 8, "state" => "open" },
+      stacks: { 8 => { "number" => 42,
+        "url" => "https://api.github.com/repos/acme/storefront/stacks/42" } })
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.2.0",
+      to_version: "4.3.0", record: passed_record(repository: repository, from: "4.2.0", to: "4.3.0"),
+      token: "ghp_secret", git: git, api: api, pause: ->(_seconds) {}).call
+
+    assert_equal "https://api.github.com/repos/acme/storefront/stacks/42", result.stack
+    adds = api.calls.select { |call| call.first == :add_to_stack }
+    assert_equal 1, adds.size, "the retry appended the layer twice: #{api.calls.inspect}"
   end
 
   # A retry updates a request that is already in a stack; asking again would either duplicate the
@@ -606,6 +709,44 @@ class PublishTest < Minitest::Test
     body = api.calls.find { |call| call.first == :pull_request }[6]
     assert_includes body, "The tool wrote 3 edit(s): 1 from an accepted decision, 2 from gems' own upgrades"
     refute_includes body, "- `app/models/y.rb`:2", "the body listed an edit the diff already carries"
+  end
+
+  # **A file a decision wrote is a whole file, and a whole file is not an inline code span.** The
+  # 8.0.5.1 request pasted nine vendored files into the body; a backtick in the content closed the
+  # span, a newline ended it, and the rest of the section was unreadable markdown. The diff is
+  # where content belongs, so the body names the file and its size instead.
+  def test_the_body_names_a_written_file_instead_of_pasting_its_contents
+    _bare, clone = origin_and_clone
+    applied = [
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "vendor/gems/x/lib/x.rb", line: 1,
+        text: "", after: "module X\n  VALUE = `ls`\nend\n", origin: "decision:d1"),
+      AgentsFyi::Upgrader::Applier::Applied.new(path: "Gemfile", line: 4,
+        text: %(gem "x", "1.0"), after: %(gem "x", "2.0"), origin: "decision:d1")
+    ]
+    api = FakeApi.new
+
+    Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "5.2.0", to_version: "6.0.0",
+      record: passed_record(repository: "https://github.com/acme/storefront", from: "5.2.0",
+        to: "6.0.0", applied: applied,
+        accepted_decisions: [{ "id" => "d1", "question" => "Vendor the gem?",
+          "answer" => "vendor it", "accepted_by" => "operator:1",
+          "effects" => [{ "kind" => "file",
+            "payload" => { "path" => "vendor/gems/x/lib/x.rb",
+                           "content" => "module X\n  VALUE = `ls`\nend\n" } }] }],
+        project: { "slug" => "storefront", "decisions" => [{ "id" => "d1",
+          "question" => "Vendor the gem?", "effects" => [{ "kind" => "file",
+            "payload" => { "path" => "vendor/gems/x/lib/x.rb",
+                           "content" => "module Y\n  OTHER = 1\nend\n" } }] }] }),
+      token: "ghp_secret", git: FakeGit.new, api: api).call
+
+    body = api.calls.find { |call| call.first == :pull_request }[6]
+    assert_includes body, "`vendor/gems/x/lib/x.rb` — added by the decision (3 line(s))"
+    refute_includes body, "module X", "the body pasted a file the diff already carries"
+    refute_includes body, "VALUE = `ls`", "the body pasted a backtick from the file's own content"
+    refute_includes body, "module Y", "the project declaration's copy of the decision pasted the file"
+    assert_includes body, %(`Gemfile`:4 `gem "x", "1.0"` → `gem "x", "2.0"`),
+      "a one-line edit still reads as the line it changed: #{body[/The edits these decisions.*/m][0, 400]}"
   end
 
   # **A public body must not carry the application's secret.** The recorded command is the docker
@@ -908,33 +1049,65 @@ class PublishExistingPrTest < Minitest::Test
 
   def test_an_existing_open_request_is_updated_rather_than_opened_again
     http = ScriptedHttp.new([
-      Response.new(code: "200", body: JSON.generate([{ "number" => 7 }])),
-      Response.new(code: "200", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/7" }))
+      Response.new(code: "200", body: JSON.generate([{ "number" => 7,
+        "base" => { "ref" => "main" } }])),
+      Response.new(code: "200", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/7",
+        "base" => { "ref" => "main" } }))
     ])
     api = Publish::GitHub.new(token: "ghp_test", http: http)
 
-    url = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.1.0",
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.1.0",
       base: "main", title: "Upgrade Rails to 4.1.0 (agents-fyi)", body: "the rung")
 
-    assert_equal "https://github.com/acme/storefront/pull/7", url
+    assert_equal "https://github.com/acme/storefront/pull/7", result["html_url"]
+    assert_equal "main", result["base"]
     assert_equal %w[GET PATCH], http.requests.map(&:first)
     assert_includes http.requests.first[1], "/repos/acme/storefront/pulls"
     assert_includes http.requests.first[1], "head=acme%3Aagents-fyi%2Fupgrade-4.1.0"
     assert_equal "/repos/acme/storefront/pulls/7", http.requests.last[1]
     assert_includes http.requests.last[2], "the rung"
+    # **A base that is not moving is not sent.** A stacked request refuses the field outright, so
+    # repeating the base it already has is what made a republish fail with 422.
+    refute JSON.parse(http.requests.last[2]).key?("base"),
+      "the unchanged base was sent and a stacked request would refuse the update"
+  end
+
+  # **And when the base is really moving, the stack wins and the caller learns which base it got.**
+  def test_a_stacked_request_keeps_its_base_when_the_patch_names_another
+    http = ScriptedHttp.new([
+      Response.new(code: "200", body: JSON.generate([{ "number" => 13,
+        "base" => { "ref" => "agents-fyi/upgrade-7.2.4" } }])),
+      Response.new(code: "422", body: JSON.generate({ "message" => "Validation Failed",
+        "errors" => [{ "message" => "Cannot change the base branch because the pull request is part of a stack." }] })),
+      Response.new(code: "200", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/13",
+        "base" => { "ref" => "agents-fyi/upgrade-7.2.4" } }))
+    ])
+    api = Publish::GitHub.new(token: "ghp_test", http: http)
+
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-8.0.5.1",
+      base: "develop", title: "Upgrade Rails to 8.0.5.1 (agents-fyi)", body: "the rung")
+
+    assert_equal "agents-fyi/upgrade-7.2.4", result["base"],
+      "the caller recorded a base the request does not sit on"
+    patches = http.requests.select { |request| request.first == "PATCH" }
+    assert_equal 2, patches.size, "the refused update was not retried without the base"
+    assert JSON.parse(patches.first[2]).key?("base")
+    refute JSON.parse(patches.last[2]).key?("base"), "the retry named the base again"
   end
 
   def test_a_rung_with_no_open_request_opens_one
     http = ScriptedHttp.new([
       Response.new(code: "200", body: "[]"),
-      Response.new(code: "201", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/8" }))
+      Response.new(code: "201", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/8",
+        "base" => { "ref" => "agents-fyi/upgrade-4.1.0" } }))
     ])
     api = Publish::GitHub.new(token: "ghp_test", http: http)
 
-    url = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.2.0",
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.2.0",
       base: "agents-fyi/upgrade-4.1.0", title: "Upgrade Rails to 4.2.0 (agents-fyi)", body: "the rung")
 
-    assert_equal "https://github.com/acme/storefront/pull/8", url
+    assert_equal "https://github.com/acme/storefront/pull/8", result["html_url"]
+    assert_equal "agents-fyi/upgrade-4.1.0", result["base"]
     assert_equal %w[GET POST], http.requests.map(&:first)
   end
 end

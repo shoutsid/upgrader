@@ -3370,4 +3370,70 @@ class StepTest < Minitest::Test
     assert(s.send(:version_move?, applied.call(%(gem "capistrano", "~> 3.0"\n))),
       "a requirement that moved is a gem the pin must name")
   end
+
+  # **A binstub the checkout did not mark executable is run through its own interpreter.**
+  # `rails_modular_monolith` commits its whole `bin/` directory at 0644, and a volume mounted without
+  # file modes drops the bit from files git records at 100755; both answer
+  # `exec: "bin/rails": permission denied` and the step then reads a database that was never created
+  # as a base suite that fails. The tree is not changed — thirty mode changes in the patch is a change
+  # the application never asked for — and the record keeps the command a reader recognises.
+  def test_a_binstub_without_its_execute_bit_runs_through_its_shebang
+    dir = track(Dir.mktmpdir)
+    FileUtils.mkdir_p(File.join(dir, "bin"))
+    File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
+    File.chmod(0o644, File.join(dir, "bin", "rails"))
+    s = step(dir)
+
+    assert_equal %w[ruby bin/rails db:create db:test:prepare],
+      s.send(:runnable, %w[bin/rails db:create db:test:prepare], dir)
+    assert_equal ["ruby", "bin/rails", "assets:precompile"],
+      s.send(:runnable, ["bin/rails", "assets:precompile"], dir)
+  end
+
+  def test_a_binstub_shell_script_runs_through_the_shell_its_shebang_names
+    dir = track(Dir.mktmpdir)
+    FileUtils.mkdir_p(File.join(dir, "script"))
+    File.write(File.join(dir, "script", "serve"), "#!/bin/bash\nexec bundle exec puma\n")
+    File.chmod(0o644, File.join(dir, "script", "serve"))
+
+    assert_equal %w[bash script/serve], step(dir).send(:runnable, %w[script/serve], dir)
+  end
+
+  # Everything else is left exactly as it was: an executable script is its own entry point, a program
+  # that is not a file in the tree (`bundle`, `yarn`, `git`) is not this tool's to prefix, and a file
+  # with no shebang names no interpreter — in which case exit 126 is the honest answer rather than a
+  # guess about what to run.
+  def test_a_command_that_is_not_a_script_in_the_tree_is_left_alone
+    dir = track(Dir.mktmpdir)
+    FileUtils.mkdir_p(File.join(dir, "bin"))
+    File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
+    File.chmod(0o755, File.join(dir, "bin", "rails"))
+    File.write(File.join(dir, "bin", "plain"), "no shebang here\n")
+    File.chmod(0o644, File.join(dir, "bin", "plain"))
+    s = step(dir)
+
+    assert_equal %w[bin/rails db:create], s.send(:runnable, %w[bin/rails db:create], dir)
+    assert_equal %w[bundle exec rspec], s.send(:runnable, %w[bundle exec rspec], dir)
+    assert_equal %w[yarn install --frozen-lockfile],
+      s.send(:runnable, ["yarn", "install", "--frozen-lockfile"], dir)
+    assert_equal %w[bin/plain --flag], s.send(:runnable, %w[bin/plain --flag], dir)
+  end
+
+  # The record still reads the command a person recognises, and says what actually ran: `display` is
+  # the application's own argv, and `command` is the one the machine was handed.
+  def test_the_record_shows_the_binstub_and_runs_the_interpreter
+    dir = track(app(lockfile: LOCKFILE.sub("rails (4.2.11)", "rails (5.0.0)")))
+    File.chmod(0o644, File.join(dir, "bin", "rails"))
+    commit(dir, "the binstub arrived without its mode")
+    runner = FakeRunner.new
+    corpus = FakeCorpus.new(payload: plan(to: "5.0.0", from: "4.2.11"))
+
+    record = step(dir, corpus: corpus, runner: runner).run
+
+    assert_includes runner.calls, "ruby bin/rails app:update"
+    stage = record.stages.find { |each| each.stage == AgentsFyi::Upgrader::Record::RAILS_UPDATE }
+    refute_nil stage, "the update task never ran"
+    assert_equal "ruby bin/rails app:update", stage.command
+    assert_equal "bin/rails app:update", stage.display
+  end
 end

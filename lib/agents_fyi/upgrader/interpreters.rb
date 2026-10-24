@@ -95,13 +95,19 @@ module AgentsFyi
         # Without it, an application whose floor is met by 2.1 but whose bundle only installs
         # on 2.2 would re-probe 2.1 on every cycle — a probe is a bundle resolve, and the
         # ledger exists to stop that.
+        # The three declarations are ranked, because they are statements of different strength:
+        # the Gemfile's `ruby` line is one Bundler *enforces*, `RUBY VERSION` in the lockfile is
+        # what the application last resolved under, and `.ruby-version` is only what a developer
+        # happened to have installed. The first one that exists is the hint, and none of them is
+        # ever treated as a floor — that is the rung's `requires_ruby`.
+        #
         # **A declaration may name the eras it will accept.** `only` is the project's `eras`
         # field, and it is a constraint rather than a hint: the walk tries the named
         # interpreters in the order the operator wrote them, and an era the list names that
         # does not meet the rung's floor is not tried at all. A project that says "3.2" on an
         # application whose CI runs 3.2 must not spend a bundle resolve on 2.7 just because
         # that is the oldest era the rung allows.
-        def candidates(requires_ruby: nil, declared: nil, locked: nil, preferred: nil,
+        def candidates(requires_ruby: nil, declared: nil, locked: nil, dot: nil, preferred: nil,
                        only: nil, images: nil, path: MATRIX_PATH)
           pool = matrix(path: path, images: images)
                  .select { |entry| meets?(entry.ruby, requires_ruby) != false }
@@ -109,9 +115,8 @@ module AgentsFyi
             named = Array(only).map(&:to_s)
             pool = named.filter_map { |name| pool.find { |entry| entry.name == name } }
           else
-            hinted = declared.to_s.strip
-            hinted = locked.to_s.strip if hinted.empty?
-            pool = pool.rotate(start_at(pool, hinted))
+            hinted = [declared, locked, dot].map { |value| value.to_s.strip }.find { |value| !value.empty? }
+            pool = pool.rotate(start_at(pool, hinted.to_s))
           end
           return pool unless preferred
 
@@ -182,13 +187,52 @@ module AgentsFyi
         # starting point above the top means "nothing here is known to be enough", and the
         # newest entry is the closest thing to an answer the machine has.
         #
-        # A hint this reader cannot place is not a hint: it is a malformed `RUBY VERSION` or a
-        # `ruby` line, and starting from the first entry is the answer that assumes nothing.
+        # **What an application usually states is a *requirement*, and reading it as a bare
+        # version made it no hint at all.** A Gemfile's `ruby` line is Bundler's own directive, so
+        # `ruby '~> 3.2.0'` is the shape most applications write; `Gem::Version` cannot place it,
+        # which used to mean "start at the oldest era". Measured on `rails_modular_monolith`: 2.1,
+        # 2.2, 2.5, 2.7 and 3.1 were each started and apt-installed and five bundles resolved to
+        # refusal, four minutes before the era the application declares was tried. A requirement is
+        # answered as one — the first era it *accepts* — and a bare version keeps the at-or-above
+        # rule, because `ruby "3.2.2"` names what the developer had rather than demanding exactly
+        # that patch of every machine.
+        #
+        # A hint this reader can place neither way is not a hint, and starting from the first entry
+        # assumes nothing about it.
         def start_at(pool, hint)
-          return 0 if hint.empty? || !placeable?(hint)
+          return 0 if hint.empty?
+
+          requirement = requirement_for(hint)
+          if requirement
+            index = pool.index { |candidate| accepts?(requirement, candidate.ruby) }
+            return index || [pool.size - 1, 0].max
+          end
+
+          return 0 unless placeable?(hint)
 
           index = pool.index { |candidate| meets?(candidate.ruby, hint) }
           index || [pool.size - 1, 0].max
+        end
+
+        # The hint as a requirement, or nil when it is a bare version.
+        #
+        # Only an operator makes a string a requirement. `Gem::Requirement` reads a bare version as
+        # an *equality*, and no era satisfies one: a matrix entry is a patch (`3.2.11`) while a
+        # declaration is whatever that developer ran (`3.2.4`), so treating `3.2.4` as `= 3.2.4`
+        # would answer "nothing here is enough" for the era that is.
+        def requirement_for(hint)
+          text = hint.to_s.strip
+          return nil unless text.match?(/[<>=~,]/)
+
+          Gem::Requirement.new(text)
+        rescue Gem::Requirement::BadRequirementError
+          nil
+        end
+
+        def accepts?(requirement, version)
+          requirement.satisfied_by?(Gem::Version.new(version.to_s.strip))
+        rescue ArgumentError
+          false
         end
 
         def placeable?(version)

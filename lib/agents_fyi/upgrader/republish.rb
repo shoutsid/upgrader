@@ -92,45 +92,16 @@ module AgentsFyi
         return nil unless File.file?(path)
 
         source = JSON.parse(File.read(path))
-        Record.new(
-          repository: source["repository"], commit: source["commit"], worktree: source["worktree"],
-          from_version: source["from_version"], to_version: source["to_version"], name: source["name"],
-          requires_ruby: source["requires_ruby"], interpreter: source["interpreter"],
-          image: source["image"], machine: source["machine"], era: source["era"],
-          verdict: source["verdict"], why: source["why"], brief: brief(source["brief"]),
-          stages: members(Record::Command, source["stages"]),
-          applied: members(Applier::Applied, source["applied"]),
-          refused: members(Applier::Refused, source["refused"]),
-          decisions: members(Record::Decision, source["decisions"]),
-          patch: source["patch"].to_s
-        )
+        # **The record's own reader, not a second one that remembered fewer fields.** This used to
+        # rebuild the record by hand and dropped `commits`, `accepted_decisions`, `checks`,
+        # `app_update`, `toolchain` and `baseline`/`suite` along the way: a republished body said "this
+        # record does not carry a concern-commit series" about a record that carried one, and lost the
+        # accepted decision's question and answer. `Record.from_h` is the inverse of `to_h` and is what
+        # a replay is for.
+        Record.from_h(source)
       rescue JSON::ParserError, ArgumentError, TypeError => e
         @out&.puts("republish: #{path} could not be read: #{e.class}: #{e.message}")
         nil
-      end
-
-      def brief(source)
-        return nil unless source.is_a?(Hash)
-
-        Brief::Result.new(
-          sections: Array(source["sections"]).map do |section|
-            Brief::Section.new(
-              key: section["key"], title: section["title"], question: section["question"],
-              state: section["state"], note: section["note"], total: section["total"],
-              items: members(Brief::Item, section["items"])
-            )
-          end,
-          asked: source["asked"], truncated: source["truncated"], unavailable: source["unavailable"]
-        )
-      end
-
-      # The struct's own members, so a key the record gained (`identifying` on a brief item, say)
-      # does not make the whole record unreadable.
-      def members(struct, rows)
-        keys = struct.members.map(&:to_s)
-        Array(rows).grep(Hash).map do |row|
-          struct.new(**row.select { |key, _| keys.include?(key) }.transform_keys(&:to_sym))
-        end
       end
     end
   end
