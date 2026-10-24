@@ -27,6 +27,11 @@ module AgentsFyi
       FAILED = "failed"
       NOT_RUN = "not_run"
       EXTERNAL = "external"
+      # **A check the base commit already failed.** Not `failed`, because the rung did not make it
+      # fail and nothing about the move can be read from it; not `not_run`, because it did run —
+      # twice, and the answer was red both times. See `Step#style_baseline` for the measurement
+      # that produces it.
+      PREEXISTING = "preexisting"
 
       # What one check said. `required` is separate from `status` because a required external check
       # is satisfied by being declared and not run here, while a required local check that did not
@@ -42,10 +47,14 @@ module AgentsFyi
 
         def external? = status == EXTERNAL
 
+        def preexisting? = status == PREEXISTING
+
         def local? = !external
 
         # **Only a local check can decide the verdict.** An external check is a fact about where the
-        # application's gate runs, and this walk did not run it.
+        # application's gate runs, and this walk did not run it. A check the base commit already
+        # failed decides nothing either: blaming the rung for it would stop every walk of a project
+        # whose lint is scoped to changed lines (`pronto`, which is what diaspora's own job runs).
         def blocking_failure? = required && local? && failed?
 
         def blocking_absence? = required && local? && status == NOT_RUN

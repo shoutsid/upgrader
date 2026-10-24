@@ -1416,17 +1416,67 @@ class StepMachineTest < Minitest::Test
 
   def test_the_application_s_database_is_prepared_before_the_baseline
     dir = app
-    FileUtils.mkdir_p(File.join(dir, "config"))
-    File.write(File.join(dir, "config", "database.yml"), "test:\n  adapter: postgresql\n")
-    FileUtils.mkdir_p(File.join(dir, "bin"))
-    File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
-    File.chmod(0o755, File.join(dir, "bin", "rails"))
+    write_database_config(dir)
+    write_schema(dir, "db/schema.rb")
     runner = FakeRunner.new
     record = step(dir, machines: machines, runner: runner).run
 
     stages = record.stages.map(&:stage)
     assert_operator stages.index("database"), :<, stages.index("baseline")
     assert(runner.calls.any? { |call| call.include?("db:create db:test:prepare") })
+  end
+
+  # **A tree with no dump is built from its migrations.** `db:test:prepare` *loads* the schema
+  # file, so an application that gitignores `db/schema.rb` answers "db/schema.rb doesn't exist yet.
+  # Run `bin/rails db:migrate`" — which is what diaspora's `.gitignore` does, because one dump
+  # cannot serve both MySQL and PostgreSQL. Its baseline then measured a database that was never
+  # built, and the failure was filed against the move.
+  def test_a_tree_that_keeps_its_schema_out_of_git_is_built_from_its_migrations
+    dir = app
+    write_database_config(dir)
+    runner = FakeRunner.new
+    step(dir, machines: machines, runner: runner).run
+
+    calls = runner.calls.map { |call| Array(call).join(" ") }
+    assert(calls.any? { |call| call.include?("db:create db:migrate") },
+      "a tree with no schema dump was not migrated")
+    refute(calls.any? { |call| call.include?("db:test:prepare") },
+      "a tree with no schema dump was asked to load one")
+  end
+
+  # **A dump the working copy carries but git does not know is a previous attempt's.** A kept tree
+  # is reset to its base commit between attempts and `git reset` leaves ignored files in place, so
+  # the first attempt's `db:migrate` (under the pinned Rails) left a 7.0 `db/schema.rb` in a 6.1
+  # tree — and the retry then failed to load it. The preparation asks the repository, not the debris.
+  def test_a_schema_dump_a_previous_attempt_left_behind_is_not_the_repository_s
+    dir = app
+    write_database_config(dir)
+    # Ignored, which is the whole of the case: a dump the repository ignores is one `git add --all`
+    # (the preflight's checkpoint) will not stage, so it stays untracked while the tree is reused.
+    File.write(File.join(dir, ".gitignore"), "db/schema.rb\n")
+    FileUtils.mkdir_p(File.join(dir, "db"))
+    File.write(File.join(dir, "db", "schema.rb"), "ActiveRecord::Schema[7.0].define\n")
+    runner = FakeRunner.new
+    step(dir, machines: machines, runner: runner).run
+
+    calls = runner.calls.map { |call| Array(call).join(" ") }
+    assert(calls.any? { |call| call.include?("db:create db:migrate") },
+      "an untracked schema dump was taken for the repository's")
+  end
+
+  def write_database_config(dir)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "database.yml"), "test:\n  adapter: postgresql\n")
+  end
+
+  # Committed, because the rule reads the *repository's* schema: a dump the working copy carries
+  # but git does not know is what a previous attempt's `db:migrate` left behind.
+  def write_schema(dir, path)
+    FileUtils.mkdir_p(File.join(dir, File.dirname(path)))
+    File.write(File.join(dir, path), "ActiveRecord::Schema.define\n")
+    system("git", "-C", dir, "add", "--all", out: File::NULL, err: File::NULL)
+    system("git", "-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t",
+      "commit", "--quiet", "-m", "schema", out: File::NULL, err: File::NULL)
   end
 
   # **The other half of the version rule, and the reason it is a rule rather than a file
@@ -1436,8 +1486,8 @@ class StepMachineTest < Minitest::Test
   # leaves the suite with no database and the record with a command-not-found.
   def test_a_rails_five_application_runs_both_moved_commands_through_bin_rails
     dir = app(lockfile: LOCKFILE.sub("4.0.0.rc1", "5.2.8"), gemfile: GEMFILE.sub("4.0.0.rc1", "5.2.8"))
-    FileUtils.mkdir_p(File.join(dir, "config"))
-    File.write(File.join(dir, "config", "database.yml"), "test:\n  adapter: postgresql\n")
+    write_database_config(dir)
+    write_schema(dir, "db/schema.rb")
     runner = FakeRunner.new
     record = step(dir, machines: machines, runner: runner).run
 

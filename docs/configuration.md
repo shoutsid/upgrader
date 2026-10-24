@@ -209,7 +209,7 @@ declaration exists to prevent.
     "native": ["libvips"]
   },
   "style": {
-    "format": "bundle exec rubocop -A",
+    "format": "bundle exec rubocop -a",
     "check": "bundle exec rubocop"
   },
   "app_update": {

@@ -2766,6 +2766,11 @@ class StepTest < Minitest::Test
   def test_a_migration_from_the_update_task_is_applied_before_the_suite
     dir = track(app)
     with_source(dir, "config/database.yml", "test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n")
+    # The dump is here, and committed, so the *first* preparation is `db:test:prepare`; without one
+    # the fixture is a tree that has to be migrated, and `db:migrate` in `calls` would be the
+    # baseline's.
+    with_source(dir, "db/schema.rb", "ActiveRecord::Schema.define\n")
+    commit(dir, "schema")
     runner = MigratingRunner.new(dir, path: "db/migrate/20261018221457_add_foreign_key_constraint.rb")
 
     record = step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner).run
@@ -2784,6 +2789,8 @@ class StepTest < Minitest::Test
     # And a rung whose `app:update` wrote no migration prepares nothing a second time.
     plain = track(app)
     with_source(plain, "config/database.yml", "test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n")
+    with_source(plain, "db/schema.rb", "ActiveRecord::Schema.define\n")
+    commit(plain, "schema")
     quiet = FakeRunner.new
     step(plain, corpus: FakeCorpus.new(payload: plan), runner: quiet).run
 
@@ -2997,6 +3004,35 @@ class StepTest < Minitest::Test
       "the formatter is a stage, not a commit somebody makes afterwards"
     assert_includes out.string, "lint says no",
       "a failed check's output was not printed as the reason the rung stopped"
+  end
+
+  # **A check the base commit already failed is neither this rung's failure nor the formatter's
+  # invitation.** Measured on diaspora: 444 offences on a clean `develop`, because its own lint job
+  # runs `pronto` over the lines a pull request changes; the walker's formatter then rewrote 40 files
+  # with an unsafe correction and one of them broke the boot. The check is asked of the base commit
+  # first, the rung carries the result as `preexisting`, and no formatter stage runs.
+  def test_a_style_check_the_base_commit_already_fails_is_not_this_rung_s_failure
+    dir = track(app)
+    project = AgentsFyi::Upgrader::Project.parse({
+      "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
+      "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
+      "style" => { "format" => "ruby -e 'exit 0'",
+                   "check" => "ruby -e 'STDERR.puts \"444 offences\"; exit 1'" }
+    }.to_json)
+
+    out = StringIO.new
+    record = step(dir, project: project, out: out).run
+
+    assert record.passed?, record.why
+    style = record.checks.find { |check| check.id == "style" }
+    assert_equal "preexisting", style.status
+    assert_includes style.reason, "exit 1"
+    refute record.stages.any? { |stage| stage.stage == "style" },
+      "the formatter rewrote a tree that arrived unformatted"
+    base = record.stages.find { |stage| stage.command.to_s.end_with?("(at the base commit)") }
+    refute_nil base, "the base commit was not asked the check"
+    assert_equal 1, base.exit_code
+    assert_includes out.string, "already fails"
   end
 
   # **A prepare check runs before the baseline, not after the suite.** The application's CI prepares

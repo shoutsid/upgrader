@@ -4,6 +4,10 @@ require "erb"
 require "uri"
 require "yaml"
 
+# `prepare_database` asks git whether a schema dump is the repository's rather than a previous
+# attempt's; `Checkpoint.git` is the one place a git question is asked.
+require "agents_fyi/upgrader/checkpoint"
+
 module AgentsFyi
   module Upgrader
     # **The Rails knowledge, in one place.** A *stack* is what a set of releases changes and how a
@@ -45,7 +49,7 @@ module AgentsFyi
           "sqlite3" => "sqlite3"
         }.freeze
 
-        # `bundle exec rubocop -A` names a gem's executable. A command that does not start that
+        # `bundle exec rubocop -a` names a gem's executable. A command that does not start that
         # way (`bin/rails assets:precompile`) names a file in the application, not a gem.
         BUNDLE_EXEC = /\Abundle\s+exec\s+([A-Za-z0-9_.-]+)/
 
@@ -242,15 +246,40 @@ module AgentsFyi
         end
 
         # `[argv, nil]` when there is something to run, `[nil, sentence]` when there is not.
+        # **A tree that keeps its schema out of git has no dump for `db:test:prepare` to load.**
+        # That task *loads* the schema file; it does not build one, and a fresh clone of an
+        # application that gitignores `db/schema.rb` answers "db/schema.rb doesn't exist yet. Run
+        # `bin/rails db:migrate`" — measured on diaspora, whose `.gitignore` says a single dump
+        # cannot serve both MySQL and PostgreSQL. Its migrations are in the tree, so they are what
+        # builds the database.
+        #
+        # **A dump is the repository's only if git knows it.** A kept tree is reset to its base
+        # commit between attempts, and `git reset` leaves an ignored file in place — so the first
+        # attempt's `db:migrate` (under the *pinned* Rails) left a `db/schema.rb` written by 7.0 in a
+        # 6.1 tree, and the retry's `db:test:prepare` failed loading a schema format the base release
+        # does not know. The question is about the repository, not about what a previous run dropped
+        # in the working copy — the same distinction `Bootstrap` makes about examples.
         def prepare_database(root, five_or_newer:)
+          tasks = dump?(root) ? %w[db:create db:test:prepare] : %w[db:create db:migrate]
           if five_or_newer
-            return [["bin/rails", "db:create", "db:test:prepare"], nil]
+            return [["bin/rails", *tasks], nil]
           end
           if File.file?(File.join(root, "Rakefile"))
-            return [["bundle", "exec", "rake", "db:create", "db:test:prepare"], nil]
+            return [["bundle", "exec", "rake", *tasks], nil]
           end
 
           [nil, "no Rakefile and no bin/rails: nothing to prepare the database with"]
+        end
+
+        def dump?(root)
+          %w[db/schema.rb db/structure.sql].any? do |path|
+            File.file?(File.join(root, path)) && tracked?(root, path)
+          end
+        end
+
+        def tracked?(root, path)
+          _output, status = Checkpoint.git(root, "ls-files", "--error-unmatch", "--", path)
+          status&.success? == true
         end
 
         # **A Rails application's asset pipeline is not in the repository.** The second
