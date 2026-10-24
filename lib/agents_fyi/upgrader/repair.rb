@@ -76,11 +76,15 @@ module AgentsFyi
       # to answer it, exist only while the loop runs. It travels in the record and becomes a report
       # (`Filing.repair_report_for`), because a repair that lives only in a log is the failure
       # the design notes name.
-      Outcome = Struct.new(:failure, :suite, :attempts, :files, :diff, :before_the_move,
+      # `gate` names what was red and then green — the suite for a run's repair, `the boot` for a
+      # load the application's own code could not satisfy. It is a word rather than a boolean
+      # because the report's sentences need to read correctly for both, and a report that called a
+      # failed `bin/rails runner` "the suite" is a lie a reader would have to notice for themselves.
+      Outcome = Struct.new(:failure, :suite, :attempts, :files, :diff, :before_the_move, :gate,
         keyword_init: true) do
         def to_h
           { "failure" => failure, "suite" => suite, "attempts" => attempts, "files" => files,
-            "diff" => diff, "before_the_move" => before_the_move }
+            "diff" => diff, "before_the_move" => before_the_move, "gate" => gate }
         end
       end
 
@@ -91,13 +95,13 @@ module AgentsFyi
       # it. It travels in the same `Outcome` and becomes a corpus report by the same door
       # (`Filing.file_repairs`). Without this the walk's *most* trustworthy repairs, the ones no
       # model made, were the only ones the corpus never saw.
-      def self.mechanical_outcome(applied:, failure:, suite:, before_the_move: false)
+      def self.mechanical_outcome(applied:, failure:, suite:, before_the_move: false, gate: nil)
         edits = Array(applied)
         return nil if edits.empty?
 
         Outcome.new(failure: failure, suite: suite, attempts: 1,
           files: edits.map(&:path).uniq, diff: diff_for(edits),
-          before_the_move: before_the_move)
+          before_the_move: before_the_move, gate: gate)
       end
 
       # The edits as a diff a reader can check. **Recomputed from the applied edits rather than read

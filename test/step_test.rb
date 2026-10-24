@@ -34,6 +34,28 @@ class StepTest < Minitest::Test
        2.5.22
   LOCK
 
+  # The lockfile a real application arrives with when a dependency is what provides a gem: nothing
+  # in `DEPENDENCIES` names it, and the spec is there.
+  LOCKFILE_WITH_ATTR_ENCRYPTED = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        attr_encrypted (4.2.0)
+          encryptor (~> 3.0.0)
+        devise-two-factor (4.1.0)
+          attr_encrypted (>= 1.3, < 5, != 2)
+        rails (4.2.11)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 4.2.11)
+
+    BUNDLED WITH
+       2.5.22
+  LOCK
+
   COMPONENTS_LOCKFILE = <<~LOCK
     GEM
       remote: https://rubygems.org/
@@ -476,6 +498,40 @@ class StepTest < Minitest::Test
       end
 
       super
+    end
+  end
+
+  # **A pin that drops a transitive dependency, and a boot that then cannot load it.** Measured at
+  # diaspora's 7.1 rung: `devise-two-factor 4.1.0` depends on `attr_encrypted`, `~> 6.3.1` does not,
+  # and `app/models/user.rb` encrypts the OTP secret with it — so the correct pin produced a boot
+  # that answered `LoadError: cannot load such file -- attr_encrypted` while the application's
+  # Gemfile had never declared it. The double writes the lock the real `bundle update` writes — the
+  # gem is gone from it — because that absence is what the repair reads.
+  class DroppingGemRunner < FakeRunner
+    attr_reader :boots
+
+    def initialize(root, require_name: "attr_encrypted")
+      super()
+      @root = root
+      @require_name = require_name
+      @boots = 0
+    end
+
+    def run(argv, stage:, chdir:, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil, display: nil)
+      command = argv.join(" ")
+      File.write(File.join(@root, "Gemfile.lock"), StepTest::LOCKFILE) if command.include?("bundle update")
+      return super unless command.include?("Rails.version")
+
+      @calls << command
+      @envs << [command, env]
+      @timeouts << [command, timeout]
+      @stdins << [command, stdin]
+      @boots += 1
+      failed = @boots == 1
+      Command.new(stage: stage, command: command, display: (display || argv).join(" "),
+        ran: true, exit_code: failed ? 1 : 0, seconds: 0.1,
+        output_tail: failed ? "bin/rails aborted!\nLoadError: cannot load such file -- " \
+                              "#{@require_name} (LoadError)\n" : "4.2.11\n")
     end
   end
 
@@ -2828,6 +2884,30 @@ class StepTest < Minitest::Test
       "a removal the tool made is not work for a person"
     refute_includes runner.calls.join("\n"), "db:migrate",
       "the second preparation ran for a migration that was not kept: #{runner.calls.inspect}"
+  end
+
+  # **A boot that cannot load a gem the pin stopped providing is repaired by declaring it.** The
+  # evidence is both halves of the tree: the require the boot named, and the version the base
+  # commit's lockfile carried. A report is filed through the same `Outcome` as a suite repair, so
+  # the corpus learns the shape rather than this walk deriving it again.
+  def test_a_boot_that_cannot_load_a_gem_the_pin_stopped_providing_declares_it_and_boots_again
+    dir = track(app(lockfile: LOCKFILE_WITH_ATTR_ENCRYPTED))
+    runner = DroppingGemRunner.new(dir, require_name: "attr_encrypted")
+
+    record = step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner).run
+
+    assert record.passed?, record.why
+    assert_includes File.read(File.join(dir, "Gemfile")), "gem \"attr_encrypted\", \"4.2.0\""
+    assert_equal 2, runner.boots, "the boot was not asked again after the declaration"
+    repair = record.stages.find { |stage| stage.command.to_s.include?("boot repair") }
+    refute_nil repair, "the record does not say the boot was repaired"
+    assert_includes repair.output_tail, "attr_encrypted 4.2.0"
+
+    outcome = record.repairs.find { |each| each.gate.to_s == "the boot" }
+    refute_nil outcome, "the boot repair is not in the record's repairs: #{record.repairs.inspect}"
+    payload = AgentsFyi::Upgrader::Filing.repair_report_for(record: record, outcome: outcome)
+    refute_nil payload
+    assert_includes payload["resolution"], "the boot was green after it"
   end
 
   # And the other side of the same rule: an application that *has* the engine's tables keeps the

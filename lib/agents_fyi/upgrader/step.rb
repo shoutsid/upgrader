@@ -391,7 +391,8 @@ module AgentsFyi
         verify_assets_stage(stages)
         style_stage(stages)
         checkpoint("format the application")
-        boot(stages)
+        @boot = boot(stages)
+        missing_gems(stages)
         @suite = suite(stages)
 
         # **A red suite is repaired from the application's own facts before anyone is asked to
@@ -940,7 +941,8 @@ module AgentsFyi
         return finish(pin) if pin.is_a?(Record)
         checkpoint("pin Rails #{@to}")
 
-        boot(stages)
+        @boot = boot(stages)
+        missing_gems(stages)
         @suite = suite(stages)
         mechanical_repairs(stages)
         @checks = Array(@prepare_checks) + checks_stage(stages)
@@ -3675,11 +3677,67 @@ module AgentsFyi
 
       private
 
+      # The stage rather than nil, because the failure it carries is what `missing_gems` reads.
       def boot(stages)
         argv = @stack.boot(@worktree.root)
-        return if argv.nil?
+        return nil if argv.nil?
 
         stages << command(Record::BOOT, argv, chdir: @worktree.root, env: application_env)
+        stages.last
+      end
+
+      # **A boot that cannot load a gem the application used to have.** A gem the application's
+      # own code requires arrives transitively until the move takes the gem that provided it across
+      # a major version: measured at diaspora's 7.1 rung, `devise-two-factor 4.1.0` depends on
+      # `attr_encrypted` and `~> 6.3.1` does not, so `bin/rails runner` answered `LoadError: cannot
+      # load such file -- attr_encrypted` from `app/models/user.rb` while the Gemfile had never
+      # declared it. `MissingGems` reads the two facts out of the tree and writes the declaration;
+      # this loop installs what it added and asks the boot again, because a Gemfile line is a
+      # claim and the boot is the measurement.
+      #
+      # **The version is the base commit's**, not whatever the resolver would pick now — the
+      # application was never measured against the newer release, and a repair is allowed to
+      # restore a fact rather than introduce one.
+      MAX_MISSING_GEM_ROUNDS = 3
+
+      def missing_gems(stages)
+        return if @boot.nil? || @boot.ok?
+
+        before = @boot
+        applied = []
+        rounds = 0
+        while rounds < MAX_MISSING_GEM_ROUNDS && @boot && !@boot.ok?
+          edit = MissingGems.for(output: @boot.output_tail, root: @worktree.root, lock: @lockfile)
+          break if edit.nil?
+
+          @control&.check!
+          result = Applier.new(@worktree.root).apply([edit])
+          @applied.concat(result.applied)
+          @refused.concat(result.refused)
+          break if result.applied.empty?
+
+          applied.concat(result.applied)
+          rounds += 1
+          stages << Record::Command.new(stage: Record::REPAIR,
+            command: "boot repair: declare a gem the boot could not load",
+            ran: true, exit_code: 0, seconds: 0.0,
+            output_tail: result.applied.map { |each| "#{each.path}:#{each.line} — #{each.note}" }
+              .join("\n"))
+          @out.puts("  repair: #{edit["path"]}:#{edit["line"]} — #{edit["note"]}") if @out
+
+          install = command(Record::BUNDLE, ["bundle", "install"], chdir: @worktree.root,
+            env: application_env)
+          stages << install
+          break unless install.ok?
+
+          checkpoint("declare the gem the boot could not load")
+          @boot = boot(stages)
+        end
+        return unless rounds.positive? && @boot&.ok?
+
+        outcome = Repair.mechanical_outcome(applied: applied, failure: before.output_tail,
+          suite: before.readable, gate: "the boot")
+        @repairs << outcome unless outcome.nil?
       end
 
       # The patch, for a person to apply. Untracked files are included, because
