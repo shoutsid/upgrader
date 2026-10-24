@@ -2087,7 +2087,13 @@ module AgentsFyi
           # application's own `db/schema.rb` explains; the route table is what the *other* family
           # needs, and reading it here would spend a boot on a failure it cannot explain. Both
           # families write through the same applier and both are followed by the suite.
+          #
+          # **A redirect's empty body is the third family, and it needs nothing but the failure.**
+          # It edits the assertion that read the body the release no longer sends, so it is asked
+          # beside `Associations` and before the route table is read: a rung whose suite failed on
+          # three redirect assertions and nothing else must not pay a boot for a router it never uses.
           edits = Associations.for(root: @worktree.root, failures: failures)
+          edits += RedirectBodies.for(root: @worktree.root, failures: failures)
           routes = if edits.empty?
             Routes.read(machine: @machine, root: @worktree.root, env: application_env, stack: @stack)
           else

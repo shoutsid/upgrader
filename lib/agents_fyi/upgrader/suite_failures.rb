@@ -19,7 +19,9 @@ module AgentsFyi
       # exception came out of rather than the gem frame above it. `error`/`message` are the
       # outermost exception; `caused_by`/`caused_by_message` the one underneath it, because RSpec
       # wraps a template's exception in `ActionView::Template::Error` and the class a repair cares
-      # about (`NoMethodError`, `UrlGenerationError`) is in the `Caused by:` block.
+      # about (`NoMethodError`, `UrlGenerationError`) is in the `Caused by:` block. **A failed
+      # expectation is the other shape**: no class, and `message` is RSpec's own sentence
+      # (`expected "" to match "error=invalid_scope"`), because that is all the failure is.
       Failure = Struct.new(:name, :source, :error, :message, :caused_by, :caused_by_message,
         :frames, keyword_init: true) do
         def frame = frames.find { |path, _line| path.start_with?("./") }
@@ -90,6 +92,14 @@ module AgentsFyi
           end
           if (found = line.match(SOURCE))
             source = found[1].to_s.rstrip
+            # **An expectation failure prints no class line, and its own sentence is the
+            # failure.** RSpec renders `Failure/Error: expect(...)` and then the detail —
+            # `expected "" to match "error=invalid_scope"` — with no `SomeError:` above it (a
+            # raised exception does print one, and the class branch below takes that case first).
+            # Without this the detail was dropped, so a repair could see that an expectation at
+            # line 113 failed and not what the expectation said, which is the whole of the evidence
+            # a redirect's empty body is repaired from (`RedirectBodies`).
+            awaiting = :error
             next
           end
           if (found = line.match(FRAME))
