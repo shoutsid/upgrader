@@ -865,7 +865,16 @@ module AgentsFyi
         nil
       end
 
+      # **A forced entry is the one case where below the application is the repair.** The guard
+      # above exists because a curated line was measured on an application from an older era, and
+      # moving a newer application down to it is a regression the resolver will notice. `forced`
+      # is the digest saying the opposite: the *rung* cannot carry the line the application wrote
+      # — Rails 7.2 caps `minitest` below 6 while an application pinned 6.0.3 — so the move back is
+      # the only resolution there is. Measured on diaspora's 7.2 rung: the pin exited 6 with
+      # `version solving has failed`, before any stage could measure anything else.
       def newer_than_entry?(name, entry)
+        return false if entry["forced"] == true
+
         current = locked_version(name)
         upper = upper_bound(entry["requirement"])
         return false if current.nil? || upper.nil?
