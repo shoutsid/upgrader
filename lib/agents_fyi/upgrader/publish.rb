@@ -450,8 +450,12 @@ module AgentsFyi
         style_row = style_check_row
         lines << style_row if style_row
         @record.checks.each do |check|
-          result = check.external? ? "external — not run here" : check.status.tr("_", " ")
+          result = check_result(check)
           what = check.external? ? check.reason.to_s : "`#{check.command}`"
+          # **A pre-existing failure names both runs.** The row says the base commit already
+          # failed it, and the reason carries the base exit code, so a reviewer reads which red
+          # belongs to whom instead of a bare `failed` under a passed verdict.
+          what = "#{what} — #{check.reason}" if check.preexisting? && check.reason
           required = check.required ? "" : " (optional)"
           lines << "| #{check.label}#{required} | #{result} | #{escape_cell(what)} |"
         end
@@ -501,6 +505,15 @@ module AgentsFyi
             "no suite was found"
           end
         "| suite | #{result} | #{escape_cell(what)} |"
+      end
+
+      # The one vocabulary the checks table speaks. `external` and `preexisting` are two different
+      # reasons a check is not green here, and neither of them is a failure of this rung.
+      def check_result(check)
+        return "external — not run here" if check.external?
+        return "pre-existing — not this rung's" if check.preexisting?
+
+        check.status.tr("_", " ")
       end
 
       def style_check_row

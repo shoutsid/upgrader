@@ -335,6 +335,7 @@ module AgentsFyi
         database_stage(stages)
         assets_stage(stages)
         @prepare_checks = prepare_checks_stage(stages)
+        style_baseline(stages)
 
         # The baseline, on the unmodified copy, before anything is written.
         # The baseline, on the unmodified copy, before anything is written — the
@@ -929,6 +930,7 @@ module AgentsFyi
         database_stage(stages)
         assets_stage(stages)
         @prepare_checks = prepare_checks_stage(stages)
+        style_baseline(stages)
 
         # The baseline is the same rule as a rung's: "this patch broke the suite" and "the suite
         # was already red" are one sentence without it, and the second is not a fact about Rails.
@@ -2079,11 +2081,17 @@ module AgentsFyi
           )
           break if failures.empty?
 
-          routes = Routes.read(machine: @machine, root: @worktree.root, env: application_env,
-            stack: @stack)
-          break if routes.empty?
-
-          edits = TemplateRepairs.for(root: @worktree.root, failures: failures, routes: routes)
+          # **The schema's answer first, and it needs no router.** A missing column is a failure the
+          # application's own `db/schema.rb` explains; the route table is what the *other* family
+          # needs, and reading it here would spend a boot on a failure it cannot explain. Both
+          # families write through the same applier and both are followed by the suite.
+          edits = Associations.for(root: @worktree.root, failures: failures)
+          routes = if edits.empty?
+            Routes.read(machine: @machine, root: @worktree.root, env: application_env, stack: @stack)
+          else
+            []
+          end
+          edits += TemplateRepairs.for(root: @worktree.root, failures: failures, routes: routes)
           break if edits.empty?
 
           @control&.check!
@@ -2091,16 +2099,16 @@ module AgentsFyi
           @applied.concat(result.applied)
           @refused.concat(result.refused)
           stages << Record::Command.new(stage: Record::REPAIR,
-            command: "mechanical repairs: #{result.applied.length} template route edit(s)",
+            command: "mechanical repairs: #{result.applied.length} edit(s)",
             ran: true, exit_code: result.applied.empty? ? 1 : 0, seconds: 0.0,
             output_tail: result.applied.map { |edit| "#{edit.path}:#{edit.line} — #{edit.note}" }
               .concat(result.refused.map { |refusal| "refused: #{refusal.reason}" }).join("\n"))
-          @out.puts("  repair: #{result.applied.length} template route edit(s)") if @out
+          @out.puts("  repair: #{result.applied.length} mechanical edit(s)") if @out
           break if result.applied.empty?
 
           applied.concat(result.applied)
           rounds += 1
-          checkpoint("repair the suite's template routes")
+          checkpoint("repair the suite's mechanical failures")
           @suite = run_suite(stages, Record::SUITE)
         end
         return unless rounds.positive? && @suite.ran && @suite.exit_code.to_i.zero?
@@ -2108,6 +2116,65 @@ module AgentsFyi
         outcome = Repair.mechanical_outcome(applied: applied, failure: before.output_tail,
           suite: @suite_plan&.command)
         @repairs << outcome unless outcome.nil?
+      end
+
+      # **The style pair is judged at the base commit, and that is the only place it can be.**
+      #
+      # `format` is an autocorrect, so "did this rung leave the tree formatted" is a question about
+      # a *change*, and a change is measured against where the tree started. Measured on diaspora at
+      # 7.0.10: its `.rubocop.yml` leaves `Style/ClassAndModuleChildren` at `nested`, its 6.1 tree
+      # writes `module User::Querying` in every model namespace, and the declared formatter was
+      # `rubocop -A`. RuboCop's own metadata for that cop says `SafeAutoCorrect: false` — moving
+      # `compact` to `nested` needs to know whether the parent is a module or a class, and `module
+      # User` over a class is `TypeError: User is not a module` at boot. So the walk reformatted 40
+      # files, broke the application at boot, and failed a rung whose own edits were fine. The check
+      # half of the pair is therefore run here, before anything writes: a red answer means the tree
+      # arrived unformatted, and formatting it is a rewrite of the application rather than the move.
+      #
+      # It is a stage rather than a flag, so the record carries both commands and both exit codes,
+      # and `checks_stage` reads `@style_at_base` to carry the check as `preexisting` on the rung.
+      def style_baseline(stages)
+        policy = @project&.style
+        return nil if policy.nil? || policy.check.to_s.empty?
+
+        @control&.check!
+        announce(Record::CHECK, policy.check, note: "at the base commit")
+        # **The same machinery the rung's own checks go through.** `Checks.run` is what
+        # `checks_stage` calls, so the base answer and the head answer cannot disagree about what a
+        # check is: an injected test double that answered a suite-shaped result here once made this
+        # stage read the baseline's verdict as the application's style.
+        result = Checks.run(root: @worktree.root,
+          checks: [Project::Check.new(id: "style", name: "style", kind: "lint",
+            command: policy.check, required: true, external: false, environment: nil,
+            reason: "the project declares this style check; asked here of the base commit")],
+          machine: @machine, env: application_env, timeout: @suite_timeout, stack: @stack).first
+        @style_at_base = result
+        stages << Record::Command.new(stage: Record::CHECK,
+          command: "#{policy.check} (at the base commit)", ran: result.ran,
+          exit_code: result.exit_code, seconds: result.seconds,
+          output_tail: "the base commit, before any edit this rung makes: #{result.output_tail}")
+        @out.puts("  style: #{policy.check} at the base commit — #{result.status}") if @out
+        stages.last
+      end
+
+      # **A check the base commit already failed is not this rung's failure.** The suite's rule is
+      # the same one — `Record.verdict` calls a move unmeasurable against a red baseline — and a
+      # check is no different. Diaspora's own lint job runs `pronto` over the lines a pull request
+      # changed and never the whole tree, so `bundle exec rubocop` answers 444 offences on a clean
+      # `develop`; left as `failed`, every rung of that walk would stop on debt the rung did not
+      # incur and the record would blame the move for it. `preexisting` says which: it is not green,
+      # it does not block the verdict, and the base exit code and this run's are both in the record.
+      def preexisting_style(result)
+        base = @style_at_base
+        return result if base.nil? || !base.ran || base.passed?
+
+        policy = @project&.style
+        return result if policy.nil? || result.command != policy.check || !result.failed?
+
+        result.status = Checks::PREEXISTING
+        result.reason = "the base commit already failed this check (exit #{base.exit_code}), so " \
+                        "the rung is neither blamed nor credited for it"
+        result
       end
 
       # **The application's formatter, run as part of the step and before the suite.** A style
@@ -2118,6 +2185,19 @@ module AgentsFyi
       def style_stage(stages)
         policy = @project&.style
         return if policy.nil? || policy.format.to_s.empty?
+
+        # **A tree that arrived unformatted is not this rung's to format.** `style_baseline` asked
+        # the check half of the pair of the base commit; a red answer means the formatter would be
+        # rewriting the application, not the move — 881 files inspected and 444 offences on
+        # diaspora's `develop`, and the whole-tree run is exactly how the unsafe correction reached
+        # a file the rung never touched. The skip is in the record through the check's
+        # `preexisting` status rather than as a formatter stage that did not run, because a stage
+        # that did not run is `unverified` and this rung's formatting is not unmeasured — it was
+        # measured at base and was already red.
+        if @style_at_base&.ran && !@style_at_base.passed?
+          @out.puts("  style: skipped — the base commit already fails #{policy.check}") if @out
+          return nil
+        end
 
         @control&.check!
 
@@ -2174,6 +2254,7 @@ module AgentsFyi
 
         results = Checks.run(root: @worktree.root, checks: definitions, machine: @machine,
           env: application_env, timeout: @suite_timeout, stack: @stack, out: @out)
+        results = results.map { |result| preexisting_style(result) }
         results.each do |result|
           stage = Checks.stage(result)
           stages << stage if stage

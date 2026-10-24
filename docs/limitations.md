@@ -13,6 +13,22 @@ operators other than its author; a report filed by this walker is evidence, not 
 A weak suite produces weak evidence. The tool measures the gate the application declares; it does
 not invent tests, and a `suite.kind: "none"` declaration is measured by its boot.
 
+## A style gate is only judged on a tree that arrived formatted
+
+The style pair (`format`, `check`) is an autocorrect and its verifier, so "did this rung leave the
+tree formatted" is a question about a change, and the base commit is what it is a change from.
+The check half is therefore run once on the untouched tree. A red answer means the tree arrived
+unformatted: the formatter does not run (formatting it is a rewrite of the application, not the
+move) and the check is carried as `preexisting` — not green, not a failure of the rung, and named
+in the record with the base commit's exit code. This matters for the projects whose own lint job is
+diff-scoped (`pronto` over a pull request's changed lines), where a whole-tree run is red by
+design: measured on diaspora, 444 offences on a clean `develop`.
+
+The formatter the tool *suggests* is `rubocop -a`, never `-A`: RuboCop's unsafe corrections include
+`Style/ClassAndModuleChildren`, whose rewrite of `module User::Querying` into `module User` over a
+class is `User is not a module` at boot. A project may still declare `-A` itself; the tool runs what
+it is given.
+
 ## `unverified` means nothing was established
 
 No interpreter installed the bundle, the suite could not run, the baseline was red, or a required
