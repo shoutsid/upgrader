@@ -159,9 +159,10 @@ module AgentsFyi
 
         broken = outcome.before_the_move ? "the baseline" : "the move"
         files = Array(outcome.files)
-        suite = outcome.suite.to_s.empty? ? "the suite" : outcome.suite.to_s
+        gate = outcome.gate.to_s.empty? ? "the suite" : outcome.gate.to_s
+        suite = outcome.suite.to_s.empty? ? gate : outcome.suite.to_s
         resolution = +"the repair changed #{files.empty? ? "no file" : files.join(", ")}"
-        resolution << ", and the suite was green after it."
+        resolution << ", and #{gate} was green after it."
         resolution << "\n\n```diff\n#{outcome.diff}\n```" unless outcome.diff.to_s.strip.empty?
 
         change = change_for(record)
@@ -179,7 +180,7 @@ module AgentsFyi
           "replacement" => change && change["replacement"],
           "environment" => environment_for(record: record),
           "problem" => "A Rails #{record.from_version} -> #{record.to_version} step was measured " \
-                       "against this application's own suite: #{broken} (`#{suite}`) was red before " \
+                       "against this application's own gate: #{broken} (`#{suite}`) was red before " \
                        "the repair, and a bounded repair made it green. Its output began: " \
                        "#{head_of(failure)}",
           "attempted" => "the rung #{record.from_version} -> #{record.to_version} ran #{outcome.attempts} " \
