@@ -255,6 +255,77 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "Gemfile"), %(gem "minitest", "~> 5.25.0")
   end
 
+  # **The guard's reader has to be the one that can read a maintained application's lock.** A
+  # tree that vendors a gem — `remote: vendor/gems/js_image_paths`, the shape a recorded decision
+  # left diaspora in — makes a bare `Bundler::LockfileParser` resolve its relative remote against
+  # Bundler's *root*, and a step runs from `/app`, which is not the application. It raised
+  # `Bundler::GemfileNotFound`, the rescue turned that into `{}`, the guard read "nothing is newer
+  # than `~> 2.6.0`", and the 8.1 rung wrote `json ~> 2.6.0` over a locked 2.19.3; the pin then
+  # died on a `thor` the same blind read had moved beside a `foreman` requiring `~> 1.4`. The test
+  # stands where the step stands: a working directory that is not the application.
+  def test_a_vendored_lockfile_still_answers_the_downgrade_guard
+    gemfile = <<~GEM
+      source "https://rubygems.org"
+
+      gem "rails", "8.0.5.1"
+      gem "json", "2.19.3"
+      gem "js_image_paths", path: "vendor/gems/js_image_paths"
+    GEM
+    lockfile = <<~LOCK
+      PATH
+        remote: vendor/gems/js_image_paths
+        specs:
+          js_image_paths (0.2.0)
+
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          json (2.19.3)
+          rails (8.0.5.1)
+
+      DEPENDENCIES
+        js_image_paths!
+        json (= 2.19.3)
+        rails (= 8.0.5.1)
+    LOCK
+    dir = app(gemfile: gemfile, lockfile: lockfile)
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "json", replacement: "json", requirement: "~> 2.6.0",
+        condition: { "ruby_at_least" => "3.1" })
+    ])
+
+    result = Dir.mktmpdir do |elsewhere|
+      Dir.chdir(elsewhere) { preflight(dir, corpus: corpus, ruby: "3.2", rails: "8.1.4") }
+    end
+
+    assert_empty result.repairs, "a curated line was written blind: #{result.details.inspect}"
+    assert(result.notes.any? { |note| note.include?("downgrade") }, result.notes.inspect)
+    assert_includes read(dir, "Gemfile"), %(gem "json", "2.19.3")
+  end
+
+  # **"This locks nothing" and "this cannot tell what it locks" are different answers.** A lockfile
+  # that vendors a gem with no Gemfile beside it cannot be parsed at all, and that is not an
+  # application with nothing locked: the entry is skipped with the reason rather than written,
+  # because a curated line that would be a downgrade is the failure the guard exists to refuse.
+  def test_an_unreadable_lockfile_does_not_let_a_curated_line_in_blind
+    lockfile = <<~LOCK
+      PATH
+        remote: vendor/gems/js_image_paths
+        specs:
+          js_image_paths (0.2.0)
+    LOCK
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "8.0.5.1"\n), lockfile: lockfile)
+    FileUtils.rm(File.join(dir, "Gemfile"))
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "loofah", kind: "declared", requirement: "~> 2.0.3")
+    ])
+
+    result = preflight(dir, corpus: corpus, ruby: "3.2", rails: "8.1.4")
+
+    assert_empty result.repairs, "a curated line was written blind: #{result.details.inspect}"
+    assert(result.notes.any? { |note| note.include?("could not be read") }, result.notes.inspect)
+  end
+
   # **A rung-scoped declaration's companion travels with it to the pin.** The logger line is in the
   # bundle but not required before `require "rails"`, so the Gemfile edit alone leaves the boot
   # exactly as broken; the companion writes the require into the application's own file.

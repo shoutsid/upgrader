@@ -1071,6 +1071,7 @@ module AgentsFyi
           requires_ruby: step["requires_ruby"],
           declared: @lockfile.declared_ruby,
           locked: @lockfile.locked_ruby,
+          dot: @lockfile.dot_ruby_version,
           only: declared_eras
         )
       end
@@ -3870,6 +3871,51 @@ module AgentsFyi
         end
       end
 
+      # The program a script's shebang names, in the spelling the era images use: `ruby` for
+      # `#!/usr/bin/env ruby`, `sh` for `#!/bin/sh`. Nil when the line names nothing this tool can
+      # prefix, in which case the 126 is the honest answer.
+      SCRIPT_SHELLS = %w[sh bash dash].freeze
+
+      # **A binstub's mode bit is a fact about the checkout, not about the move.** `bin/rails` is the
+      # entry point every Rails 5+ command goes through, and whether it is executable is a property of
+      # how the tree reached this disk: `rails_modular_monolith` committed its whole `bin/` directory at
+      # 0644 (a tree exported from an archive), and a volume mounted without file modes drops the bit
+      # from files git records at 100755. Both answer `exec: "bin/rails": permission denied` (exit 126),
+      # and a step reads that as the database and asset stages failing — so the baseline runs against a
+      # database that was never created, the rung comes out `unverified`, and its sentence blames the
+      # release for a fact about the checkout.
+      #
+      # The script is run through its own shebang's interpreter rather than having the tree's modes
+      # changed: a `chmod` over thirty binstubs is thirty mode changes in the patch, which is a change
+      # the application never asked for, and a filesystem that cannot hold the bit would lose it again on
+      # the next clone. The record still reads `bin/rails …` in `display`; `command` says what ran.
+      def runnable(argv, chdir)
+        first = argv.first.to_s
+        return argv if first.empty? || first.start_with?("/", "-") || chdir.to_s.empty?
+
+        path = File.join(chdir.to_s, first)
+        return argv unless File.file?(path) && !File.executable?(path)
+
+        interpreter = shebang_interpreter(path)
+        interpreter ? [interpreter, *argv] : argv
+      end
+
+      def shebang_interpreter(path)
+        line = File.binread(path, 200).lines.first.to_s
+        return nil unless line.start_with?("#!")
+
+        words = line[2..].strip.split(/\s+/)
+        words.shift if File.basename(words.first.to_s) == "env"
+        words.reject! { |word| word.start_with?("-") }
+        program = File.basename(words.first.to_s)
+        return "ruby" if program == "ruby"
+        return program if SCRIPT_SHELLS.include?(program)
+
+        nil
+      rescue SystemCallError
+        nil
+      end
+
       # Every command a step runs is bounded (`Shell::DEFAULT_COMMAND_TIMEOUT`, or the operator's
       # `UPGRADER_COMMAND_TIMEOUT`): the *suite* has its own bound through `Tests`, and nothing else had one —
       # so a container that could not reach rubygems held a step in `bundle update` until somebody noticed.
@@ -3904,6 +3950,7 @@ module AgentsFyi
         # and a container id to reach "the pin exited 7" has been told the plumbing rather than the
         # fact. Nothing is dropped: the run's own page and the API's `argv` still read `command`.
         display ||= argv
+        argv = runnable(argv, chdir)
         if runner_machine
           argv, env = if root && runner_machine.respond_to?(:root_command)
             runner_machine.root_command(argv, chdir: chdir, env: env)

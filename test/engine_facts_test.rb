@@ -103,6 +103,25 @@ class EngineFactsTest < Minitest::Test
     refute pack.five_or_newer?(Struct.new(:rails).new(Struct.new(:version).new("4.0.0.rc1")))
   end
 
+  # **A binstub is looked for, not its mode bit.** `rails_modular_monolith` commits its whole `bin/`
+  # directory at 0644, and a volume mounted without file modes drops the bit from files git records
+  # at 100755 — both leave an application whose `bin/rails` exists and cannot be exec'd directly. The
+  # step runs such a script through its shebang's interpreter (`Step#runnable`), so the gates here
+  # must not read the bit: measured on that application, `app:update` was skipped for the whole walk
+  # as "no bin/rails", and `db:test:prepare`/`assets:precompile` answered exit 126.
+  def test_a_binstub_that_is_not_executable_is_still_a_binstub
+    pack = AgentsFyi::Upgrader::Stacks::Rails
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      File.write(File.join(root, "bin", "rails"), "#!/usr/bin/env ruby\n")
+      File.chmod(0o644, File.join(root, "bin", "rails"))
+
+      assert_equal [["bin/rails"], "app:update"], pack.app_update(root, five_or_newer: true)
+      assert_equal ["bin/rails", "runner", "puts 1"], pack.routes_runner(root, script: "puts 1")
+      assert_equal ["bin/rails", "runner", "puts Rails.version"], pack.boot(root)
+    end
+  end
+
   def test_a_stack_is_chosen_by_the_name_a_project_declares
     assert_same AgentsFyi::Upgrader::Stacks::Rails, AgentsFyi::Upgrader::Stacks.for("rails")
     assert_same AgentsFyi::Upgrader::Stacks::Rails, AgentsFyi::Upgrader::Stacks.for(" Rails ")

@@ -47,6 +47,15 @@ module AgentsFyi
     # tell a chained request from one that fell back to the repository's default branch — the
     # visible shape of a chain that broke, including when an earlier request in the stack was closed
     # before this rung was published — and the `stack` it joined when GitHub accepted one.
+    #
+    # **The stack is the chain, and a link missed once is repaired by the next rung.** A stack was
+    # created from the request immediately below and nothing else, so a single refused association
+    # - a 409 while GitHub modified the stack, a resolver that answered nothing - left that layer
+    # loose for the rest of the walk, and the rung above it started a *second* stack from the loose
+    # pair: measured on diaspora, 7.0.10/7.1.6/7.2.4 in stack 11 and 8.0.5.1/8.1.4 in stack 15. The
+    # walk now follows the bases down to the first request that is already in a stack and appends
+    # every loose layer above it in one call, so one transient refusal is a rung that looks
+    # ordinary rather than a walk a reviewer has to merge in two pieces.
     class Publish
       # Where a one-shot step's token comes from. `serve` passes the service's short-lived
       # credential instead; the CLI reads this name for `step --publish`.
@@ -178,9 +187,13 @@ module AgentsFyi
           owner: owner, name: name, head: branch, base: @base,
           title: title, body: body
         )
-        @pull_request_url = request
+        @pull_request_url = request["html_url"].to_s
+        # **The base the request has, not only the one this asked for.** A stacked request cannot
+        # have its base changed, so the record has to carry GitHub's answer rather than the guess.
+        actual = request["base"].to_s
+        @base = actual unless actual.empty?
         Result.new(pushed: true, branch: branch, base: @base, commit: commit,
-          pull_request: request, stack: link_stack, reason: "")
+          pull_request: @pull_request_url, stack: link_stack, reason: "")
       rescue GitHub::Refused => e
         # **The push can succeed while the request fails, and the retry needs both facts.** The
         # first version returned `pushed: false` with no commit here, so the next cycle re-derived
@@ -249,6 +262,10 @@ module AgentsFyi
       # land the layers in one merge. Created on the second request and extended on every one
       # after it, because a stack needs two layers to exist. A refusal from this half is a line
       # in the log rather than a failed delivery: the branch and its base are the product.
+      # **Retried, and the retry re-reads before it writes.** The association is a network call
+      # too, and the one measured failure — diaspora's 8.0.5.1 layer — was a single refusal that
+      # cost the walk its stack. Re-reading first is what keeps a retry that follows a *successful*
+      # write from creating the second stack this exists to avoid.
       def link_stack
         return "" unless @chain
         # **Only a layer this walker built can sit on another.** `@base` is the previous
@@ -257,28 +274,76 @@ module AgentsFyi
         # to have that branch as its head.
         return "" unless @base == self.class.branch_for(@from_version, pattern: @branch_pattern)
 
+        attempts = 0
+        begin
+          attempts += 1
+          link_stack_once
+        rescue GitHub::Refused => e
+          if attempts < PUSH_ATTEMPTS
+            @out&.puts("publish: the stack could not be linked (#{redact(e.message)}) — retrying")
+            @pause.call(PUSH_BACKOFF_SECONDS * attempts)
+            retry
+          end
+
+          @out&.puts("publish: the pull request opened, but GitHub would not stack it: " \
+                     "#{redact(e.message)}")
+          ""
+        end
+      end
+
+      def link_stack_once
         number = pull_request_number
         return "" if number.zero?
 
         current = api.stack_for(owner: owner, name: name, pull_request: number)
         return current["url"].to_s if current
 
-        previous = api.pull_request_for(owner: owner, name: name, head: @base)
-        return "" if previous.nil? || previous["number"].to_i == number
+        below, stack = stack_below(number)
+        return "" if below.empty? && stack.nil?
 
-        stack = api.stack_for(owner: owner, name: name, pull_request: previous["number"].to_i)
+        # Bottom to top: every loose layer between the stacked one and this request, then this
+        # request. `add` and `create` both take the list that way round.
+        layers = below.reverse + [number]
         linked = if stack
           api.add_to_stack(owner: owner, name: name, stack_number: stack["number"],
-            pull_requests: [number])
+            pull_requests: layers)
         else
-          api.create_stack(owner: owner, name: name,
-            pull_requests: [previous["number"].to_i, number])
+          api.create_stack(owner: owner, name: name, pull_requests: layers)
         end
         linked.is_a?(Hash) ? linked["url"].to_s : ""
-      rescue GitHub::Refused => e
-        @out&.puts("publish: the pull request opened, but GitHub would not stack it: " \
-                   "#{redact(e.message)}")
-        ""
+      end
+
+      # **Walk the bases down until one of them is in a stack.** The request immediately below is
+      # the common answer, but it is not the answer after a link was missed: the layer below this
+      # one is loose while the layer below *it* is stacked, and only the whole list rejoins the map
+      # in one call. `below` is nearest-first; the caller reverses it, because the API takes a
+      # stack bottom-up.
+      #
+      # The walk stops at the namespace this walker publishes into. A base that is `develop` — or
+      # any branch somebody else made — is the bottom of the chain, not an invitation to adopt an
+      # unrelated request that happens to sit on it.
+      def stack_below(number)
+        below = []
+        seen = [number]
+        head = @base
+        prefix = @branch_pattern.split("<release>").first.to_s
+
+        STACK_CHAIN_LIMIT.times do
+          request = api.pull_request_for(owner: owner, name: name, head: head)
+          break if request.nil? || request["state"] == "closed"
+
+          found = request["number"].to_i
+          break if found.zero? || seen.include?(found)
+
+          seen << found
+          stack = api.stack_for(owner: owner, name: name, pull_request: found)
+          return [below, stack] if stack
+
+          below << found
+          head = request.dig("base", "ref").to_s
+          break unless !prefix.empty? && head.start_with?(prefix)
+        end
+        [below, nil]
       end
 
       def pull_request_number = @pull_request_url.to_s[%r{/pull/(\d+)}, 1].to_i
@@ -320,6 +385,15 @@ module AgentsFyi
       # Seconds before the second attempt, doubled for the third. Short: a resolver that was not
       # answering a moment ago is the case this is for, and a walk is not waiting on it.
       PUSH_BACKOFF_SECONDS = 5
+
+      # How much of a single applied edit's text the public record carries. A Gemfile line and a
+      # route are well under this; a file a decision wrote is far over it.
+      PUBLIC_EDIT_CHARS = 400
+
+      # How many bases the stack walk follows before it gives up. The ladder is thirteen steps and
+      # a walk may restart, so this is a guard against a cycle in GitHub's answers rather than a
+      # product bound: a chain longer than this is not one this tool built.
+      STACK_CHAIN_LIMIT = 25
 
       def push(commit)
         reason = ""
@@ -651,13 +725,30 @@ module AgentsFyi
           lines << ""
           decided.group_by(&:origin).each do |origin, edits|
             lines << "### `#{origin}`"
-            edits.each do |edit|
-              lines << "- `#{edit.path}`:#{edit.line} `#{edit.text.to_s.strip}` → " \
-                       "`#{edit.after.to_s.strip}`"
-            end
+            edits.each { |edit| lines << "- #{edit_sentence(edit)}" }
           end
         end
         lines.join("\n")
+      end
+
+      # **A file a decision wrote is a whole file, not a line to quote.** The first version rendered
+      # every edit as `` `before` → `after` ``, which pasted the contents of nine vendored files into
+      # diaspora's 8.0.5.1 request: a backtick inside the content closed the span, a newline ended it,
+      # and everything after the first file became unreadable markdown. The diff is where content
+      # belongs; the body names the file and, for a whole file, its size.
+      def edit_sentence(edit)
+        before = edit.text.to_s
+        after = edit.after.to_s
+        name = "`#{edit.path}`"
+        location = edit.line.nil? ? name : "#{name}:#{edit.line}"
+
+        return "#{name} — added by the decision (#{after.lines.count} line(s))" if before.strip.empty?
+        return "#{location} — rewritten by the decision (#{after.lines.count} line(s))" if
+          before.include?("\n") || after.include?("\n")
+        return "#{location} — changed (the line itself carries a backtick)" if
+          before.include?("`") || after.include?("`")
+
+        "#{location} `#{before.strip}` → `#{after.strip}`"
       end
 
       # `app:update` gets its own section because it is the stage a reviewer asks about separately:
@@ -907,7 +998,66 @@ module AgentsFyi
           check.is_a?(Hash) ? check.reject { |key, _| key == "output_tail" } : check
         end
         record["repairs"] = public_repairs(record["repairs"])
+        # **A whole file is not a line of evidence a pull request can carry.** `applied` includes the
+        # `after` of every edit, and a decision's `file` effect is the whole file: diaspora's 8.0.5.1
+        # body pasted nine vendored files into its collapsed record, and the content is also what
+        # broke the markdown above it. The diff is the content; the record keeps the path and the
+        # size, which is what a reader checks the diff against.
+        record["applied"] = Array(record["applied"]).map { |edit| public_edit(edit) }
+        # **A decision's file effect carries the file too.** The record needs the content to replay
+        # the decision; the body does not, and it is what put nine vendored files into the collapsed
+        # record even after the visible edit list stopped quoting them.
+        record["accepted_decisions"] = Array(record["accepted_decisions"]).map do |decision|
+          public_decision(decision)
+        end
+        # **The project declaration carries the same decisions a second time.** `project` is the
+        # queue's own JSON, and its `decisions` list repeats the effects — so scrubbing only
+        # `accepted_decisions` left every file in the body under this copy.
+        record["project"] = public_project(record["project"])
         record
+      end
+
+      def public_project(project)
+        return project unless project.is_a?(Hash)
+
+        copy = project.dup
+        if copy["decisions"].is_a?(Array)
+          copy["decisions"] = copy["decisions"].map { |decision| public_decision(decision) }
+        end
+        copy
+      end
+
+      def public_decision(decision)
+        return decision unless decision.is_a?(Hash)
+
+        copy = decision.dup
+        copy["effects"] = Array(decision["effects"]).map do |effect|
+          next effect unless effect.is_a?(Hash) && effect["payload"].is_a?(Hash)
+
+          payload = effect["payload"].dup
+          if payload.key?("content")
+            payload["content"] = "[#{payload["content"].to_s.lines.count} line(s); the diff carries it]"
+          end
+          effect.merge("payload" => payload)
+        end
+        copy
+      end
+
+      # A one-line edit is evidence and stays readable. A multi-line edit — a file a decision wrote
+      # or rewrote — is replaced by its size, because the pull request's diff already carries it and
+      # a body is not a second copy of a tree.
+      def public_edit(edit)
+        return edit unless edit.is_a?(Hash)
+
+        copy = edit.dup
+        before = copy["text"].to_s
+        after = copy["after"].to_s
+        return copy unless before.include?("\n") || after.include?("\n") ||
+          after.length > PUBLIC_EDIT_CHARS
+
+        copy["text"] = nil
+        copy["after"] = "[#{after.lines.count} line(s); the diff carries it]"
+        copy
       end
 
       # A repair's attempts are the failing suite's output and a diff of the fix. The body says a
@@ -1063,17 +1213,40 @@ module AgentsFyi
         end
 
         # Returns the pull request's URL.
+        # **The request as GitHub now holds it.** `html_url` is what a delivery records; `base` is
+        # the base it *actually* has, which is not always the one asked for: a stacked request's
+        # base may not be changed at all (see below), and a caller that recorded its own guess
+        # would publish a base the request does not sit on.
         def pull_request(owner:, name:, head:, base:, title:, body:)
           existing = find_open(owner: owner, name: name, head: head)
           if existing
-            updated = call(:patch, "/repos/#{owner}/#{name}/pulls/#{existing["number"]}",
-              { "title" => title, "body" => body, "base" => base })
-            return updated["html_url"].to_s
+            return settle(owner: owner, name: name, number: existing["number"],
+              base: base, title: title, body: body, current: existing.dig("base", "ref").to_s)
           end
 
           opened = call(:post, "/repos/#{owner}/#{name}/pulls",
             { "title" => title, "body" => body, "head" => head, "base" => base })
-          opened["html_url"].to_s
+          { "html_url" => opened["html_url"].to_s,
+            "base" => opened.dig("base", "ref").to_s }
+        end
+
+        # **A stacked request refuses the `base` field even when it names the base it already has.**
+        # Measured: republishing diaspora's 8.0.5.1 request answered `422 Validation Failed — Cannot
+        # change the base branch because the pull request is part of a stack`, and the walk lost the
+        # title and body it came to rewrite. The field is sent only when the base is really moving;
+        # if the stack still refuses it, the request's own base wins and the caller records that.
+        def settle(owner:, name:, number:, base:, title:, body:, current:)
+          payload = { "title" => title, "body" => body }
+          payload["base"] = base if base.to_s != current
+          begin
+            updated = call(:patch, "/repos/#{owner}/#{name}/pulls/#{number}", payload)
+          rescue Refused => e
+            raise unless payload.key?("base") && e.message.include?("part of a stack")
+
+            payload.delete("base")
+            updated = call(:patch, "/repos/#{owner}/#{name}/pulls/#{number}", payload)
+          end
+          { "html_url" => updated["html_url"].to_s, "base" => updated.dig("base", "ref").to_s }
         end
 
         # The request whose head is the lower layer's branch. Open first, because a stack is a
@@ -1148,10 +1321,18 @@ module AgentsFyi
           nil
         end
 
+        # **GitHub puts the actionable sentence in `errors`, not in `message`.** `message` is
+        # "Validation Failed" for every refusal, and the reason a caller can act on — "Cannot change
+        # the base branch because the pull request is part of a stack" — is one level down. A retry
+        # keyed on the visible text could not see it.
         def sentence(body, code, path)
           message = body.is_a?(Hash) ? body["message"].to_s : ""
+          details = body.is_a?(Hash) ? Array(body["errors"]).filter_map { |error|
+            error.is_a?(Hash) ? error["message"].to_s : nil
+          }.reject(&:empty?) : []
           "#{@api}#{path} answered #{code}" \
-            "#{message.empty? ? "" : ": #{message}"}"
+            "#{message.empty? ? "" : ": #{message}"}" \
+            "#{details.empty? ? "" : " (#{details.join(";")})"}"
         end
       end
     end

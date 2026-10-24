@@ -473,6 +473,22 @@ module AgentsFyi
         # downgrade, which the resolver then refused for conflicting with a dev gem. A line the
         # application already sits above is not a repair; it is a regression waiting for a bundle
         # resolve to notice.
+        # **A lockfile this cannot read is not an application with nothing locked.** The reader
+        # below used to be a bare `Bundler::LockfileParser`, and a tree that vendors a gem
+        # (`remote: vendor/gems/…`, which is how diaspora pins `js_image_paths`) makes that raise
+        # `Bundler::GemfileNotFound` when the process is not standing in the application — the
+        # rescue turned it into `{}`, the guard read "nothing is newer", and the 8.1 rung was
+        # handed `carrierwave ~> 0.9.0` over a locked 3.1.2, `json ~> 2.6.0` over 2.19.3 and
+        # `thor ~> 1.2.0` beside a `foreman` that requires `~> 1.4`. The pin then exited 6 on
+        # `version solving has failed`, and every stage after it measured a bundle that would
+        # not resolve. A version this cannot see is a reason not to take the move.
+        if locked_versions.nil?
+          notes << "the digest's entry for #{name} was not applied: the Gemfile.lock beside " \
+                   "#{@root} could not be read, so whether #{entry["requirement"]} is a " \
+                   "downgrade is unknown — a curated line is not applied blind"
+          return
+        end
+
         if newer_than_entry?(name, entry)
           notes << "the digest's entry for #{name} was not applied: the application has " \
                    "#{name} #{locked_version(name)} locked, newer than #{entry["requirement"]}, " \
@@ -835,20 +851,26 @@ module AgentsFyi
         locked_versions[name.to_s]
       end
 
+      # **`nil`, not `{}`, when the lockfile cannot be read.** "This application locks nothing"
+      # and "this cannot tell what it locks" are different answers, and only the first is safe to
+      # read as "no version is newer than the digest's line".
+      #
+      # Read through `Lockfile`, not a second bare `Bundler::LockfileParser`: a vendored gem makes
+      # the parser resolve its relative `remote:` against Bundler's root, and a step runs in a
+      # container whose cwd is not the application. `Lockfile` anchors that root at the lockfile
+      # (its own docstring says why); a second reader here was a second answer, and on a tree that
+      # vendors `js_image_paths` it was the wrong one.
       def locked_versions
-        @locked_versions ||= begin
-          path = File.join(@root, "Gemfile.lock")
-          if File.file?(path)
-            require "bundler"
-            Bundler::LockfileParser.new(File.read(path, encoding: "utf-8")).specs.to_h do |spec|
-              [spec.name.to_s, spec.version.to_s]
-            end
-          else
+        return @locked_versions if defined?(@locked_versions)
+
+        @locked_versions =
+          begin
+            Lockfile.read(@root).specs
+          rescue Lockfile::Missing
             {}
+          rescue Lockfile::Unreadable
+            nil
           end
-        rescue StandardError
-          {}
-        end
       end
 
       # The version a requirement stops before: the `~>` bump, or a `<` clause. An `=` pin is
