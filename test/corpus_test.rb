@@ -272,6 +272,72 @@ class CorpusTest < Minitest::Test
     assert_equal ["acme/storefront"], corpus.targets.map { |row| row["repo_url"] }
   end
 
+  # **The decision surface is a read and three writes, and the client has no accept.** These
+  # assert the route and the body because that is what the service reconciles; the shapes the
+  # block extractor sends are `block_test.rb`'s.
+  def test_listing_and_showing_decisions_reads_the_decision_routes
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "decisions" => [] })))
+
+    corpus.decisions(project: "storefront", state: "open", block_kind: "suite", limit: 25)
+
+    uri, request = corpus.requests.last
+    params = URI.decode_www_form(uri.query).to_h
+    assert_equal "GET", request.method
+    assert_equal "/api/upgrades/decisions", uri.path
+    assert_equal "storefront", params["project"]
+    assert_equal "open", params["state"]
+    assert_equal "suite", params["block_kind"]
+    assert_equal "25", params["limit"]
+
+    corpus.decision("q-1")
+    assert_equal "/api/upgrades/decisions/q-1", corpus.requests.last.first.path
+  end
+
+  def test_creating_a_block_posts_the_question_the_walk_met
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "id" => "q-1" })))
+    payload = { "project" => "storefront", "block_kind" => "suite",
+                "subject" => "suite at 7.1.0", "question" => "what broke?",
+                "source" => "walker" }
+
+    answer = corpus.create_decision(payload)
+
+    uri, request = corpus.requests.last
+    assert_equal "POST", request.method
+    assert_equal "/api/upgrades/decisions", uri.path
+    assert_equal payload, JSON.parse(request.body)
+    assert_equal "q-1", answer["id"]
+  end
+
+  def test_a_proposal_and_its_withdrawal_are_answers_not_acceptances
+    corpus = StubbedCorpus.new(FakeResponse.new("201", JSON.generate({ "proposed_answer" => "a-1" })))
+
+    corpus.propose_decision("q-1", { "choice" => "guard it", "proposed_by" => "model:cli",
+                                     "effects" => [{ "kind" => "delete",
+                                                     "payload" => { "path" => "x" } }],
+                                     "provenance" => { "surface" => "cli" } })
+
+    uri, request = corpus.requests.last
+    assert_equal "/api/upgrades/decisions/q-1/answers", uri.path
+    assert_equal "guard it", JSON.parse(request.body)["choice"]
+
+    corpus.withdraw_decision("q-1", "a-1")
+    uri, request = corpus.requests.last
+    assert_equal "/api/upgrades/decisions/q-1/answers/a-1/withdraw", uri.path
+    assert_equal "POST", request.method
+  end
+
+  def test_the_resolution_read_names_the_move_it_is_about
+    corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "changes" => [] })))
+
+    corpus.resolution("p-1", from: "7.0.0", to: "7.1.0")
+
+    uri, = corpus.requests.last
+    params = URI.decode_www_form(uri.query).to_h
+    assert_equal "/api/upgrades/projects/p-1/resolution", uri.path
+    assert_equal "7.0.0", params["from"]
+    assert_equal "7.1.0", params["to"]
+  end
+
   def test_prechecking_sends_the_draft_to_the_precheck_route
     corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "verdict" => "new" })))
 

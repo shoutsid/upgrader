@@ -629,6 +629,14 @@ module AgentsFyi
           out.puts("serve: #{url} is #{status}, so it is not work — skipped")
           return nil
         end
+        # **A blocked target is waiting for a person, not for this loop.** The service's worker
+        # queue already omits it; this is the client's half for a deployment whose service is
+        # older, and for a manual `--repos` list that never asks the queue at all. Spending a
+        # rung here would rediscover the same stop and post the same question.
+        if status == "blocked"
+          out.puts("serve: #{url} is blocked on a decision — skipped until it is answered")
+          return nil
+        end
 
         ref = row["ref"].to_s
         ref.empty? ? url : "#{url}@#{ref}"

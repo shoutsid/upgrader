@@ -225,6 +225,52 @@ module AgentsFyi
         call(:post, "/api/upgrades/runs", body: payload)
       end
 
+      # **The questions the walk could not answer.** A block is the service's row for "this
+      # stage needs a person or an agent"; this is the read a walker or a script uses to find
+      # the work it already posted rather than asking the same question twice.
+      def decisions(project: nil, state: nil, block_kind: nil, change_key: nil, limit: nil)
+        params = {}
+        params[:project] = project unless project.to_s.empty?
+        params[:state] = state unless state.to_s.empty?
+        params[:block_kind] = block_kind unless block_kind.to_s.empty?
+        params[:change_key] = change_key unless change_key.to_s.empty?
+        params[:limit] = limit unless limit.nil?
+        call(:get, "/api/upgrades/decisions", params: params)
+      end
+
+      def decision(id)
+        call(:get, "/api/upgrades/decisions/#{id}")
+      end
+
+      # Recording a block is a write, and the service makes it idempotent by the block's own
+      # stable fields: a retry after an edit returns the question it already asked.
+      def create_decision(payload)
+        call(:post, "/api/upgrades/decisions", body: payload)
+      end
+
+      # A proposal, never an acceptance. The service stores it against the key that made it;
+      # this client deliberately has no accept method, because a person makes that act.
+      def propose_decision(id, payload)
+        call(:post, "/api/upgrades/decisions/#{id}/answers", body: payload)
+      end
+
+      def withdraw_decision(id, answer_id)
+        call(:post, "/api/upgrades/decisions/#{id}/answers/#{answer_id}/withdraw", body: {})
+      end
+
+      # What the walk would do about each change: the project's own answer, a promoted rule,
+      # the corpus reports and the open questions, in one read.
+      def resolution(project_id, from: nil, to: nil)
+        params = {}
+        params[:from] = from unless from.to_s.empty?
+        params[:to] = to unless to.to_s.empty?
+        call(:get, "/api/upgrades/projects/#{project_id}/resolution", params: params)
+      end
+
+      # Whether this client carries a credential. A block written without one is a 401 that
+      # looks like a quiet walk from the outside, so the caller asks before it tries.
+      def authenticated? = !@key.empty?
+
       # Whether a draft is new, and what it is close to if it is not.
       def precheck(payload)
         call(:post, "/api/reports/precheck", body: payload)

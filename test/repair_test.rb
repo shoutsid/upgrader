@@ -482,4 +482,43 @@ class RepairTest < Minitest::Test
   def test_no_edits_is_no_outcome
     assert_nil Repair.mechanical_outcome(applied: [], failure: "red", suite: "rspec")
   end
+
+  # **The write-back's effects are whole files, and a path that is gone is a delete.** A diff
+  # would have to be parsed back into `find`/`replace`, and a hunk's context is exactly what a
+  # parser cannot see — the effect could apply to a line the repair never touched. The whole
+  # file cannot: it is the tree the gate measured, or it is refused by the applier on a machine
+  # where the file has moved on.
+  def test_a_repair_proposal_carries_the_whole_file_and_a_deleted_path_is_a_delete
+    FileUtils.mkdir_p(File.join(@root, "config"))
+    File.write(File.join(@root, "config", "example.rb"), "VALUE = 1\n")
+
+    effects, problem = Repair.effects_for(files: ["config/example.rb", "config/gone.rb"], root: @root)
+
+    assert_nil problem
+    assert_equal %w[file delete], effects.map { |effect| effect["kind"] }
+    assert_equal({ "path" => "config/example.rb", "content" => "VALUE = 1\n" },
+      effects.first["payload"])
+    assert_equal({ "path" => "config/gone.rb" }, effects.last["payload"])
+  end
+
+  # The proposal is one request, so a repair that touched more files than a body carries is said
+  # rather than sent in part: a proposal missing one of its edits applies a tree nobody measured.
+  def test_a_repair_with_too_many_files_is_refused_rather_than_proposed_in_part
+    files = Array.new(Repair::MAX_PROPOSAL_FILES + 1) { |index| "config/file_#{index}.rb" }
+
+    effects, problem = Repair.effects_for(files: files, root: @root)
+
+    assert_empty effects
+    assert_includes problem, Repair::MAX_PROPOSAL_FILES.to_s
+  end
+
+  # A repair names files in the application's tree. A path that climbs out of it is not a file
+  # this walker can describe, and writing the effect would propose an edit outside the copy the
+  # gate measured.
+  def test_a_path_outside_the_working_copy_is_refused
+    effects, problem = Repair.effects_for(files: ["../outside.rb"], root: @root)
+
+    assert_empty effects
+    assert_includes problem, "outside the working copy"
+  end
 end

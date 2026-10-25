@@ -105,6 +105,29 @@ class CliTest < Minitest::Test
         "counts" => { "selected" => 0, "total" => @migrations.size }, "stored" => false,
         "next_step" => "the digest's own sentence" }
     end
+
+    # The decision surface, as a fake: the CLI test is about dispatch and exit status,
+    # and `corpus_test.rb` owns the route and body of each call.
+    attr_reader :decision_queries
+
+    def decisions(**params)
+      @decision_queries = params
+      { "decisions" => [{ "id" => "q-1", "subject" => "a stop" }], "count" => 1 }
+    end
+
+    def decision(id) = { "id" => id, "answers" => [] }
+
+    def propose_decision(id, payload)
+      { "id" => id, "proposed_answer" => "a-1", "payload" => payload }
+    end
+
+    def withdraw_decision(id, answer_id)
+      { "id" => id, "withdrawn_answer" => answer_id }
+    end
+
+    def resolution(project_id, from: nil, to: nil)
+      { "project" => project_id, "from_version" => from, "to_version" => to, "changes" => [] }
+    end
   end
 
   def run_cli(argv, corpus: nil, inspector: nil)
@@ -403,7 +426,8 @@ class CliTest < Minitest::Test
 
     valued = %w[--repo --ref --to --api --project --record --from --base-ref --report-base
                 --work --home --heartbeat --interval --step-timeout --cycles --rungs --repos
-                --suite-env]
+                --suite-env --id --state --block-kind --change-key --limit --effects --choice
+                --proposed-by --answer-id]
     flags.each do |flag|
       argv = ["serve", flag]
       argv << "1" if valued.include?(flag)
@@ -422,6 +446,29 @@ class CliTest < Minitest::Test
       out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
 
     assert_equal true, options[:force]
+  end
+
+  # **A decision read is a mode, not a second binary.** The subcommand and its id are taken
+  # from the leftover arguments, and `--state` reaches the queue read; a proposal is the only
+  # write here, because acceptance stays a person's act.
+  def test_decisions_list_reads_the_operator_surface_with_its_filters
+    corpus = StubCorpus.new
+    code, out, err = run_cli(["decisions", "list", "--api", "https://example.test",
+      "--project", "storefront", "--state", "open", "--limit", "5"], corpus: corpus)
+
+    assert_equal 0, code, err
+    assert_equal({ project: "storefront", state: "open", block_kind: nil,
+                   change_key: nil, limit: 5 }, corpus.decision_queries)
+    assert_includes out, "q-1"
+  end
+
+  def test_decisions_withdraw_names_the_proposal_rather_than_accepting_it
+    corpus = StubCorpus.new
+    code, out, err = run_cli(["decisions", "withdraw", "q-1", "--api", "https://example.test",
+      "--answer-id", "a-1"], corpus: corpus)
+
+    assert_equal 0, code, err
+    assert_includes out, "withdrawn_answer"
   end
 
   def test_an_unknown_command_says_which_modes_exist

@@ -3810,7 +3810,10 @@ module AgentsFyi
       def accepted_decisions_in_force
         ids = @applied.filter_map do |edit|
           origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
-          origin.split(":", 2).last if origin.start_with?("decision:")
+          # One grammar, in `Effects.evidence`: an effect-level origin is
+          # `decision:<question_id>:<effect_id>`, and splitting on the last colon here would
+          # read the effect's id as the question's.
+          Effects.evidence(origin).first
         end
         # A skip or an expect changes the walk rather than the tree, so it has no applied edit to
         # carry its origin; its fired rule is the evidence that the answer shaped this rung.
@@ -4097,6 +4100,25 @@ module AgentsFyi
         record.run_id = run["id"] if run.is_a?(Hash) && run["id"]
         @out.puts("  recorded: run #{run && run["id"]} (#{record.verdict})") if @out
 
+        # **A stop becomes a question the corpus keeps.** Only a step that neither passed nor
+        # was refused has work a person or an agent can answer; a refusal is settled, and a
+        # passed run is evidence. Posting is best-effort for the same reason filing is: the
+        # record is the product, and a service that is briefly away must not turn a measured
+        # step into a crash. It needs a key, because an anonymous post is a 401 that reads like
+        # a quiet walk from the outside.
+        # A test's corpus is a stand-in with only the methods its subject needs; the real client
+        # is the one that knows whether it carries a key. Ask only when it can answer.
+        keyed = client.respond_to?(:authenticated?) ? client.authenticated? : true
+        postable = client.respond_to?(:create_decision)
+        post_blocks(client, record) if !record.passed? && !record.refused? && keyed && postable
+        # **A repair that turned the gate green is knowledge, and it becomes a proposal.** The
+        # rung passed, so nothing is blocked: the question this posts names no target and no run
+        # (the service would otherwise block the target the run walked), and its account comes
+        # from the project slug. A person's acceptance is what makes it a decision, and until
+        # then it applies nothing — the report `Filing.file_repairs` files is still the corpus's
+        # record of the failure itself.
+        post_repair_proposals(client, record) if record.passed? && record.repairs.any? && keyed && postable
+
         filing = Filing.file(corpus: client, record: record)
         @out.puts("  filed: #{filing.action} — #{filing.reason}") if @out && filing.action != "skipped"
 
@@ -4114,6 +4136,81 @@ module AgentsFyi
         # exactly like a quiet run from the outside, which is the miner's lesson about a
         # bare `rescue` around a remote call.
         @out.puts("  not recorded: #{e.message}#{refusal_detail(e)}") if @out
+      end
+
+      # The repair proposals for a passed rung, one per repair. The effects are whole files
+      # (`Repair.effects_for`), and a repair whose files cannot be carried is logged and skipped
+      # rather than sent in part: a proposal missing one of its edits applies a tree nobody
+      # measured.
+      def post_repair_proposals(client, record)
+        project = @project&.slug.to_s
+        project = record.project["slug"].to_s if project.empty? && record.project.is_a?(Hash)
+        return if project.empty?
+        return if @worktree.nil?
+
+        Array(record.repairs).each do |repair|
+          files = repair.respond_to?(:files) ? repair.files : repair["files"]
+          effects, problem = Repair.effects_for(files: files, root: @worktree.root)
+          if problem
+            @out.puts("  repair not proposed: #{problem}") if @out
+            next
+          end
+
+          failure = repair.respond_to?(:failure) ? repair.failure : repair["failure"]
+          gate = repair.respond_to?(:gate) ? repair.gate : repair["gate"]
+          attempts = repair.respond_to?(:attempts) ? repair.attempts : repair["attempts"]
+          answer = client.create_decision(
+            "project" => project,
+            "rung_from" => record.from_version,
+            "rung_to" => record.to_version,
+            "block_kind" => "repair",
+            "subject" => "repair at #{record.to_version}",
+            "question" => "The walk repaired #{gate.to_s.empty? ? "the suite" : "the #{gate}"} " \
+                          "on #{record.from_version} → #{record.to_version}. Should a later rung " \
+                          "apply this repair?",
+            "context" => { "stage" => Record::REPAIR, "files" => Array(files).map(&:to_s) },
+            "evidence" => { "failure" => failure.to_s[0, 4_000], "attempts" => attempts,
+                            "gate" => gate, "run_id" => record.run_id },
+            "source" => "walker"
+          )
+          id = answer.is_a?(Hash) ? answer["id"] : nil
+          if id.nil?
+            @out.puts("  repair not proposed: the service returned no question") if @out
+            next
+          end
+
+          # `proposed_by` is omitted deliberately: the service credits the key that proposed it,
+          # which is the honourable answer for a mechanical repair no model made.
+          proposed = client.propose_decision(id, {
+            "choice" => "keep the repair the walk made to #{Array(files).first(3).join(", ")}",
+            "effects" => effects,
+            "provenance" => { "harness" => "upgrader", "run_id" => record.run_id,
+                              "gate" => gate, "files" => Array(files).map(&:to_s) }
+          })
+          proposed_id = proposed.is_a?(Hash) ? proposed["proposed_answer"] : nil
+          @out.puts("  proposed repair: question #{id} (answer #{proposed_id})") if @out
+        end
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        @out.puts("  repairs not proposed: #{e.message}#{refusal_detail(e)}") if @out
+      end
+
+      # **The blocks a stopped rung leaves behind, posted once.** `Block` owns what a block is
+      # and how its identity is spelled; this method only carries them over the wire and says
+      # what happened. The target id is deliberately absent: a hand-run `step` knows the
+      # repository and the run, not the queue row, and the service accepts a question without
+      # one. A loop that does know it should pass it here when the record grows the field.
+      def post_blocks(client, record)
+        project = @project&.slug.to_s
+        project = record.project["slug"].to_s if project.empty? && record.project.is_a?(Hash)
+        return if project.empty?
+
+        Block.from_record(record, project: project, run_id: record.run_id).each do |payload|
+          answer = client.create_decision(payload)
+          id = answer.is_a?(Hash) ? answer["id"] : nil
+          @out.puts("  blocked: #{payload["block_kind"]} #{payload["subject"]} (question #{id})") if @out
+        end
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        @out.puts("  blocks not recorded: #{e.message}#{refusal_detail(e)}") if @out
       end
 
       # **The corpus is a remote, and a rung that passed is settled.** A transient refusal — the
@@ -4190,18 +4287,15 @@ module AgentsFyi
           # What the rung knew before it decided. Absent for a record that never got as far as
           # recall (a refusal), which the service stores as no brief rather than as an empty one.
           "brief" => record.brief&.to_h,
-          # **Which decisions were in force.** Read off the applied edits' origins rather than passed
-          # in: the edit already says who made it (`origin: decision:<id>`), so a second list would be
-          # a second copy. The service links a *passed* run to those answers, which is what verifies a
-          # decision — accepted is the operator's word, verified is the rung's gate.
-          # **Every decision that shaped this rung, in the field the service already reads.** An
-          # applied edit carries its `decision:<id>` origin; a skip or an expect has no edit, so its
-          # fired rule carries the id instead. The public run body does not grow a new field for it.
-          "decisions" => (record.applied.filter_map { |edit|
-            origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
-            origin.split(":", 2).last if origin.start_with?("decision:")
-          } + Array(record.fired_rules).map { |rule| rule["decision_id"].to_s })
-            .reject(&:empty?).uniq,
+          # **The effect-level evidence, and the decision list stays beside it.** A passed run
+          # verifies only the answers whose effects were in the tree the gate measured, so the
+          # pair travels: the service stores it in `upgrade_run_effects` and links those answers.
+          # An effect with no id (a declaration written before the column) has no entry — the
+          # service requires both ids, and a guessed one would link an answer the run may not have
+          # used. `decisions` is the same parse's distinct question ids, kept for a client that has
+          # not learned this field.
+          "applied_effects" => applied_effects(record),
+          "decisions" => applied_decisions(record),
           # **The review brief's internal sections.** The public run response is frozen and does not
           # grow; the service stores these for the site admin, where a reviewer reads the gate, the
           # concern commits, the app:update outcome and the toolchain beside the command evidence.
@@ -4213,6 +4307,39 @@ module AgentsFyi
           # that declaration with the one that ran, and an image tag is not the same fact.
           "interpreter" => record.interpreter
         }
+      end
+
+      # One entry per effect that was present in the tree, from the applied edits' origins and the
+      # fired rules' ids — the two places `Effects` records what it did. `applied` is always true
+      # here because only an applied effect reaches these lists; `false` is for a caller that sends
+      # an attempt it refused, which this client does not claim as evidence.
+      def self.applied_effects(record)
+        pairs = Array(record.applied).filter_map do |edit|
+          origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
+          decision_id, effect_id = Effects.evidence(origin)
+          [decision_id, effect_id] if decision_id && !effect_id.to_s.empty?
+        end
+        pairs.concat(Array(record.fired_rules).filter_map do |rule|
+          decision_id = rule["decision_id"].to_s
+          effect_id = rule["effect_id"].to_s
+          [decision_id, effect_id] if !decision_id.empty? && !effect_id.empty?
+        end)
+        pairs.uniq.map do |decision_id, effect_id|
+          { "decision_id" => decision_id, "effect_id" => effect_id, "applied" => true }
+        end
+      end
+
+      # The distinct questions that shaped this rung, read from the same origins as
+      # `applied_effects` so the two lists cannot disagree about which answer an effect belongs to.
+      # A fired rule carries its id directly, and is included even when it has no effect id — the
+      # service still verifies by the question in that case.
+      def self.applied_decisions(record)
+        ids = Array(record.applied).filter_map do |edit|
+          origin = edit.respond_to?(:origin) ? edit.origin.to_s : ""
+          Effects.evidence(origin).first
+        end
+        (ids + Array(record.fired_rules).map { |rule| rule["decision_id"].to_s })
+          .reject(&:empty?).uniq
       end
 
       def self.baseline_verdict(record)
@@ -4296,9 +4423,10 @@ module AgentsFyi
         end
       end
 
-      # Only `run_payload` calls these three, so they are private class methods rather than
+      # Only `run_payload` calls these builders, so they are private class methods rather than
       # public ones — the payload's *shape* is the contract, the builders are not.
-      private_class_method :baseline_verdict, :command_payload, :refusal_payloads, :clipped
+      private_class_method :baseline_verdict, :command_payload, :refusal_payloads, :clipped,
+        :applied_effects, :applied_decisions
 
       private
 

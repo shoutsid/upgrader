@@ -55,6 +55,36 @@ class EffectsTest < Minitest::Test
     end
   end
 
+  # **An effect that carries its row id writes that id into the origin.** ADR 0012 verifies a
+  # decision effect by effect: the run body's `applied_effects` is built from this origin, so an
+  # origin naming only the question would leave the service linking an answer whose effect it
+  # cannot prove was in the tree. A declaration written before the column still has no id, and
+  # the test above pins that two-segment form.
+  def test_an_effect_with_an_id_writes_the_decision_and_the_effect_into_the_origin
+    with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
+      effect = patch(path: "app/models/item.rb", find: "ITEM = 1", replace: "ITEM = 2")
+      effect["id"] = "e1"
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+        decision(effects: [effect])
+      ])
+
+      assert_empty result.refused
+      assert_equal 1, result.applied.length
+      assert_equal "decision:d1:e1", result.applied.first.origin
+    end
+  end
+
+  # The grammar has one reader, and it answers both shapes. A parser that took the last segment
+  # as the decision would read `decision:d1:e1` as a question called `d1:e1`, and the service's
+  # verification would find no answer to link.
+  def test_the_origin_grammar_reads_the_old_form_and_the_effect_level_one
+    effects = AgentsFyi::Upgrader::Effects
+
+    assert_equal ["d1", "e1"], effects.evidence("decision:d1:e1")
+    assert_equal ["d1", nil], effects.evidence("decision:d1")
+    assert_equal [nil, nil], effects.evidence("rewrite:before_filter")
+  end
+
   # **Config first, then the patch — and the order is load-bearing.** A patch whose `find` only
   # matches after the config change applies here; applied the other way round it would refuse.
   def test_a_config_effect_is_applied_before_a_patch_that_depends_on_it
@@ -400,6 +430,53 @@ class EffectsTest < Minitest::Test
       assert_empty result.applied
       assert_equal 4, result.refused.length
       result.refused.each { |refusal| assert_includes refusal.reason, "outside" }
+    end
+  end
+
+  # **A patch rule earned on another project is the same exact-find edit.** ADR 0012 lets the
+  # two shapes the live decisions used travel; neither is a new applier, so this is the patch
+  # effect's rule reached through the nested rule payload.
+  def test_a_patch_rule_applies_the_exact_find_and_replace_it_carries
+    with_tree("app/controllers/users_controller.rb" =>
+      "  before_filter :authenticate_user!\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "4.2.11").apply([
+        decision(effects: [
+          { "kind" => "rule", "applies_when" => {}, "payload" => {
+            "change_key" => "ruby|actionpack|before_filter", "kind" => "patch",
+            "payload" => { "path" => "app/controllers/users_controller.rb",
+                           "find" => "  before_filter :authenticate_user!",
+                           "replace" => "  before_action :authenticate_user!" }
+          } }
+        ])
+      ])
+
+      assert_empty result.refused
+      assert_equal 1, result.applied.length
+      assert_equal 1, result.rules.length
+      assert_equal "patch", result.rules.first["kind"]
+      assert_includes File.read(File.join(dir, "app/controllers/users_controller.rb")),
+        "before_action :authenticate_user!"
+    end
+  end
+
+  # A gem rule is the Gemfile operation the declaration already carries, reached through the
+  # same nested shape; it must not become a second gem applier.
+  def test_a_gem_rule_updates_the_gemfile_it_names
+    with_tree("Gemfile" => "gem \"rails\", \"4.2.11\"\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "5.0.0").apply([
+        decision(effects: [
+          { "kind" => "rule", "applies_when" => {}, "payload" => {
+            "change_key" => "ruby|rails|rails", "kind" => "gem",
+            "payload" => { "name" => "rails", "action" => "update",
+                           "requirement" => "5.0.0" }
+          } }
+        ])
+      ])
+
+      assert_empty result.refused
+      assert_equal 1, result.applied.length
+      assert_equal "gem", result.rules.first["kind"]
+      assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
     end
   end
 
