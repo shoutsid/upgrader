@@ -21,7 +21,7 @@ module AgentsFyi
       EXIT_OK = 0
       # The modes that read or write the corpus. `prune` and `preview` are local, and `help` is not
       # a mode.
-      NEEDS_API = %w[plan preflight step serve].freeze
+      NEEDS_API = %w[plan preflight step serve decisions].freeze
 
       EXIT_FAILED = 1
       EXIT_REFUSED = 2
@@ -60,6 +60,12 @@ module AgentsFyi
           agents-fyi-upgrader republish [--home DIR]
           agents-fyi-upgrader preview --from FILE [--base-ref REF] [--report-base URL]
           agents-fyi-upgrader prune [--home DIR]
+          agents-fyi-upgrader decisions list|show|propose|withdraw|resolution
+                                    [--api URL] [--project SLUG] [--id ID]
+                                    [--state STATE] [--block-kind KIND]
+                                    [--change-key KEY] [--effects FILE]
+                                    [--choice TEXT] [--proposed-by NAME]
+                                    [--answer-id ID] [--from VERSION] [--to VERSION]
 
         Modes:
           plan    read the application's Gemfile.lock, ask the service what the move
@@ -90,6 +96,11 @@ module AgentsFyi
                   empty `--to` as the top of the service's ladder; with `--publish` it pushes
                   a branch per passed rung and opens a pull request chained to the rung
                   before it.
+          decisions
+                  the questions the walk could not answer: `list`, `show`, `propose`,
+                  `withdraw` and `resolution`. A proposal is not an acceptance — a person
+                  accepts in the site admin or the project's portal, and this client has no
+                  command that would make that act a formality.
 
         Exit status:
           0  a plan was printed, a step ran and passed, or the loop stopped cleanly
@@ -124,7 +135,10 @@ module AgentsFyi
         return version if options[:version]
         return usage_error("no command given") unless options[:command]
         begin
-          @project = load_project(options)
+          # **A decision filter is not a declaration.** `--project` on the decision surface names
+          # a corpus project, which this container may not have a file for; loading it would make
+          # "show me this project's questions" a usage refusal about a local profile.
+          @project = options[:command] == "decisions" ? nil : load_project(options)
         rescue Project::Invalid => e
           return usage_error("the project declaration is not usable: #{e.message}")
         end
@@ -143,10 +157,11 @@ module AgentsFyi
         when "republish" then republish(options)
         when "preview" then preview(options)
         when "prune" then prune(options)
+        when "decisions" then decisions(options)
         else
           usage_error(
             "unknown command `#{options[:command]}` — the modes that exist are `plan`, " \
-            "`preflight`, `step`, `serve`, `republish`, `preview` and `prune`"
+            "`preflight`, `step`, `serve`, `republish`, `preview`, `prune` and `decisions`"
           )
         end
       rescue Corpus::Refused => e
@@ -287,6 +302,75 @@ module AgentsFyi
         @err.puts("failed: the record could not be read: #{e.message}")
         EXIT_FAILED
       end
+
+      # **The decision surface, without an accept command.** A walker or an agent can read a
+      # question, propose effects, withdraw its own proposal and read the project's resolution;
+      # acceptance is a person's act and stays in the site admin or the portal. The subcommand
+      # is the first leftover argument (`decisions show <id>`), which is why `parse` treats that
+      # command differently from the ones whose leftovers are repositories.
+      def decisions(options)
+        corpus = corpus_for(options)
+        action = options[:decisions_action].to_s
+        case action
+        when "list"
+          print_json(corpus.decisions(project: options[:project], state: options[:state],
+            block_kind: options[:block_kind], change_key: options[:change_key],
+            limit: options[:limit]))
+        when "show"
+          id = decision_id(options)
+          return usage_error("decisions show needs an id: pass --id ID or `decisions show ID`") if id.empty?
+
+          print_json(corpus.decision(id))
+        when "propose"
+          id = decision_id(options)
+          return usage_error("decisions propose needs an id: pass --id ID or `decisions propose ID`") if id.empty?
+          return usage_error("decisions propose needs --effects FILE with a JSON list") if
+            options[:effects].to_s.empty?
+
+          effects = JSON.parse(File.read(options[:effects]))
+          unless effects.is_a?(Array) && !effects.empty?
+            return usage_error("--effects must be a non-empty JSON list of effects")
+          end
+
+          payload = {
+            "choice" => options[:choice].to_s,
+            "proposed_by" => options[:proposed_by].to_s,
+            "effects" => effects,
+            "provenance" => { "surface" => "cli", "read" => ["the question"] }
+          }
+          payload["choice"] = "proposed from the CLI" if payload["choice"].empty?
+          payload["proposed_by"] = "model:cli" if payload["proposed_by"].empty?
+          print_json(corpus.propose_decision(id, payload))
+        when "withdraw"
+          id = decision_id(options)
+          answer = options[:answer_id].to_s
+          return usage_error("decisions withdraw needs an id and --answer-id ID") if id.empty? || answer.empty?
+
+          print_json(corpus.withdraw_decision(id, answer))
+        when "resolution"
+          project = decision_id(options)
+          project = options[:project].to_s if project.empty?
+          return usage_error("decisions resolution needs a project id or --project SLUG") if project.empty?
+
+          print_json(corpus.resolution(project, from: options[:from], to: options[:to]))
+        else
+          return usage_error(
+            "unknown decisions command `#{action}` — the subcommands are `list`, `show`, " \
+            "`propose`, `withdraw` and `resolution`"
+          )
+        end
+        EXIT_OK
+      rescue JSON::ParserError => e
+        usage_error("--effects is not JSON: #{e.message.to_s.lines.first.to_s.strip}")
+      rescue SystemCallError => e
+        usage_error("--effects could not be read: #{e.message}")
+      end
+
+      def print_json(payload)
+        @out.puts(JSON.pretty_generate(payload))
+      end
+
+      def decision_id(options) = (options[:id] || options[:decisions_id]).to_s
 
       def prune(options)
         containers = Machine::Container.reap!(out: @out, inspector: @inspector)
@@ -471,6 +555,18 @@ module AgentsFyi
           opts.on("--repos OWNER/NAME[@REF]", "a repository for `serve` to walk") do |v|
             (options[:repos] ||= []).concat(v.split(","))
           end
+          # The decision surface's own flags. `--id` is the question (or project) a subcommand
+          # names; a positional after the subcommand works too, which is how `decisions show ID`
+          # reads. `--project` is shared with the walk's declaration for `list`/`resolution`.
+          opts.on("--id ID", "the decision (or project) a `decisions` subcommand names") { |v| options[:id] = v }
+          opts.on("--state STATE", "`decisions list` filter: open, answered, superseded or dismissed") { |v| options[:state] = v }
+          opts.on("--block-kind KIND", "`decisions list` filter: route, pin, suite, boot, check, …") { |v| options[:block_kind] = v }
+          opts.on("--change-key KEY", "`decisions list` filter by change key") { |v| options[:change_key] = v }
+          opts.on("--limit N", Integer, "`decisions list` page size") { |v| options[:limit] = v }
+          opts.on("--effects FILE", "`decisions propose`: a JSON list of typed effects") { |v| options[:effects] = v }
+          opts.on("--choice TEXT", "`decisions propose`: the answer's label") { |v| options[:choice] = v }
+          opts.on("--proposed-by NAME", "`decisions propose`: `model:<name>` or `operator:<uuid>`") { |v| options[:proposed_by] = v }
+          opts.on("--answer-id ID", "`decisions withdraw`: the proposal to withdraw") { |v| options[:answer_id] = v }
           opts.on("--version", "print the client version and exit") { options[:version] = true }
           opts.on("-h", "--help", "this text") { options[:help] = true }
         end
@@ -480,7 +576,14 @@ module AgentsFyi
         rescue OptionParser::ParseError => e
           options[:error] = "#{e.message}\n\n#{USAGE}"
         end
-        options[:repos] = (options[:repos] || []) + argv unless argv.empty?
+        if options[:command] == "decisions"
+          # The first leftover is the subcommand and the second is its id; neither is a
+          # repository. A flag named later still wins, because `--id` is read above.
+          options[:decisions_action] = argv.shift
+          options[:decisions_id] = argv.shift
+        else
+          options[:repos] = (options[:repos] || []) + argv unless argv.empty?
+        end
         options
       end
 

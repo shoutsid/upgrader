@@ -109,6 +109,63 @@ module AgentsFyi
       # `git diff` after that is empty, and the repair's own change is the one thing a reviewer has
       # to see. It is a rendering, not a patch a tool applies: each edit is one line replaced by
       # what was written.
+      # **A successful repair becomes a proposal as whole files, not as a diff.** ADR 0012's
+      # write-back needs effects a service can store and a later rung can apply, and the one shape
+      # that is exact for both a mechanical repair and a model's is the file the repair left: a
+      # `file` effect carries its content, and a path that no longer exists is a `delete`. A diff
+      # would have to be parsed into `find`/`replace` pairs, and a hunk's context lines mean the
+      # find a parser derives may match somewhere the repair never touched — an effect that applies
+      # to the wrong line is worse than no proposal. The cost is stated in the ADR: whole-file
+      # content is project-only and cannot be promoted, which is why a repair is a proposal here
+      # and a rule only when its shape is one somebody writes down.
+      #
+      # The bound is the request body's: a proposal is one request. A repair that touched more
+      # files than a body can carry is not proposed and says so, rather than being sent in part.
+      MAX_PROPOSAL_FILES = 20
+      MAX_PROPOSAL_BYTES = 96 * 1024
+
+      def self.effects_for(files:, root:)
+        paths = Array(files).map(&:to_s).reject(&:empty?).uniq
+        return [[], "the repair names no file"] if paths.empty?
+        if paths.size > MAX_PROPOSAL_FILES
+          return [[], "the repair touched #{paths.size} files, more than #{MAX_PROPOSAL_FILES}"]
+        end
+
+        base = File.expand_path(root.to_s)
+        effects = []
+        total = 0
+        paths.each do |path|
+          full = File.expand_path(path, base)
+          unless full.start_with?("#{base}#{File::SEPARATOR}")
+            return [[], "#{path} is outside the working copy"]
+          end
+
+          if File.directory?(full)
+            return [[], "#{path} is a directory"]
+          elsif File.file?(full)
+            content = begin
+              File.read(full, encoding: "utf-8")
+            rescue StandardError => e
+              return [[], "#{path} could not be read: #{e.message}"]
+            end
+            total += content.bytesize
+            if total > MAX_PROPOSAL_BYTES
+              return [[], "the repair's files exceed #{MAX_PROPOSAL_BYTES} bytes"]
+            end
+
+            effects << { "kind" => "file",
+                         "payload" => { "path" => path, "content" => content },
+                         "applies_when" => {} }
+          else
+            # Absent is a deletion the repair made, which is a fact about the tree rather than a
+            # read that failed.
+            effects << { "kind" => "delete", "payload" => { "path" => path },
+                         "applies_when" => {} }
+          end
+        end
+        [effects, nil]
+      end
+
       def self.diff_for(edits)
         Array(edits).group_by(&:path).map do |path, group|
           ["--- a/#{path}", "+++ b/#{path}", *group.map { |edit| hunk_for(edit) }].join("\n")

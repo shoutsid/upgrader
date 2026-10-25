@@ -45,7 +45,7 @@ module AgentsFyi
       # kind in the schema because the schema's enum is frozen, and a `kind` in its payload is what
       # says whether the walk skips a change, accepts a known failure, or makes one of the three
       # tree edits. A rule that cannot say which is refused rather than guessed at.
-      RULE_KINDS = %w[rewrite insert config skip expect].freeze
+      RULE_KINDS = %w[rewrite insert config skip expect patch gem].freeze
 
       # **The order effects are applied in, and it is a decision.** A config change goes first because
       # it is the least specific; a gem move before a file/delete/chmod; a patch last of the tree
@@ -81,7 +81,9 @@ module AgentsFyi
         "insert" => %w[path after text template],
         "config" => %w[key file value path find replace],
         "skip" => %w[change_key],
-        "expect" => %w[change_key failure]
+        "expect" => %w[change_key failure],
+        "patch" => %w[path find replace detect],
+        "gem" => %w[name action requirement replacement path]
       }.freeze
 
       # A rewrite reads the application's own Ruby source, and a rule that globbed a tree rather
@@ -91,7 +93,7 @@ module AgentsFyi
       MAX_RULE_FILES = 500
 
       Effect = Struct.new(:decision, :question, :answer, :kind, :payload, :applies_when, :order,
-        keyword_init: true)
+        :id, keyword_init: true)
 
       Result = Struct.new(:applied, :refused, :rules, keyword_init: true) do
         def empty? = applied.empty? && refused.empty? && rules.empty?
@@ -164,6 +166,22 @@ module AgentsFyi
         Result.new(applied: applied, refused: refused, rules: fired)
       end
 
+      # **The origin grammar, in one place.** An applied edit's `origin` names the decision that
+      # authorized it and — once the declaration carries the effect's row id — the effect within
+      # that answer (`decision:<question_id>:<effect_id>`). ADR 0012 verifies a decision effect by
+      # effect: the service stores the pair in `upgrade_run_effects` and links only the answers
+      # whose effects were in the tree the gate measured, so the run body reads this parse rather
+      # than splitting on colons itself. The two-segment form stays readable because a declaration
+      # written before the column has no effect id — and a reader that took the last segment as the
+      # decision would call that applied effect a question nobody can find.
+      def self.evidence(origin)
+        text = origin.to_s
+        return [nil, nil] unless text.start_with?("decision:")
+
+        decision_id, effect_id = text.delete_prefix("decision:").split(":", 2)
+        [decision_id, effect_id]
+      end
+
       private
 
       def parse(decision, effect, order:)
@@ -199,7 +217,16 @@ module AgentsFyi
         applies_when = {} unless applies_when.is_a?(Hash)
 
         Effect.new(decision: decision, question: decision["question"], answer: decision["answer"],
-          kind: kind, payload: payload, applies_when: applies_when, order: order)
+          kind: kind, payload: payload, applies_when: applies_when, order: order,
+          id: effect["id"].to_s)
+      end
+
+      # The origin an edit or a fired rule carries. An effect with no id keeps the decision-only
+      # form, which is what every declaration written before the service sent effect ids has.
+      def origin_for(effect)
+        decision_id = effect.decision["id"].to_s
+        effect_id = effect.id.to_s
+        effect_id.empty? ? "decision:#{decision_id}" : "decision:#{decision_id}:#{effect_id}"
       end
 
       # **A rule says which of the five it is, and what change it is about.** The key is what joins
@@ -332,6 +359,26 @@ module AgentsFyi
               "`#{decision["id"]}`'s expect rule has no `failure`, so it would accept every failure " \
               "this rung produced")
           end
+        when "patch"
+          if inner["path"].to_s.strip.empty?
+            return refusal(decision, nil, "`#{decision["id"]}`'s patch rule needs `path`")
+          end
+          if inner["find"].to_s.empty?
+            return refusal(decision, nil, "`#{decision["id"]}`'s patch rule needs `find`")
+          end
+          unless inner["replace"].is_a?(String)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s patch rule needs `replace` (use \"\" for a removal)")
+          end
+        when "gem"
+          if inner["name"].to_s.strip.empty?
+            return refusal(decision, nil, "`#{decision["id"]}`'s gem rule needs `name`")
+          end
+          action = inner["action"].to_s.strip
+          unless action.empty? || %w[add remove update].include?(action)
+            return refusal(decision, nil,
+              "`#{decision["id"]}`'s gem rule asks to #{action.inspect}; known actions: add, remove, update")
+          end
         end
 
         nil
@@ -345,7 +392,8 @@ module AgentsFyi
 
         case (effect.payload["kind"] || effect.payload["action"]).to_s
         when "config" then ORDER.index("config")
-        when "rewrite", "insert" then ORDER.index("patch")
+        when "rewrite", "insert", "patch" then ORDER.index("patch")
+        when "gem" then ORDER.index("gem")
         else ORDER.index("rule")
         end
       end
@@ -385,7 +433,46 @@ module AgentsFyi
         when "rewrite" then apply_rule_rewrite(effect, applied, refused, fired)
         when "insert" then apply_rule_insert(effect, applied, refused, fired)
         when "config" then apply_rule_config(effect, applied, refused, fired)
+        when "patch" then apply_rule_patch(effect, applied, refused, fired)
+        when "gem" then apply_rule_gem(effect, applied, refused, fired)
         end
+      end
+
+      # **A patch rule is the same exact-find applier a patch effect uses.** The rule exists so a
+      # fix earned on one project can travel to another; the edit it makes is not a new kind of
+      # edit. `detect` is a gate the gate checks before the applier runs, so a patch written for a
+      # different surrounding code refuses rather than replacing a coincidental match.
+      def apply_rule_patch(effect, applied, refused, fired)
+        inner = rule_inner(effect)
+        detect = inner["detect"].to_s
+        unless detect.empty?
+          full, unsafe = Sealed.path(@root, inner["path"].to_s, root_real: @root_real)
+          return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+          unless File.file?(full) && File.binread(full).include?(detect.b)
+            return refused << refusal(effect.decision, effect,
+              "#{inner["path"]} does not contain this patch rule's `detect` text, so the edit is " \
+              "for different surrounding code and was not applied")
+          end
+        end
+
+        temp = effect.dup
+        temp.payload = { "path" => inner["path"], "find" => inner["find"],
+                          "replace" => inner["replace"] }
+        before = applied.length
+        apply_text(temp, applied, refused)
+        fired << rule_entry(effect, "patch") if applied.length > before
+      end
+
+      # **A gem rule is a Gemfile operation, reused rather than re-derived.** A promoted pin that
+      # moved a gem on one application is the same `add`/`remove`/`update` the declaration already
+      # carries; the rule only makes it travel.
+      def apply_rule_gem(effect, applied, refused, fired)
+        inner = rule_inner(effect)
+        temp = effect.dup
+        temp.payload = inner
+        before = applied.length
+        apply_gem(temp, applied, refused)
+        fired << rule_entry(effect, "gem") if applied.length > before
       end
 
       # The mechanism's own payload, nested under the rule's outer fields.
@@ -550,7 +637,7 @@ module AgentsFyi
       def rule_edit(effect, path:, line:, text:, after:)
         {
           "path" => path, "line" => line, "text" => text, "after" => after,
-          "automatic" => true, "origin" => "decision:#{effect.decision["id"]}",
+          "automatic" => true, "origin" => origin_for(effect),
           "subject" => rule_change_key(effect), "kind" => "rule",
           "replacement" => rule_inner(effect)["new"], "note" => effect.answer.to_s
         }
@@ -561,6 +648,8 @@ module AgentsFyi
       def rule_entry(effect, kind)
         {
           "decision_id" => effect.decision["id"].to_s,
+          # The effect's own row, so the run body can name which of an answer's effects fired.
+          "effect_id" => effect.id.to_s,
           "change_key" => rule_change_key(effect),
           "kind" => kind,
           "payload" => rule_inner(effect),
@@ -628,7 +717,7 @@ module AgentsFyi
         File.binwrite(full, content[0...first] + replace.b + content[(first + needle.bytesize)..].to_s)
 
         applied << Applier::Applied.new(path: effect.payload["path"].to_s, line: line, text: find,
-          after: replace, subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          after: replace, subject: effect.question.to_s, origin: origin_for(effect),
           note: effect.answer.to_s)
       end
 
@@ -703,7 +792,7 @@ module AgentsFyi
 
         File.binwrite(full, lines.join)
         applied << Applier::Applied.new(path: path, line: line_number, text: old.to_s,
-          after: fresh.to_s, subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          after: fresh.to_s, subject: effect.question.to_s, origin: origin_for(effect),
           note: effect.answer.to_s)
       end
 
@@ -733,7 +822,7 @@ module AgentsFyi
         mode = payload["mode"].to_s
         File.chmod(Integer(mode, 8), full) unless mode.empty?
         applied << Applier::Applied.new(path: path, line: 1, text: "", after: content,
-          subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          subject: effect.question.to_s, origin: origin_for(effect),
           note: effect.answer.to_s)
       rescue ArgumentError
         refused << refusal(effect.decision, effect,
@@ -754,7 +843,7 @@ module AgentsFyi
 
         File.delete(full)
         applied << Applier::Applied.new(path: path, line: nil, text: "(deleted file)", after: "",
-          subject: effect.question.to_s, origin: "decision:#{effect.decision["id"]}",
+          subject: effect.question.to_s, origin: origin_for(effect),
           note: effect.answer.to_s)
       end
 
@@ -780,7 +869,7 @@ module AgentsFyi
         File.chmod(mode, full)
         applied << Applier::Applied.new(path: path, line: nil, text: "mode #{before}",
           after: "mode #{format("%04o", mode)}", subject: effect.question.to_s,
-          origin: "decision:#{effect.decision["id"]}", note: effect.answer.to_s)
+          origin: origin_for(effect), note: effect.answer.to_s)
       rescue ArgumentError
         refused << refusal(effect.decision, effect,
           "#{path} has mode #{payload["mode"].inspect}, which is not an octal mode")

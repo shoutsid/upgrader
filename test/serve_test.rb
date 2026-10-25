@@ -345,11 +345,13 @@ class ServeTest < Minitest::Test
   # **A finished target is not work.** The loop used to knock on the queue's `done` row every ten
   # minutes, be refused with "`8.1.0` and `8.1.0` are the same Rails release", and record the
   # refusal — eight rows in one evening saying a finished walk is finished. `done` and `refused` both
-  # leave the list the loop walks, and they say so on the line rather than vanishing.
-  def test_a_finished_or_refused_target_is_not_walked_again
+  # leave the list the loop walks, and they say so on the line rather than vanishing. A `blocked`
+  # row is the third: it is waiting for a person, not for another rung.
+  def test_a_finished_refused_or_blocked_target_is_not_walked_again
     corpus = FakeCorpus.new(targets: [
       { "repo_url" => "acme/finished", "ref" => "main", "status" => "done" },
-      { "repo_url" => "acme/refused", "ref" => "main", "status" => "refused" }
+      { "repo_url" => "acme/refused", "ref" => "main", "status" => "refused" },
+      { "repo_url" => "acme/blocked", "ref" => "main", "status" => "blocked" }
     ])
     out = StringIO.new
 
@@ -358,6 +360,7 @@ class ServeTest < Minitest::Test
     assert_empty FakeStep.calls, "a finished target was walked again"
     assert_includes out.string, "acme/finished is done, so it is not work"
     assert_includes out.string, "acme/refused is refused, so it is not work"
+    assert_includes out.string, "acme/blocked is blocked on a decision"
   end
 
   # **A project supplies the walk.** A loop given a declaration needs no `--repo`, `--ref` or `--to`:
