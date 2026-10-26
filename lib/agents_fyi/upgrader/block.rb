@@ -12,6 +12,14 @@ module AgentsFyi
     # is deliberately pure: no ledger, no network, no clock. The caller posts what it returns and
     # the service owns the identity, the dedupe key and the lifecycle.
     #
+    # **One failed stop is one question, and it is the earliest cause rather than every symptom.** The
+    # stages after the first failure fail because of it, the plan's manual changes were not
+    # reached, and `app:update` conflicts are the walker's own policy outcome (it always keeps the
+    # application's file). Posting all of them is how one unresolvable gem became twenty questions
+    # on diaspora and one generator refusal became seventy-three on rails-modular-monolith: every
+    # row was true, none was the thing to answer. The walk retries after the cause is answered and
+    # the next stop gets its own question then.
+    #
     # **`checked` changes are not blocks.** A change the rung carries and this application does
     # not use is a review row, not a question; asking it would fill the operator's queue with
     # work nobody can do. That filter is the same one `Record#to_s` already applies, and it is
@@ -27,16 +35,21 @@ module AgentsFyi
       # The stage names this client records, mapped to the service's `block_kind` vocabulary.
       # A stage not here is not a stop a person answers: `bundle`, `services` and the other
       # machine stages are the walk's own failures, and a block for one would ask an operator
-      # to debug the harness. `rails:update` is the one whose client label is not its kind.
+      # to debug the harness. `rails:update` is absent because it is a generator that is
+      # recorded beside the run rather than gated; a blocking check is its own structure and is
+      # turned into a block by `check_block`.
       STAGE_KINDS = {
         Record::PREFLIGHT => "preflight",
         Record::PIN => "pin",
-        Record::RAILS_UPDATE => "app_update",
         Record::SUITE => "suite",
-        Record::BOOT => "boot",
-        Record::CHECK => "check",
-        Record::REPAIR => "repair"
+        Record::BOOT => "boot"
       }.freeze
+
+      # **The stages that can be the cause.** `rails:update` and `repair` are deliberately absent:
+      # the first is a generator that is recorded beside the run rather than gated (`Record`'s
+      # `REQUIRED` says why), and a failed repair attempt is evidence for the suite or boot failure
+      # that follows it, not a stop of its own.
+      ROOT_STAGES = [Record::PREFLIGHT, Record::PIN, Record::SUITE, Record::BOOT].freeze
 
       MAX_EVIDENCE = 8 * 1024
 
@@ -48,57 +61,39 @@ module AgentsFyi
           project = project.respond_to?(:slug) ? project.slug.to_s : project.to_s
           return [] if project.empty?
 
+          # **A red baseline is an environment fact, not a question.** A suite that was already
+          # red says nothing about the move (`Record.verdict` calls it unverified), and the next
+          # attempt is a rerun rather than an answer. Ohana's missing browser became a suite
+          # question and parked the target until somebody dismissed and requeued it by hand; the
+          # browser is fixed, and this rule is what keeps the next missing service from doing the
+          # same.
+          return [] if record.respond_to?(:baseline) && record.baseline && !record.baseline.ok?
+
           blocks = []
-          Array(record.decisions).each do |change|
-            next if change.respond_to?(:checked?) && change.checked?
-
-            blocks << decision_block(record, change, project: project, target_id: target_id,
+          # **The earliest failure is the stop; everything after it is a consequence.** A decision
+          # (a scan's manual change, a routing verdict) is not the cause of a failed move — the
+          # run had already recorded it and walked on. A conflict is the walker's own policy, not
+          # the application's mistake. Only when the record names no failed command and no check
+          # does the manual work become the question.
+          if (stage = root_stage(record))
+            stop = stage_block(record, stage, project: project, target_id: target_id,
               run_id: run_id)
-          end
+            blocks << stop if stop
+          elsif (check = blocking_check(record))
+            blocks << check_block(record, check, project: project, target_id: target_id,
+              run_id: run_id)
+          elsif unaskable_failure?(record)
+            # A required stage that is not a decision (`services`, `prepare`) stopped the run. It
+            # is a fact about the machine or the repository, and a question would ask a person to
+            # debug the harness.
+            return []
+          else
+            Array(record.decisions).each do |change|
+              next if change.respond_to?(:checked?) && change.checked?
 
-          conflicts(record).each do |path|
-            blocks << block(
-              record, project: project, target_id: target_id, run_id: run_id,
-              block_kind: "app_update", subject: "app:update conflict at #{path}",
-              question: "`app:update` left #{path} as a conflict. Which version should this " \
-                        "application keep, and what in the new one does it need?",
-              context: { "file" => path, "stage" => Record::RAILS_UPDATE },
-              evidence: { "stage" => Record::RAILS_UPDATE,
-                          "failure" => "app:update did not adopt #{path}" },
-              change_key: nil
-            )
-          end
-
-          failed_stages(record).each do |stage|
-            kind = STAGE_KINDS[stage.stage.to_s]
-            next if kind.nil?
-
-            key, key_source = key_for(stage, record)
-            blocks << block(
-              record, project: project, target_id: target_id, run_id: run_id,
-              block_kind: kind,
-              subject: subject_for(stage, record),
-              question: question_for(stage, record),
-              context: { "stage" => stage.stage.to_s, "command" => stage.command.to_s },
-              evidence: { "stage" => stage.stage.to_s, "command" => stage.command.to_s,
-                          "failure" => clipped(stage.output_tail),
-                          "exit_code" => stage.exit_code },
-              change_key: key, change_key_source: key_source
-            )
-          end
-
-          blocked_checks(record).each do |check|
-            blocks << block(
-              record, project: project, target_id: target_id, run_id: run_id,
-              block_kind: "check", subject: "check #{check.label}",
-              question: "The application's `#{check.label}` check failed on this rung. What " \
-                        "should change: the application, the check, or the move?",
-              context: { "stage" => Record::CHECK, "check" => check.id.to_s },
-              evidence: { "stage" => Record::CHECK, "command" => check.command.to_s,
-                          "failure" => clipped(check.output_tail),
-                          "exit_code" => check.exit_code },
-              change_key: nil
-            )
+              blocks << decision_block(record, change, project: project, target_id: target_id,
+                run_id: run_id)
+            end
           end
 
           dedupe(blocks)
@@ -144,9 +139,6 @@ module AgentsFyi
           when Record::PIN
             "The Rails #{record.to_version} pin could not be resolved. Which gem held it, and " \
               "should the walk move that gem, replace it, or stop here?"
-          when Record::RAILS_UPDATE
-            "`app:update` stopped while moving to Rails #{record.to_version}. What should this " \
-              "application keep from the update?"
           when Record::SUITE
             "The suite was green before this rung and red after it. Which change broke it, and " \
               "what is the smallest repair?"
@@ -156,12 +148,6 @@ module AgentsFyi
           when Record::PREFLIGHT
             "The Gemfile could not be prepared for this move. Which line needs a person's " \
               "decision?"
-          when Record::CHECK
-            "A check in the application's gate did not pass. Which side is wrong: the code, the " \
-              "check, or the rung?"
-          when Record::REPAIR
-            "The repair attempt on Rails #{record.to_version} did not turn the gate green. What " \
-              "should the next attempt try?"
           else
             "The walk stopped at #{stage.stage}. What should it do next?"
           end
@@ -170,12 +156,9 @@ module AgentsFyi
         def subject_for(stage, record)
           case stage.stage.to_s
           when Record::PIN then "pin Rails #{record.to_version}"
-          when Record::RAILS_UPDATE then "app:update at #{record.to_version}"
           when Record::SUITE then "suite at #{record.to_version}"
           when Record::BOOT then "boot at #{record.to_version}"
           when Record::PREFLIGHT then "Gemfile for Rails #{record.to_version}"
-          when Record::CHECK then "check #{stage.stage} at #{record.to_version}"
-          when Record::REPAIR then "repair at #{record.to_version}"
           else "#{stage.stage} at #{record.to_version}"
           end
         end
@@ -199,15 +182,16 @@ module AgentsFyi
           ["ruby|rails|#{subject}", "project"]
         end
 
-        def key_for(stage, record)
+        def key_for(stage, _record)
           case stage.stage.to_s
           when Record::PIN then ["ruby|rails|rails", "project"]
           when Record::PREFLIGHT then ["ruby|rails|preflight", "project"]
-          when Record::RAILS_UPDATE then ["ruby|rails|app_update", "project"]
-          else nil
           end
         end
 
+        # The last attempt of every stage that ran and failed, in the order the pipeline first
+        # reached them. A stage that ran more than once is judged by its last attempt, the same
+        # rule `Record.failed_stages` uses for the verdict.
         def failed_stages(record)
           last = Array(record.stages).group_by { |stage| stage.stage.to_s }
             .transform_values(&:last)
@@ -215,23 +199,58 @@ module AgentsFyi
             # A check is richer in `checks` than in the command list: the check's own label and
             # its declaration are what a person answers, so the command is not a second block.
             stage.nil? || stage.stage.to_s == Record::CHECK ||
-              (stage.stage.to_s == Record::RAILS_UPDATE && conflicts(record).any?) ||
               !stage.respond_to?(:ran) || !stage.ran ||
               stage.exit_code.nil? || stage.exit_code.to_i.zero?
           end
         end
 
-        def blocked_checks(record)
-          Array(record.checks).select do |check|
-            check.respond_to?(:blocking_failure?) ? check.blocking_failure? : false
-          end
+        def root_stage(record)
+          failed_stages(record).find { |stage| ROOT_STAGES.include?(stage.stage.to_s) }
         end
 
-        def conflicts(record)
-          app_update = record.respond_to?(:app_update) ? record.app_update : nil
-          return [] unless app_update.is_a?(Hash)
+        # A required stage that failed but is not a stop a person answers (`services`, `prepare`).
+        # `Record.failed_stages` names exactly the required ones, so anything it returns here is
+        # outside `ROOT_STAGES` — this is not a second list of stages.
+        def unaskable_failure?(record)
+          !Record.failed_stages(record.stages).empty?
+        end
 
-          Array(app_update["conflicts"]).map(&:to_s).reject(&:empty?).uniq
+        def stage_block(record, stage, project:, target_id:, run_id:)
+          kind = STAGE_KINDS[stage.stage.to_s]
+          return nil if kind.nil?
+
+          key, key_source = key_for(stage, record)
+          block(
+            record, project: project, target_id: target_id, run_id: run_id,
+            block_kind: kind,
+            subject: subject_for(stage, record),
+            question: question_for(stage, record),
+            context: { "stage" => stage.stage.to_s, "command" => stage.command.to_s },
+            evidence: { "stage" => stage.stage.to_s, "command" => stage.command.to_s,
+                        "failure" => clipped(stage.output_tail),
+                        "exit_code" => stage.exit_code },
+            change_key: key, change_key_source: key_source
+          )
+        end
+
+        def check_block(record, check, project:, target_id:, run_id:)
+          block(
+            record, project: project, target_id: target_id, run_id: run_id,
+            block_kind: "check", subject: "check #{check.label}",
+            question: "The application's `#{check.label}` check failed on this rung. What " \
+                      "should change: the application, the check, or the move?",
+            context: { "stage" => Record::CHECK, "check" => check.id.to_s },
+            evidence: { "stage" => Record::CHECK, "command" => check.command.to_s,
+                        "failure" => clipped(check.output_tail),
+                        "exit_code" => check.exit_code },
+            change_key: nil
+          )
+        end
+
+        def blocking_check(record)
+          Array(record.checks).find do |check|
+            check.respond_to?(:blocking_failure?) ? check.blocking_failure? : false
+          end
         end
 
         def block(record, project:, target_id:, run_id:, block_kind:, subject:, question:,
@@ -254,13 +273,18 @@ module AgentsFyi
           }.compact
         end
 
+        # **A route's identity is its change key, not the sentence the plan happened to use.** Two
+        # writers can name one change differently — the plan's subject and the routing's verdict —
+        # and the subject-keyed dedupe kept both. A key is the identity the service's questions already
+        # use; a row with no key falls back to its subject.
         def dedupe(blocks)
           seen = {}
           blocks.each_with_object([]) do |row, out|
-            key = [row["block_kind"], row["subject"], row["change_key"]]
-            next if seen[key]
+            key = row["change_key"].to_s
+            identity = key.empty? ? [row["block_kind"], row["subject"]] : [row["block_kind"], key]
+            next if seen[identity]
 
-            seen[key] = true
+            seen[identity] = true
             out << row
           end
         end

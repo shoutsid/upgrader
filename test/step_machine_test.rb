@@ -1019,13 +1019,36 @@ class StepMachineTest < Minitest::Test
   def test_a_failed_stage_prints_its_own_output
     out = StringIO.new
     runner = FakeRunner.new(answers: {
-      "rails:update" => [1, "NoMethodError: undefined method `last_comment' for #<Rake::Application>"]
+      "bundle update" => [1, "Could not find compatible versions for gem \"i18n\""]
     })
 
     step(app, machines: machines, runner: runner, out: out).run
 
-    assert_includes out.string, "undefined method `last_comment'",
+    assert_includes out.string, "Could not find compatible versions",
       "the failure's own output was not printed: #{out.string.lines.last(6).inspect}"
+  end
+
+  # **A pin that does not resolve ends the rung.** The walker used to continue into
+  # `app:update`, the boot and the suite against a bundle that still named the release the move
+  # left, so one missing gem produced four failures and four questions. The record stops where
+  # the resolver did, and the stages after it are absent rather than falsely red.
+  def test_a_failed_pin_stops_before_app_update_boot_and_suite
+    runner = FakeRunner.new(answers: {
+      "bundle update" => [1, "Could not find compatible versions for gem \"i18n\""]
+    })
+
+    record = step(app, machines: machines, runner: runner).run
+
+    assert_equal "failed", record.verdict
+    assert_includes record.why, "pin did not succeed"
+    labels = record.stages.map(&:stage)
+    assert_includes labels, AgentsFyi::Upgrader::Record::PIN
+    refute_includes labels, AgentsFyi::Upgrader::Record::RAILS_UPDATE,
+      "app:update ran against an unresolved bundle"
+    refute_includes labels, AgentsFyi::Upgrader::Record::BOOT,
+      "the boot ran against an unresolved bundle"
+    refute_includes labels, AgentsFyi::Upgrader::Record::SUITE,
+      "the suite ran against an unresolved bundle"
   end
 
   def test_a_framework_gem_the_pin_moves_is_not_a_decision_when_the_routing_calls_it_a_move

@@ -48,6 +48,15 @@ versioning for its command-line surface and record format.
 
 ### Fixed
 
+- A pin that does not resolve ends the rung: `app:update`, the boot and the suite no longer run
+  against a bundle that still names the release the move left, so one unresolvable gem is one
+  question rather than four.
+- `app:update` no longer gates a rung. Its refusal is recorded beside the run and named in a
+  passing verdict, while boot and the suite decide the move — Rails 8's `active_storage:update`
+  refused on an application with no Active Storage tables whose suite was green.
+- A stopped rung posts one root-cause question. `app:update` conflicts and the plan's manual
+  changes after an earlier failure are recorded but no longer posted as separate questions, and a
+  red baseline is retried rather than parked behind a question nobody can answer.
 - A passed rung that was never published is delivered from its own record. `step` publishes only
   with `--publish`, so a rung walked by hand while the loop was not publishing settled with no
   delivery at all — nothing revisits a settled rung, so the chain kept a hole for ever (measured:

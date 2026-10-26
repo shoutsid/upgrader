@@ -4,15 +4,16 @@ require "minitest/autorun"
 require "agents_fyi/upgrader"
 
 # **A stop, as a question.** The extractor is pure, so these drive the shapes that matter: one
-# block per stop rather than one per rung, a `checked` change omitted, a documented key kept
-# and a synthetic one labelled project-scoped, and the same stop after an edit keeping its
-# identity. What the service does with the row is `decisions_test.rb`'s subject.
+# question for the earliest stop rather than one per symptom, a `checked` change omitted, a
+# documented key kept and a synthetic one labelled project-scoped, and the same stop after an
+# edit keeping its identity. What the service does with the row is `decisions_test.rb`'s subject.
 class BlockTest < Minitest::Test
-  def record(decisions: [], stages: [], checks: [], app_update: nil, verdict: "failed")
+  def record(decisions: [], stages: [], checks: [], app_update: nil, baseline: nil,
+    verdict: "failed")
     AgentsFyi::Upgrader::Record.new(
       repository: "acme/storefront", from_version: "7.0.0", to_version: "7.1.0",
       verdict: verdict, why: "the suite failed", decisions: decisions, stages: stages,
-      checks: checks, app_update: app_update
+      checks: checks, app_update: app_update, baseline: baseline
     )
   end
 
@@ -92,14 +93,39 @@ class BlockTest < Minitest::Test
     assert_nil block["change_key"], "a suite failure names no library"
   end
 
-  def test_an_app_update_conflict_is_its_own_question
+  # **A conflict is the walker's own policy outcome, not a question.** `app:update` asks to
+  # overwrite every file the application owns and the walker answers no, so a conflict list is
+  # the expected result of keeping the application's version; the files are in the record for a
+  # reviewer. RMM's rung carried fifty-seven of these beside a green suite, and each one became a
+  # question a person was asked to answer.
+  def test_an_app_update_conflict_is_recorded_but_is_not_a_question
     record = record(app_update: { "conflicts" => ["config/application.rb"] })
 
-    block = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront").first
+    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront"),
+      "a conflict is a policy outcome, not a stop"
+  end
 
-    assert_equal "app_update", block["block_kind"]
-    assert_includes block["subject"], "config/application.rb"
-    assert_equal "config/application.rb", block["context"]["file"]
+  # A generator that refused is recorded on the run; it is not the cause of a failed rung since
+  # `Record::REQUIRED` no longer gates on it. If nothing else failed, there is nothing to ask.
+  def test_an_app_update_failure_is_not_a_question_when_nothing_else_failed
+    record = record(stages: [
+      command(stage: AgentsFyi::Upgrader::Record::RAILS_UPDATE, output: "active_storage:update failed")
+    ])
+
+    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+  end
+
+  # **A red baseline is a fact about the environment, not about the move.** Ohana's missing
+  # browser made the baseline red and parked the target behind a suite question until somebody
+  # dismissed and requeued it; the walk should retry instead.
+  def test_a_red_baseline_is_not_a_question
+    record = record(
+      baseline: command(stage: AgentsFyi::Upgrader::Record::BASELINE, exit_code: 1,
+        output: "Chrome could not be found"),
+      stages: [command(stage: AgentsFyi::Upgrader::Record::SUITE)]
+    )
+
+    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
   end
 
   def test_a_blocking_check_is_a_check_question
@@ -117,7 +143,25 @@ class BlockTest < Minitest::Test
     assert_equal "3 offenses", block["evidence"]["failure"]
   end
 
-  def test_one_block_per_stop_and_a_stage_is_not_duplicated_by_its_own_decision
+  # **The earliest failure is the one to answer; the rest are its consequences.** A scan's
+  # manual change was not reached, and a pin failure means nothing after it ran at all. Posting
+  # each true row is what turned one unresolvable gem into twenty questions on diaspora.
+  def test_the_earliest_failed_stage_is_the_only_question
+    record = record(
+      decisions: [decision(change_key: "ruby|rails|x")],
+      stages: [
+        command(stage: AgentsFyi::Upgrader::Record::PIN, output: "version solving has failed"),
+        command(stage: AgentsFyi::Upgrader::Record::SUITE)
+      ]
+    )
+
+    blocks = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+
+    assert_equal ["pin"], blocks.map { |block| block["block_kind"] }
+    assert_includes blocks.first["evidence"]["failure"], "version solving"
+  end
+
+  def test_a_suite_failure_drops_the_manual_change_it_did_not_reach
     record = record(
       decisions: [decision(change_key: "ruby|rails|x")],
       stages: [command(stage: AgentsFyi::Upgrader::Record::SUITE)]
@@ -125,6 +169,6 @@ class BlockTest < Minitest::Test
 
     blocks = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
 
-    assert_equal %w[scan_manual suite], blocks.map { |block| block["block_kind"] }.sort
+    assert_equal ["suite"], blocks.map { |block| block["block_kind"] }
   end
 end

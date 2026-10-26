@@ -125,7 +125,7 @@ module AgentsFyi
       # rather than "a check stage did not succeed".
       CHECK = "check"
 
-      # The stages a step cannot continue past, in the order they happen. Three absences are
+      # The stages a step cannot continue past, in the order they happen. Four absences are
       # deliberate.
       #
       # `apply` is not here because an edit the applier refused is an *output* of this tool,
@@ -142,7 +142,16 @@ module AgentsFyi
       # step with no suite came back `failed` where the rule is `unverified`. The suite's
       # outcome, including its absence, is judged by `verdict` itself, below; being
       # ungated here is what lets it be.
-      REQUIRED = [PREPARE, SERVICES, PIN, RAILS_UPDATE, BOOT].freeze
+      #
+      # **`rails:update` is not here because it is a generator, not a gate.** The task writes
+      # config files and binstubs; it does not run the application. Rails 8's
+      # `active_storage:update` refused on an application whose schema has no Active Storage
+      # tables, while the same rung booted and its suite was green — and because this list
+      # contained the stage, that generator refusal failed the rung. What decides a move is the
+      # application's own gate: the boot, the suite and the checks it declares. The stage still
+      # records what the generator said (`app_update_note` carries it into a passing verdict),
+      # and a person can read it there; it does not stop the walk.
+      REQUIRED = [PREPARE, SERVICES, PIN, BOOT].freeze
 
       # A change this step carries that no machine may apply: the service's `manual`
       # half, with the reason it gave. Its own list rather than a flag on a refusal,
@@ -288,16 +297,29 @@ module AgentsFyi
           end
 
           repairs = stages.count { |stage| stage.stage == REPAIR && stage.ran }
-          return [PASSED, "the suite was green before this step and green after it" \
-                          "#{baseline_repair_note(stages)}"] if repairs.zero?
+          note = "#{baseline_repair_note(stages)}#{app_update_note(stages)}"
+          return [PASSED, "the suite was green before this step and green after it#{note}"] if
+            repairs.zero?
 
           return [PASSED, "the suite was green before this step and green after #{repairs} " \
-                          "repair attempt(s); the attempt(s) are in the record" \
-                          "#{baseline_repair_note(stages)}"]
+                          "repair attempt(s); the attempt(s) are in the record#{note}"]
         end
 
         [FAILED, "the suite was green before this step and failed after it " \
                  "(exit #{suite.exit_code})#{repair_note(stages)}#{database_note(stages)}"]
+      end
+
+      # **A failed `app:update` is recorded beside a passing run, never in place of it.** The
+      # generator can refuse on a component this application does not use while the application
+      # itself boots and its suite is green; a verdict that called that a failed rung told a
+      # caller its upgrade failed for a file it never needed. Only a stage that actually ran is
+      # named — a missing update runner is the old behaviour, not a new note on every record.
+      def self.app_update_note(stages)
+        update = stages.reverse.find { |stage| stage.stage == RAILS_UPDATE }
+        return "" if update.nil? || !update.ran || update.ok?
+
+        outcome = update.exit_code.nil? ? "was killed before it finished" : "exited #{update.exit_code}"
+        " (`app:update` #{outcome}; it is recorded beside this run rather than gating it)"
       end
 
       # **A baseline that was red and then green, as a clause.** The verdict's sentence says

@@ -3162,8 +3162,18 @@ module AgentsFyi
         # against `railties (= 4.1.0)` for every era, so no interpreter installs the bundle;
         # declared here it resolves to 2.4.1 and the pin succeeds.
         declare_for_the_rung(stages)
-        pin(stages)
-        nil
+        resolved = pin(stages)
+        return nil if resolved.ok?
+
+        # **A pin that could not resolve is the end of the rung.** Continuing was the bug that
+        # made one missing release look like four: after a failed pin the bundle still names the
+        # release the move left, so `app:update` cannot start, the boot cannot load the
+        # application, and the suite fails on the missing gem rather than on the move. On
+        # diaspora that produced a pin question plus an app:update, a boot and a suite question,
+        # all four the same fact. The record stops where the resolver did, and the block that
+        # goes with it is the pin's.
+        verdict, why = Record.verdict(baseline: @baseline, suite: nil, stages: stages)
+        build(step, stages, verdict, why)
       end
 
       # The rung-scoped entries the preflight held because the Gemfile still named the release
