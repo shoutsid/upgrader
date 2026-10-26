@@ -841,6 +841,12 @@ module AgentsFyi
       def unrewritable(line, kind:)
         return "spans several lines, so the one line this class sees is not the whole" if line.rstrip.end_with?(",")
         return nil if kind == "removed"
+        # **A forked line is a source the application has chosen.** The digest's repository is the
+        # one it measured; a line already naming a Git source is not this rule's to move, whether
+        # it names the same fork (nothing to do) or another (a choice this class cannot evaluate).
+        if kind == "forked" && line.match?(/\b(?:git|github|path|branch|ref|tag|source):/)
+          return "already names a source, and a fork rule does not move a line that has chosen one"
+        end
         if kind == "require_false"
           # A line that already names its own `require:` has made this decision for itself —
           # either it is already `require: false` (nothing to do) or it asks for something
@@ -888,6 +894,14 @@ module AgentsFyi
           else
             %(#{indent}gem "#{replacement}", "#{requirement}")
           end
+        when "forked"
+          # The gem keeps its name; only where it comes from changes. No requirement: the fork's
+          # own gemspec states what it accepts, and a version beside a Git source would pin a
+          # release the repository does not have.
+          repository = entry["repository"].to_s
+          return nil if repository.empty?
+
+          %(#{indent}gem "#{entry["gem"]}", github: "#{repository}")
         when "removed"
           # Nothing where the declaration was: the line goes, and the file's own shape
           # (a group block, a comment above) keeps working without it.

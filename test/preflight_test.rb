@@ -80,10 +80,11 @@ class PreflightTest < Minitest::Test
     end
   end
 
-  def entry(gem:, kind: "replaced", replacement: nil, requirement: nil, mechanical: true,
-            note: "the digest's reason", source: "the index", condition: nil, forced: false,
-            only_if_locked: false)
-    row = { "gem" => gem, "kind" => kind, "replacement" => replacement, "requirement" => requirement,
+  def entry(gem:, kind: "replaced", replacement: nil, requirement: nil, repository: nil,
+            mechanical: true, note: "the digest's reason", source: "the index", condition: nil,
+            forced: false, only_if_locked: false)
+    row = { "gem" => gem, "kind" => kind, "replacement" => replacement,
+            "repository" => repository, "requirement" => requirement,
             "mechanical" => mechanical, "note" => note, "source" => source, "when" => condition }
     row = row.merge("forced" => true) if forced
     only_if_locked ? row.merge("only_if_locked" => true) : row
@@ -783,6 +784,54 @@ class PreflightTest < Minitest::Test
     assert_equal %(gem "devise", git: "https://github.com/plataformatec/devise.git", branch: "rails4"),
       devise.text.strip
     assert_equal %(gem "devise", "~> 3.0"), devise.after.strip
+  end
+
+  # **A fork is a source, not a release.** The gem keeps its name; the requirement goes, because
+  # the fork's own gemspec is the version fact, and the line names the repository instead. This is
+  # the one move that makes a Rails 8 route possible for a gem whose newest release caps the
+  # framework.
+  def test_a_forked_entry_rewrites_the_declaration_to_the_repository
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "8.0.5.1"\n) +
+      %(gem "js_image_paths", "0.2.0"\n), lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "js_image_paths", kind: "forked",
+      replacement: nil, repository: "shoutsid/js_image_paths",
+      condition: { "rails_at_least" => "8.0" },
+      note: "0.2.0 is the newest release and caps Rails below 8.0")])
+
+    result = preflight(dir, corpus: corpus, rails: "8.0.5.1")
+
+    assert_empty result.repairs, "a rung-scoped line is applied at the pin, not here"
+    assert_equal %w[js_image_paths], result.deferred.map { |deferred| deferred["gem"] }
+
+    applied = Preflight.new(root: dir, corpus: corpus, rails: "8.0.5.1")
+      .declare_deferred(result.deferred)
+
+    gemfile = read(dir, "Gemfile")
+    assert_includes gemfile, %(gem "js_image_paths", github: "shoutsid/js_image_paths")
+    refute_includes gemfile, %(gem "js_image_paths", "0.2.0")
+    repair = applied.repairs.find { |each| each.subject == "js_image_paths" }
+    refute_nil repair, applied.details.inspect
+    assert_equal %(gem "js_image_paths", "0.2.0"), repair.text.strip
+  end
+
+  # A line that already names a source is a choice this class cannot evaluate: it may be the same
+  # fork (nothing to do) or another one (a fact the digest does not hold). It is left alone with a
+  # note rather than moved to the digest's repository.
+  def test_a_forked_entry_leaves_a_line_that_already_names_a_source
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "8.0.5.1"\n) +
+      %(gem "js_image_paths", github: "someone/js_image_paths"\n), lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "js_image_paths", kind: "forked",
+      replacement: nil, repository: "shoutsid/js_image_paths",
+      condition: { "rails_at_least" => "8.0" })])
+
+    result = preflight(dir, corpus: corpus, rails: "8.0.5.1")
+    applied = Preflight.new(root: dir, corpus: corpus, rails: "8.0.5.1")
+      .declare_deferred(result.deferred)
+
+    # The protocol rule expands `github:` into a full `git:` URL before the digest pass, so the
+    # assertion is on the repository the application chose rather than on its short spelling.
+    assert_includes read(dir, "Gemfile"), "someone/js_image_paths"
+    assert(applied.notes.any? { |note| note.include?("already names a source") }, applied.notes.inspect)
   end
 
   # The gems asked about are the application's own: declared, plus the ones it merely
