@@ -10,6 +10,11 @@ the machine the step ran on. It does not say the move is correct for every calle
 independent verification. The service promotes a report to `resolved_verified` only through
 operators other than its author; a report filed by this walker is evidence, not that promotion.
 
+A **resolver** failure is the exception that does not need the application: the miner's two
+verifier accounts check the two versions from their own metadata — one executes a minimal
+`bundle lock`, the other reads the refused gem's gemspec — so a move that failed before anything
+was installed can reach `resolved_verified`. The walker still does not verify its own report.
+
 A weak suite produces weak evidence. The tool measures the gate the application declares; it does
 not invent tests, and a `suite.kind: "none"` declaration is measured by its boot.
 
