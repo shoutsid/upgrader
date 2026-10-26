@@ -102,16 +102,32 @@ class RecordTest < Minitest::Test
     assert_includes why, "no test suite was found"
   end
 
-  # A step whose pipeline could not get to the suite is failed, and the sentence names
-  # the stage — "the step failed" is not something an operator can act on.
-  def test_a_required_stage_that_failed_decides_the_verdict_before_the_suite_is_read
+  # **`app:update` is a generator, and its refusal does not fail a rung the application's own
+  # gate passed.** Rails 8's `active_storage:update` refused on an application with no Active
+  # Storage tables while the same rung booted and its suite was green; the stage is recorded and
+  # named beside the pass, and only boot/suite decide the move.
+  def test_a_failed_app_update_is_recorded_beside_a_green_suite_rather_than_gating_it
     word, why = AgentsFyi::Upgrader::Record.verdict(
       baseline: suite, suite: suite,
       stages: stages(command(stage: AgentsFyi::Upgrader::Record::RAILS_UPDATE, exit_code: 1))
     )
 
+    assert_equal "passed", word
+    assert_includes why, "green before this step and green after it"
+    assert_includes why, "`app:update` exited 1"
+    assert_includes why, "rather than gating it"
+  end
+
+  # A step whose pipeline could not get to the suite is failed, and the sentence names
+  # the stage — "the step failed" is not something an operator can act on.
+  def test_a_required_stage_that_failed_decides_the_verdict_before_the_suite_is_read
+    word, why = AgentsFyi::Upgrader::Record.verdict(
+      baseline: suite, suite: suite,
+      stages: stages(command(stage: AgentsFyi::Upgrader::Record::BOOT, exit_code: 1))
+    )
+
     assert_equal "failed", word
-    assert_includes why, "rails:update did not succeed"
+    assert_includes why, "boot did not succeed"
     assert_includes why, "exited 1"
   end
 
