@@ -60,6 +60,14 @@ module AgentsFyi
       # application had asked for the header. A stage of its own because a package install that
       # failed and a bundle that failed are different facts, and the second is a consequence.
       PACKAGES = "packages"
+      # **The machine's browser, made usable for a suite that drives one.** An application with
+      # `:js` examples runs a real Chromium, and an era container is a place a browser does not
+      # start by itself: its sandbox needs a capability this walk will not grant, and its driver
+      # gem asks an endpoint that retired the browser the image installs. Both answers are
+      # machine configuration rather than lines in the application's tree, so a reader has to be
+      # able to see them beside the packages — a baseline that failed in `DevToolsActivePort` or
+      # `Webdrivers::VersionError` is a fact about this stage, not about the application.
+      BROWSER = "browser"
       # The services a Rails suite expects — PostgreSQL, Redis — started inside the step's
       # own container. A required stage: a suite that ran without its database failed for a
       # reason nobody reading the record could see, and "the suite was green before and red
@@ -758,6 +766,33 @@ module AgentsFyi
       def self.stem(repository, from_version, to_version)
         name = readable_repository(repository)
         "#{name.gsub(/[^A-Za-z0-9._-]/, "-")}-#{from_version}-#{to_version}"
+      end
+
+      # Where a move's record lives, asked once. Two callers read a stored record — the republish
+      # pass, which rewrites a delivered request's body, and a delivery recovered from a rung that
+      # passed while the loop was not publishing — and a path spelled twice is two answers to
+      # "which file is this move", one of them wrong after the stem became readable.
+      #
+      # **The fallback is read-only compatibility, not a second naming rule.** A record written
+      # before the stem was readable carries the raw repository string sanitized; nothing writes
+      # that shape now.
+      def self.path_for(home, repository, from_version, to_version)
+        path = File.join(home.to_s, "records", "#{stem(repository, from_version, to_version)}.json")
+        return path if File.file?(path)
+
+        legacy = "#{repository.to_s.gsub(/[^A-Za-z0-9._-]/, "-")}-" \
+                 "#{from_version}-#{to_version}"
+        File.join(home.to_s, "records", "#{legacy}.json")
+      end
+
+      # The record itself, by the reader that wrote it — or nil when no file is there. The path is
+      # `path_for`'s, so a caller that wants to name the file in a message asks that rather than
+      # rebuilding the name beside this call.
+      def self.stored(home, repository, from_version, to_version)
+        path = path_for(home, repository, from_version, to_version)
+        return nil unless File.file?(path)
+
+        from_h(JSON.parse(File.read(path)))
       end
 
       def self.readable_repository(repository)

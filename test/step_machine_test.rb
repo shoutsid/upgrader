@@ -466,6 +466,17 @@ class StepMachineTest < Minitest::Test
   # outside the working copy, so it runs as root and everything else does not.
   class RootMachine < FakeMachine
     def root_command(argv, chdir:, env: {}) = [["fake-root", era, *argv], {}]
+    def browser_cache = "/agents-fyi/home/browser/#{era}/webdrivers"
+  end
+
+  # **A machine that carries the environment the way a container does.** `Machine::Container#command`
+  # hands the runner an empty env and puts each pair on `docker exec`'s command line as `-e`; a
+  # double that dropped them would let the step stop passing the browser's cache without a red test.
+  class EnvCarryingMachine < RootMachine
+    def command(argv, chdir:, env: {})
+      flags = env.flat_map { |name, value| ["-e", "#{name}=#{value}"] }
+      [["fake", era, *argv, *flags], {}]
+    end
   end
 
   # A queue that asks for a later release than the next rung: the plan still starts at the
@@ -1319,6 +1330,92 @@ class StepMachineTest < Minitest::Test
     assert pins.last.ok?, pins.last.output_tail
     assert_includes File.read(File.join(dir, "Gemfile")), %(gem "responders", "~> 2.0")
     assert_equal "passed", record.verdict, record.why
+  end
+
+  # **A browser suite is answered by the machine, not by the application's tree.** The connect
+  # wizard declares `chrome` for a suite that drives a browser, and the era container cannot run
+  # Chromium's sandbox — its setuid helper builds a network and a PID namespace, which needs
+  # `CAP_SYS_ADMIN`, a capability this walk will not grant a container that executes an untrusted
+  # repository's bundle. The driver gem beside it asks an endpoint that retired the image's browser.
+  # Both answers are the machine's: Debian's launcher reads `/etc/chromium.d`, and `webdrivers`
+  # reads its cache from `WD_INSTALL_DIR`. Measured on `ohana-api` at the 5.2 rung: without them
+  # every `:js` example died in `DevToolsActivePort`.
+  def test_a_browser_application_gets_the_container_browser_without_an_edit_to_its_tree
+    dir = app
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
+      "toolchain" => { "chrome" => "pinned" }
+    })
+    runner = FakeRunner.new
+    machines = ERAS.to_h { |era| [era, EnvCarryingMachine.new(era)] }
+
+    record = step(dir, machines: machines, runner: runner, project: project).run
+
+    browser = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
+    assert_equal 4, browser.length, "one command per browser fact: #{browser.map(&:command)}"
+    # **The browser the image has is used, and one it has not is installed from the era's archive.**
+    # A live release ships both pairs; an archived one ships none, and its frozen archive still
+    # carries the package. The guard is a `test`, so the stage costs a command where nothing is due.
+    install = browser.find { |stage| stage.command.include?("apt-get install") }
+    refute_nil install, "a machine without a browser never offered to install the era's package"
+    assert_includes install.command, "[ ! -x /usr/bin/chromium ]",
+      "the install runs whether or not the image already has the browser"
+    assert_includes install.command, "chromium chromium-driver"
+    flags = browser.find { |stage| stage.command.include?("/etc/chromium.d/") }
+    refute_nil flags, "the launcher was never told how to start in a container"
+    assert_includes flags.command, "fake-root 2.1", "the drop-in was not written as root"
+    assert_includes flags.command, "--no-sandbox"
+    # The declaration says `pinned`, so the two names the suite and the driver gem read are
+    # pointed at the image's verified build, and the versions are read back into the record.
+    pin = browser.find { |stage| stage.command.include?("agents-fyi-browser") }
+    refute_nil pin, "the pinned browser was never linked into the names the suite reads"
+    assert_includes pin.command, "ln -sf /usr/local/bin/agents-fyi-browser /usr/bin/chromium",
+      "the link does not point the browser name at the image's launcher"
+    assert_includes pin.command, "[ -x /opt/agents-fyi-browser/chrome-linux64/chrome ]",
+      "a machine without the pinned pair would be linked to nothing"
+    assert_includes pin.command, "chromium --version"
+    seed = browser.find { |stage| stage.command.include?("chromedriver.version") }
+    refute_nil seed, "the driver the image installs was never offered to the gem"
+    assert_includes seed.command, "/agents-fyi/home/browser/2.1/webdrivers"
+    assert_includes seed.command, "chromedriver --version"
+
+    # The cache is where the gem reads it, the era is part of its name, and the application's
+    # own tree holds nothing.
+    assert_includes runner.calls.join("\n"),
+      "-e WD_INSTALL_DIR=/agents-fyi/home/browser/2.1/webdrivers",
+      "no application command was told where the seeded driver is"
+    assert_empty Dir.glob(File.join(dir, "**", "*agents_fyi*")),
+      "the browser answer was written into the application's checkout"
+  end
+
+  # **A project whose test stack was written for the release's own browser says so.** The
+  # declaration's `distro` keeps Debian's package and drops the pin, because the browser a suite can
+  # drive is a fact about that suite — a machine-wide choice would measure every project on one.
+  def test_a_project_that_declares_the_distribution_browser_is_not_pinned
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/new", "from" => "7.1.6", "to" => "7.2.4",
+      "toolchain" => { "chrome" => "distro" }
+    })
+
+    record = step(app, machines: root_machines, runner: FakeRunner.new, project: project).run
+
+    browser = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
+    assert_equal 3, browser.length, "a distro project paid for a pin it refused: #{browser.map(&:command)}"
+    refute(browser.any? { |stage| stage.command.include?("agents-fyi-browser") },
+      "the distribution's browser was replaced for a project that asked for it")
+  end
+
+  # The browser stage is about the application's test stack, not about every walk: a project that
+  # declares a header and nothing else must not pay for a browser it never asked for.
+  def test_a_project_without_a_browser_gets_no_browser_stage
+    project = AgentsFyi::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
+      "toolchain" => { "apt" => ["libidn11-dev"] }
+    })
+
+    record = step(app, machines: root_machines, runner: FakeRunner.new, project: project).run
+
+    assert_empty record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
   end
 
   # **The application's own build declares its system packages, and the walk installs them before

@@ -22,6 +22,30 @@ FROM ${BASE_IMAGE}
 # application arrives with. Each entry of the matrix names its own version.
 ARG BUNDLER=2.6.9
 
+# **The browser a live-Debian era ships as its default, pinned, and why the distribution's own is
+# not.** bookworm's `chromium` is 156 today and a different number next month, so the pair a step
+# drives moves under it — and the application's test stack does not. Measured on the ohana walk:
+# the same tree, the same bundle and the same Ruby 3.1 ran **1,557 examples, 0 failures** on
+# Chromium 120 and **19 failures** on bookworm's 156, every one of them a `:js` example (one with
+# Selenium's own `unhandled inspector error: Node with given id does not belong to the document`).
+# The application's `selenium-webdriver 4.0.3` was written for a browser of its own vintage, and a
+# baseline the walk cannot run is a rung nobody can measure.
+#
+# **A browser is project-dependent, so this is the machine's *default* and the declaration decides.**
+# `toolchain.chrome` says `pinned` (this pair), `distro` (the release's own package) or nothing,
+# which means `pinned` where it exists. A project whose suite needs the newer browser says so; the
+# machine states which build it verified rather than leaving the choice to whichever package the
+# repository happened to serve that morning.
+#
+# **Only an era whose Debian is still served by a moving repository needs a pin.** jessie through
+# bullseye are rewritten to `archive.debian.org` above, so whatever browser their package list
+# holds is already frozen — pinning those would replace the browser the era was measured with,
+# not freeze it. bookworm and trixie are live.
+#
+# Chrome for Testing is Chrome's own downloadable build: no apt repository, no `google-chrome`
+# package, and a `chromedriver` that is the same release as the browser it drives.
+ARG CHROME_VERSION=120.0.6099.109
+
 # **Which Debian release this base is, and how to reach its packages, is read out of the
 # image rather than passed in.** It was build arguments once, and two of them were wrong the
 # first time they were exercised: `ruby:2.5` is a *buster* base (its `VERSION_CODENAME` says
@@ -94,8 +118,10 @@ RUN set -eux; \
         13*) codename=trixie ;; \
       esac; \
     fi; \
+    archived=0; \
     case "$codename" in \
       jessie|stretch|buster|bullseye) \
+        archived=1; \
         if [ "$codename" = "bullseye" ]; then security="bullseye-security"; else security="$codename/updates"; fi; \
         printf 'deb http://archive.debian.org/debian %s main\n' "$codename" > /etc/apt/sources.list; \
         printf 'deb http://archive.debian.org/debian-security %s main\n' "$security" >> /etc/apt/sources.list; \
@@ -108,7 +134,14 @@ RUN set -eux; \
     packages="build-essential pkg-config cmake libpq-dev libyaml-dev libssl-dev zlib1g-dev \
       libreadline-dev libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
       postgresql postgresql-client redis-server imagemagick libmagickwand-dev libidn-dev \
-      nodejs npm ca-certificates"; \
+      nodejs npm ca-certificates curl unzip"; \
+    # **The distribution's browser is installed here for every era, and for a live one it is not
+    # the browser a step uses.** A project's declaration names `chromium` (the package a suite that
+    # drives a browser needs), and installing it in the image rather than in the step is what stops
+    # every rung of every walk downloading it again. On an archived release this *is* the browser —
+    # frozen with the repository — and on a live one it is what a project that says
+    # `toolchain.chrome: "distro"` is measured on.
+    if [ "$archived" = "0" ]; then packages="$packages chromium chromium-driver"; fi; \
     apt-get install -y --no-install-recommends $packages || \
       apt-get install -y --no-install-recommends $(echo "$packages" | sed 's/libidn-dev/libidn11-dev/'); \
     if [ "$codename" = "trixie" ]; then \
@@ -126,6 +159,34 @@ RUN set -eux; \
       config="$(find /usr/lib -maxdepth 4 -name "$name" -type f 2>/dev/null | head -1)"; \
       if [ -n "$config" ]; then ln -sf "$config" "/usr/local/bin/$name"; fi; \
     done; \
+    # **The pinned browser, unpacked beside the distribution's rather than over it.** These are two
+    # directories the step links `/usr/bin` at, which is why nothing here claims those names: apt
+    # owns them on a live release, and a `dpkg` install over a symlink this image wrote is a build
+    # that fails on the next run. The step decides which pair a project is measured on.
+    if [ "$archived" = "0" ]; then \
+      mkdir -p /opt/agents-fyi-browser; \
+      url="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64"; \
+      curl -fsSL -o /tmp/chrome.zip "$url/chrome-linux64.zip"; \
+      curl -fsSL -o /tmp/chromedriver.zip "$url/chromedriver-linux64.zip"; \
+      unzip -q /tmp/chrome.zip -d /opt/agents-fyi-browser; \
+      unzip -q /tmp/chromedriver.zip -d /opt/agents-fyi-browser; \
+      mv /opt/agents-fyi-browser/chromedriver-linux64/chromedriver /opt/agents-fyi-browser/chromedriver; \
+      rm -rf /opt/agents-fyi-browser/chromedriver-linux64; \
+      rm -f /tmp/chrome.zip /tmp/chromedriver.zip; \
+      # **The browser's directory keeps the archive's own name, and that is a correction rather than
+      # tidiness.** It was unpacked to `/opt/agents-fyi-browser/chrome`, and chromedriver's Linux
+      # finder globs `/opt/*/chrome` for the binary — so it found the *directory*, `execvp`'d it, and
+      # answered `session not created: Chrome failed to start: exited normally` while
+      # `/usr/bin/chromium` pointed at a launcher that ran the browser fine by hand. One level
+      # deeper (`/opt/agents-fyi-browser/chrome-linux64/chrome`) is not a match for that glob, which
+      # is what keeps the driver's own search from outranking the path this image wrote.
+      # The launcher, because Chrome for Testing is a binary and not a launcher: the sandbox flags
+      # the distro's `chromium` would read from `/etc/chromium.d` have to be passed here.
+      printf '#!/bin/sh\nexec /opt/agents-fyi-browser/chrome-linux64/chrome --no-sandbox --disable-dev-shm-usage "$@"\n' \
+        > /usr/local/bin/agents-fyi-browser; \
+      chmod +x /usr/local/bin/agents-fyi-browser /opt/agents-fyi-browser/chromedriver; \
+      printf '%s\n' "$CHROME_VERSION" > /opt/agents-fyi-browser/VERSION; \
+    fi; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
 

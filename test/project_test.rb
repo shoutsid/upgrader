@@ -197,6 +197,26 @@ class ProjectTest < Minitest::Test
     assert_equal project.to_h, PROJECT.parse(project.to_h.to_json).to_h
   end
 
+  # **The browser a suite is measured on is the project's fact, and the vocabulary is two words.**
+  # A declaration that names neither gets the machine's verified build; `distro` keeps the Debian
+  # release's own package, which is what a suite written for a newer browser needs. A version
+  # number is refused here rather than silently ignored, because a machine cannot fetch one.
+  def test_the_declared_browser_is_pinned_distro_or_the_machines_own_answer
+    assert_equal "distro", PROJECT.parse(minimal.merge(
+      "toolchain" => { "apt" => ["chromium"], "chrome" => "distro" }).to_json).toolchain.browser
+    assert_equal "pinned", PROJECT.parse(minimal.merge(
+      "toolchain" => { "apt" => ["chromium"], "chrome" => "pinned" }).to_json).toolchain.browser
+    assert_equal "", PROJECT.parse(minimal.merge(
+      "toolchain" => { "apt" => ["chromium"] }).to_json).toolchain.browser
+
+    error = assert_raises(AgentsFyi::Upgrader::Project::Invalid) do
+      PROJECT.parse(minimal.merge(
+        "toolchain" => { "apt" => ["chromium"], "chrome" => "120.0.6099.109" }).to_json)
+    end
+    assert_includes error.message, "toolchain.chrome",
+      "the refusal did not name the field it is about: #{error.message}"
+  end
+
   def test_a_check_with_no_command_is_refused_because_it_could_not_be_run
     error = assert_raises(PROJECT::Invalid) do
       PROJECT.parse(minimal.merge("checks" => [{ "id" => "lint", "kind" => "lint" }]).to_json)

@@ -43,7 +43,13 @@ module AgentsFyi
       BLOCK = /\A\s{1,4}(\d+)\)\s+(.+?)\s*\z/
 
       # `     ActionView::Template::Error:` at the top, `     # NoMethodError:` inside the cause.
-      CLASS_LINE = /\A\s+(?:#\s+)?([A-Z][\w:]*(?:Error|Exception|Failure)):\s*\z/
+      # **`Class` is a suffix too**, because Ruby's exception names are not all `…Error`:
+      # `Psych::DisallowedClass` is the one the YAML-column repair is built from, and a parser that
+      # only knew `Error`/`Exception`/`Failure` left its class and its message unread. **`Data` is
+      # the third**, measured on ohana-api's 7.1.6 rung: `I18n::MissingTranslationData` is the class
+      # Rails 7.1 raises when a spec calls `I18n.t` on an undefined key, and without the suffix the
+      # failure read as an anonymous block whose message was the source excerpt.
+      CLASS_LINE = /\A\s+(?:#\s+)?([A-Z][\w:]*(?:Error|Exception|Failure|Class|Data)):\s*\z/
 
       # `     # ./app/views/bids/edit.html.erb:5:in ...` — only the application's own frames are
       # kept; a gem's frame names a library, not a file this walk may write.
@@ -80,6 +86,11 @@ module AgentsFyi
         frames = []
         caused_by = false
         awaiting = nil
+        # **The line after `Failure/Error:` is one of two things.** For an expectation it is the
+        # detail the assertion printed; for a raised exception it is the source excerpt, and the
+        # exception's own class and message follow below it. The flag is what tells the two apart
+        # when the class line arrives, so the excerpt is not left standing as the message.
+        excerpt = false
 
         lines.each do |raw|
           # The line's terminator is the file's, not the failure's: matching `\A…\z` against text
@@ -100,6 +111,7 @@ module AgentsFyi
             # line 113 failed and not what the expectation said, which is the whole of the evidence
             # a redirect's empty body is repaired from (`RedirectBodies`).
             awaiting = :error
+            excerpt = true
             next
           end
           if (found = line.match(FRAME))
@@ -113,7 +125,10 @@ module AgentsFyi
             else
               error = found[1]
               awaiting = :error
+              # The text read so far was the excerpt above the class, not the exception's message.
+              message = nil if excerpt
             end
+            excerpt = false
             next
           end
 

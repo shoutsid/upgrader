@@ -538,6 +538,32 @@ class ServeTest < Minitest::Test
       "the walker went to the destination instead of the checkpoint the service planned"
   end
 
+  # **A declaration accepted while the cycle is running belongs to the next target.** The cycle
+  # used to read the feed once, so a project the service published after that read was invisible
+  # until the next cycle — measured on a retry planned from the feed a moment before its accepted
+  # answer committed. The read is per target, so a queue with two repositories sees the second
+  # target's declaration even when it did not exist when the first was walked.
+  def test_a_project_published_mid_cycle_is_used_by_the_next_target
+    FakeStep.reset!(results: [
+      Result.new(verdict: "passed", to_version: "7.1.0"),
+      Result.new(verdict: "passed", to_version: "8.1.0")
+    ])
+    corpus = FakeCorpus.new(targets: [{ "repo_url" => "acme/one", "ref" => "main" },
+                                      { "repo_url" => "acme/two", "ref" => "main" }])
+    row = account_row("slug" => "two", "repo" => "acme/two")
+    corpus.define_singleton_method(:projects) do
+      { "projects" => FakeStep.calls.any? ? [row] : [] }
+    end
+
+    serve(corpus: corpus, cycles: 1, to: "7.1.0").run
+
+    assert_equal 2, FakeStep.calls.size
+    assert_equal "7.1.0", FakeStep.calls.first[:to]
+    assert_equal "8.1.0", FakeStep.calls.last[:to],
+      "the second target read the feed from before the project was published"
+    assert_equal "two", FakeStep.calls.last[:project].slug
+  end
+
   # **A passed checkpoint is followed by the next one from a fresh reading.** The project object the
   # cycle started with still names the stop that just passed; continuing from it would ask for the
   # same release, and the step would answer "already at". The feed is re-read after every pass.
@@ -909,6 +935,74 @@ class ServeTest < Minitest::Test
     assert_includes out.string, "pull/2"
     assert_equal "c0ffee01", RetryPublish.calls.last[:commit],
       "the retry did not carry the commit the first attempt produced"
+  end
+
+  # **A rung that passed while the loop was not publishing is a debt too, and the record is its
+  # evidence.** `step` publishes only with `--publish`, so a rung walked by hand settles with no
+  # delivery at all — and nothing revisits a settled rung, which is how the ohana walk reached 7.2.4
+  # on top of a 7.1.6 whose branch had never been pushed. The loop delivers it from the record's own
+  # last concern commit and tree, without walking anything, and writes the brief it rendered.
+  def test_a_passed_rung_that_was_never_published_is_delivered_from_its_record
+    FakeStep.reset!(results: [])
+    FakePublish.reset!
+    out = StringIO.new
+    tree = track(Dir.mktmpdir)
+    write_record(tree: tree, commits: %w[abc12345 def67890])
+    ledger = Ledger.load(File.join(home, "ledger.json"))
+    ledger.record(repo: "https://github.com/acme/storefront.git", commit: "b4se0000",
+      from_version: "5.0.0", to_version: "5.1.0", verdict: "passed")
+
+    serve(cycles: 1, to: "5.1.0", walk: true, publish: true, rungs: 1, ledger: ledger,
+      out: out).run
+
+    assert_equal 0, FakeStep.walked, "a rung that had already passed was walked again to publish it"
+    assert_equal 1, FakePublish.calls.size, "the rung was left with no delivery at all"
+    call = FakePublish.calls.first
+    assert_equal "def67890", call[:commit],
+      "the branch was not based on the last commit the record's own series names"
+    refute_nil call[:record], "the recovered delivery dropped the record, and with it the brief"
+    assert_equal "5.1.0", call[:to_version]
+    delivery = ledger.entries.find { |entry| entry.to_version == "5.1.0" }.delivery
+    assert_equal true, delivery["delivered"]
+    # **The first attempt of a rung that never had one names what a retry reads.** An entry that
+    # recorded only the outcome would leave the next cycle with no tree and no commit to publish.
+    assert_equal true, delivery["attempted"]
+    assert_equal tree, delivery["root"]
+    assert_equal "run-9", delivery["run_id"]
+    assert_includes out.string, "delivery: published"
+  end
+
+  # A rung with no delivery and no record cannot be published: the commit lived in the tree, and the
+  # corpus keeps the patch rather than the objects. It is stated and blocked, never guessed.
+  def test_a_passed_rung_with_neither_a_record_nor_a_delivery_is_stated
+    FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "5.1.0")])
+    FakePublish.reset!
+    out = StringIO.new
+    ledger = Ledger.load(File.join(home, "ledger.json"))
+    ledger.record(repo: "https://github.com/acme/storefront.git", commit: "b4se0000",
+      from_version: "5.0.0", to_version: "5.1.0", verdict: "passed")
+
+    serve(cycles: 1, to: "5.1.0", walk: true, publish: true, rungs: 1, ledger: ledger,
+      out: out).run
+
+    assert_empty FakePublish.calls, "a branch was built from a patch, which has no commits to push"
+    assert_includes out.string, "passed and was never published"
+    assert_includes out.string, "still have an undelivered checkpoint"
+  end
+
+  # The step's record, as the step writes it: a recovered delivery reads the tree, the concern
+  # series and the run the rung belongs to.
+  def write_record(tree:, commits:)
+    dir = File.join(home, "records")
+    FileUtils.mkdir_p(dir)
+    File.write(File.join(dir,
+      "#{AgentsFyi::Upgrader::Record.stem("https://github.com/acme/storefront.git", "5.0.0", "5.1.0")}.json"),
+      JSON.generate(
+        "repository" => "https://github.com/acme/storefront.git", "worktree" => tree,
+        "from_version" => "5.0.0", "to_version" => "5.1.0", "verdict" => "passed",
+        "run_id" => "run-9",
+        "commits" => commits.map { |commit| { "concern" => "step", "commit" => commit } }
+      ))
   end
 
   # **The site admin reads a feed, not the ledger.** The ledger is the loop's own book and is not

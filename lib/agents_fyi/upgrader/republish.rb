@@ -78,28 +78,17 @@ module AgentsFyi
 
       private
 
+      # **The record's own reader and its own path rule, not a second of either.** This used to
+      # rebuild the record by hand and dropped `commits`, `accepted_decisions`, `checks`,
+      # `app_update`, `toolchain` and `baseline`/`suite` along the way: a republished body said "this
+      # record does not carry a concern-commit series" about a record that carried one, and lost the
+      # accepted decision's question and answer. `Record.from_h` is the inverse of `to_h` and is what
+      # a replay is for, and `Record.path_for` is the one answer to which file a move's record is —
+      # the delivery recovery reads the same file by the same name.
       def record_for(entry)
-        path = File.join(@home.to_s, "records",
-          "#{Record.stem(entry.repo, entry.from_version, entry.to_version)}.json")
-        unless File.file?(path)
-          # A record written before the stem became readable, or by a build that still used
-          # the raw repository string. The fallback is read-only; a republish never writes a
-          # record.
-          legacy = "#{entry.repo.gsub(/[^A-Za-z0-9._-]/, "-")}-" \
-                   "#{entry.from_version}-#{entry.to_version}"
-          path = File.join(@home.to_s, "records", "#{legacy}.json")
-        end
-        return nil unless File.file?(path)
-
-        source = JSON.parse(File.read(path))
-        # **The record's own reader, not a second one that remembered fewer fields.** This used to
-        # rebuild the record by hand and dropped `commits`, `accepted_decisions`, `checks`,
-        # `app_update`, `toolchain` and `baseline`/`suite` along the way: a republished body said "this
-        # record does not carry a concern-commit series" about a record that carried one, and lost the
-        # accepted decision's question and answer. `Record.from_h` is the inverse of `to_h` and is what
-        # a replay is for.
-        Record.from_h(source)
+        Record.stored(@home, entry.repo, entry.from_version, entry.to_version)
       rescue JSON::ParserError, ArgumentError, TypeError => e
+        path = Record.path_for(@home, entry.repo, entry.from_version, entry.to_version)
         @out&.puts("republish: #{path} could not be read: #{e.class}: #{e.message}")
         nil
       end

@@ -104,6 +104,21 @@ class BootstrapTest < Minitest::Test
     assert_equal ["config/database.yml"], seeds.map(&:path)
   end
 
+  # **The example may sit before the extension rather than after it.** Figaro applications ship
+  # `config/application.example.yml` and ignore `config/application.yml`; measured on `ohana-api`,
+  # the rule saw the tracked example and the ignored target and copied neither, so `bin/rails`
+  # died on `Figaro::MissingKeys` in every stage after the install.
+  def test_an_example_before_the_extension_seeds_the_target
+    dir = repo({ "config/application.example.yml" => "API_PATH: api\n" },
+      ignore: "config/application.yml\n")
+
+    seeds, failures = Bootstrap.seed(dir)
+
+    assert_empty failures
+    assert_equal ["config/application.yml"], seeds.map(&:path)
+    assert_equal "API_PATH: api\n", File.read(File.join(dir, "config", "application.yml"))
+  end
+
   # `.sample` is the same promise under the other spelling, and a repository that uses it is
   # configured by the same rule.
   def test_a_sample_is_an_example_under_a_different_name

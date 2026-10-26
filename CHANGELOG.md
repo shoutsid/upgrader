@@ -8,17 +8,53 @@ versioning for its command-line surface and record format.
 
 ### Added
 
+- A browser suite runs in the era container without an edit to the application: the machine
+  writes Chromium's `/etc/chromium.d` drop-in (no sandbox, no `/dev/shm`) and seeds
+  `webdrivers`' cache from the driver Debian builds with the browser, so the gem's retired
+  storage endpoint is never asked. Both are recorded as a `browser` stage.
+- **A live-Debian era ships a pinned Chrome for Testing beside the distribution's Chromium, and
+  the project says whether its suite drives a browser and which one** (`toolchain.chrome`:
+  `pinned` or `distro`, and the key's absence means no browser at all, so a project without `:js`
+  examples pays nothing). The distribution's browser moves under a test stack that does not:
+  measured on `ohana-api`, 19 `:js` examples failed on bookworm's Chromium 156 and 1,557 examples
+  passed with 0 failures on 120, same tree and same bundle. An archived era's image carries no
+  browser, so the step installs its frozen package; a Firefox suite is the one browser package
+  that stays in `toolchain.apt`, because no era image carries Firefox.
 - A red suite's template route failures are repaired from the application's own router — the
   declared helper for a controller and action, with the variables its controller reads from
   `params` — and a repair that made the suite green is filed to the corpus as a report with the
   derived edit as its fix, so the next walk reads the failure and its answer instead of
   re-deriving them.
+- A serialized column the release refuses to load is repaired from the class the failure names:
+  the release's own `config.active_record.yaml_column_permitted_classes` line is written into
+  `config/application.rb`, once, before any component initializer reads a row.
+- A spec that asserted a response's MIME type reads it through `response.media_type` when 6.1's
+  `content_type` returns the header whole (charset included) — the release's own accessor for the
+  value the assertion was written against.
+- 7.0's moved translation setting is repaired from the removed setter the suite names:
+  `config.action_view.raise_on_missing_translations` moves to
+  `config.i18n.raise_on_missing_translations` in every environment file that carries it, value
+  unchanged.
+- A spec that identifies a link by a translation key the application never defines keeps the
+  `href:` it already names: 7.1 raises on a missing translation wherever `I18n.t` is called, and
+  the label half of the assertion could never have been a link's text. The failure parser also
+  reads a class ending in `Data` (`I18n::MissingTranslationData`) and keeps the exception's own
+  message when a source excerpt is printed above it.
+- 7.0's removed `ActiveModel::Errors#keys` is repaired from the NoMethodError that names the class:
+  the failing line reads `attribute_names`, the reader that answers the same list.
 - `--version`, so an issue can name the client build without reading the source.
 - A project queued from the service wakes a sleeping `serve` loop instead of waiting out the
   poll interval; the interval remains the fallback when the projects volume is not mounted.
 
 ### Fixed
 
+- A passed rung that was never published is delivered from its own record. `step` publishes only
+  with `--publish`, so a rung walked by hand while the loop was not publishing settled with no
+  delivery at all — nothing revisits a settled rung, so the chain kept a hole for ever (measured:
+  ohana 7.1.6 passed by hand at 19:17, and 7.2.4 was being measured on top of a checkpoint whose
+  branch had never been pushed). The loop now reads that rung's record — its last concern commit
+  and its tree — and publishes it without walking it again; a rung whose record is gone is stated
+  and its repository blocked rather than guessed at from the patch.
 - A patch checkpoint records the release its lockfile pins as the move's `from`, so a walk that
   starts at `4.1.16` chains each request on the branch below it instead of basing every one on
   the default branch.

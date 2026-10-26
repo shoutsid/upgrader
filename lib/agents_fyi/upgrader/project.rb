@@ -142,11 +142,24 @@ module AgentsFyi
         def to_h = { "policy" => policy, "model" => model_chain.join(",") }.compact
       end
 
-      Toolchain = Struct.new(:ruby, :node, :postgres, :extensions, :apt, :native,
+      # **A browser version is a fact about the application's test stack, not about the era.** The
+      # pair a step drives has to speak the protocol the application's `selenium-webdriver` was
+      # written for, and an era image's distribution browser moves under that stack: measured on
+      # `ohana-api`, 19 `:js` examples failed on bookworm's Chromium 156 and none on 120, same tree
+      # and same bundle. So `chrome` is a declaration, and **its presence is the claim itself** —
+      # the suite drives a browser — with its value naming which build: `pinned` (the one the era
+      # image verified) or `distro` (the release's own package). A project with no browser in its
+      # suite leaves the key out, and no browser stage runs for it; most Rails applications are that
+      # project.
+      Toolchain = Struct.new(:ruby, :node, :postgres, :extensions, :apt, :native, :chrome,
         keyword_init: true) do
+        # The browser this suite is measured on, or empty when it drives none.
+        def browser = chrome.to_s.strip
+
         def to_h
           { "ruby" => ruby, "node" => node, "postgres" => postgres,
-            "extensions" => extensions, "apt" => apt, "native" => native }.compact
+            "extensions" => extensions, "apt" => apt, "native" => native,
+            "chrome" => chrome }.compact
         end
       end
 
@@ -574,15 +587,23 @@ module AgentsFyi
           raise Invalid, "toolchain must be an object, not #{value.class}"
         end
 
-        unknown = value.keys - %w[ruby node postgres extensions apt native]
+        unknown = value.keys - %w[ruby node postgres extensions apt native chrome]
         raise Invalid, "unknown toolchain field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        browser = optional_text(value, "chrome")
+        unless browser.nil? || %w[pinned distro].include?(browser)
+          raise Invalid, "toolchain.chrome is #{browser.inspect}; the browser is `pinned` (the build " \
+                         "this era image verified) or `distro` (the Debian release's own package), " \
+                         "and a suite that drives none leaves the key out"
+        end
 
         Toolchain.new(
           ruby: optional_text(value, "ruby"), node: optional_text(value, "node"),
           postgres: optional_text(value, "postgres"),
           extensions: read_names(value["extensions"] || [], "toolchain.extensions"),
           apt: read_names(value["apt"] || [], "toolchain.apt"),
-          native: read_names(value["native"] || [], "toolchain.native")
+          native: read_names(value["native"] || [], "toolchain.native"),
+          chrome: browser
         )
       end
 

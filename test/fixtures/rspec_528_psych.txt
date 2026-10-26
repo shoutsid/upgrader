@@ -1,0 +1,15 @@
+  1) Legislation::AnnotationsController POST #create accepts a serialized range
+     Failure/Error: @annotation = Legislation::Annotation.new(annotation_params)
+
+     Psych::DisallowedClass:
+       Tried to load unspecified class: ActiveSupport::HashWithIndifferentAccess
+     # /usr/local/bundle/gems/activerecord-5.2.8.1/lib/active_record/coders/yaml_column.rb:51:in `yaml_load'
+     # ./app/controllers/legislation/annotations_controller.rb:52:in `create'
+     # ./spec/controllers/legislation/annotations_controller_spec.rb:18:in `block (3 levels) in <top (required)>'
+
+Finished in 1 minute 12 seconds (files took 3.4 seconds)
+3 examples, 1 failure
+
+Failed examples:
+
+rspec ./spec/controllers/legislation/annotations_controller_spec.rb:18 # Legislation::AnnotationsController POST #create accepts a serialized range
