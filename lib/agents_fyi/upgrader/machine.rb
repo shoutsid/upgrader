@@ -405,6 +405,19 @@ module AgentsFyi
         # somebody's laptop because they ran a step is not this tool's to do.
         def services? = true
 
+        # **Where a browser's driver is seeded, named the way the application's suite reads it.**
+        # `webdrivers` asks `WD_INSTALL_DIR` where its cache is, and the step points the suite at
+        # this directory; the driver Debian installs beside the browser is linked into it at the
+        # start of the step (`Step#prepare_browser`). It is under the container's home, which is
+        # the mounted volume, so the seed is written once per step rather than downloaded per
+        # run — and the application's own tree is not part of the answer.
+        #
+        # **One directory per era, because the volume is shared and the driver is the image's.**
+        # A walk serves several repositories at once, so a 2.7 step and a 3.3 step can seed at the
+        # same moment; one directory would leave the later one's `.version` beside the earlier one's
+        # binary, which reads to the gem as "a working driver" and starts the wrong browser's driver.
+        def browser_cache = "#{CONTAINER_HOME}/browser/#{era}/webdrivers"
+
         def image = entry.image
 
         # The machine's identity, for the ledger: the interpreter and the image it came from,

@@ -141,7 +141,7 @@ the others from a catalogue listing.
 | `delivery` | `{"provider":"none","chain":false}` when absent | where a passed rung goes: `provider` is `github` or `none`; `branch` defaults to `agents-fyi/upgrade-<release>` for GitHub; inside an object, `chain` defaults to `true`. |
 | `source_roots` | `[]` (the whole repository) | relative directories a rule may scan, for example `app`, `lib`, `components`, `engines`. An absolute path or one containing `..` is rejected. |
 | `checks` | `[]` | the rest of the application's gate, beside the suite. |
-| `toolchain` | none | build facts, carried and quoted; the overlay image that spends them is a later phase. |
+| `toolchain` | none | build facts, carried and quoted; the overlay image that spends them is a later phase. `chrome` chooses the browser a suite is measured on — see below. |
 | `style` | none | a formatter and the check that verifies it. |
 | `app_update` | see below | what `app:update` may adopt and whether framework defaults are stepped. |
 | `decisions` | `[]` | accepted decisions, with effects the walk applies on every run. |
@@ -149,6 +149,19 @@ the others from a catalogue listing.
 **An unknown key is an error, not a comment.** A typo is a setting that silently does nothing,
 and a walk that ignores a setting its operator believes is in force is the failure the
 declaration exists to prevent.
+
+**The browser is a project's choice, because the protocol has to match the test stack.**
+`toolchain.chrome` names the browser the suite's `:js` examples are measured on: `pinned` — the
+Chrome for Testing build the era image verified — or `distro`, the Debian release's own
+`chromium` package. **Its presence is the claim:** a project whose suite drives no browser
+leaves the key out and no browser stage runs, which is most Rails applications. An era whose
+Debian is still served by a moving repository has both builds, and `pinned` is the one a suite
+should start with because a distribution browser moves under an application measured against an
+older one (measured on `ohana-api`: 19 `:js` failures on Chromium 156, none on 120, same tree
+and same bundle). An archived era's browser is already frozen, and an era image that carries
+none installs its own package from the frozen archive. `apt` stays what the repository's own
+build installs: Chromium is the machine's, and only a Firefox suite puts a browser package
+there (`firefox-esr`, which no era image carries).
 
 ### A complete example
 
@@ -206,7 +219,8 @@ declaration exists to prevent.
     "postgres": "16",
     "extensions": ["pg", "nokogiri"],
     "apt": ["libvips42"],
-    "native": ["libvips"]
+    "native": ["libvips"],
+    "chrome": "pinned"
   },
   "style": {
     "format": "bundle exec rubocop -a",

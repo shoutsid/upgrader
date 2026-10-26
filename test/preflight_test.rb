@@ -81,10 +81,12 @@ class PreflightTest < Minitest::Test
   end
 
   def entry(gem:, kind: "replaced", replacement: nil, requirement: nil, mechanical: true,
-            note: "the digest's reason", source: "the index", condition: nil, forced: false)
+            note: "the digest's reason", source: "the index", condition: nil, forced: false,
+            only_if_locked: false)
     row = { "gem" => gem, "kind" => kind, "replacement" => replacement, "requirement" => requirement,
             "mechanical" => mechanical, "note" => note, "source" => source, "when" => condition }
-    forced ? row.merge("forced" => true) : row
+    row = row.merge("forced" => true) if forced
+    only_if_locked ? row.merge("only_if_locked" => true) : row
   end
 
   def setup
@@ -132,6 +134,50 @@ class PreflightTest < Minitest::Test
   end
 
   def read(dir, name) = File.read(File.join(dir, name))
+
+  # **An exact interpreter pin is a patch the matrix may not carry.** Ruby 2.7 is one image, and a
+  # Gemfile saying `ruby "2.7.5"` refuses every machine whose patch is 2.7.8 before the bundle is
+  # read. The application meant a minimum, so the pin becomes the floor it states; a `~>` would
+  # block the later rungs that need a newer minor, which is the move this tool exists to make.
+  def test_an_exact_interpreter_pin_becomes_the_floor_it_meant
+    dir = app(gemfile: %(source "https://rubygems.org"\nruby "2.7.5"\ngem "rails", "5.2.8"\n),
+      lockfile: PLAIN_LOCKFILE)
+
+    result = preflight(dir)
+
+    repair = result.repairs.find { |each| each.subject == "ruby" }
+    refute_nil repair, result.details.inspect
+    assert_equal %(ruby ">= 2.7.5"), read(dir, "Gemfile").lines[1].strip
+    assert_includes repair.note, "patch releases of a minor are compatible"
+  end
+
+  # A requirement is already the statement the exact pin should have been, and rewriting it would
+  # be a second opinion about an application's own bound.
+  def test_an_interpreter_requirement_is_left_alone
+    dir = app(gemfile: %(source "https://rubygems.org"\nruby "~> 2.7.5"\ngem "rails", "5.2.8"\n),
+      lockfile: PLAIN_LOCKFILE)
+
+    result = preflight(dir)
+
+    assert_empty result.repairs
+    assert_includes read(dir, "Gemfile"), %(ruby "~> 2.7.5")
+  end
+
+  # An engine is not a patch: the application is asking for a different interpreter than the
+  # matrix's MRI, and relaxing that line would let the walk run it on the wrong one.
+  def test_an_interpreter_pin_for_an_engine_is_left_alone
+    gemfile = <<~GEM
+      source "https://rubygems.org"
+      ruby "2.7.5", engine: "jruby", engine_version: "9.2.0"
+      gem "rails", "5.2.8"
+    GEM
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+
+    result = preflight(dir)
+
+    assert_empty result.repairs
+    assert_includes read(dir, "Gemfile"), %(engine: "jruby")
+  end
 
   # **A declaration is the repair for a gem the application does not hold yet, and there is no line
   # of the application's to rewrite.** Rails 4.2 brings `rails-html-sanitizer` in, that brings loofah
@@ -456,6 +502,77 @@ class PreflightTest < Minitest::Test
     assert_equal %w[loofah], later.repairs.map(&:subject)
     assert_includes read(dir, "Gemfile"), %(gem "loofah", "~> 2.22")
     refute_includes read(dir, "Gemfile"), "2.0.3"
+  end
+
+  # **A declaration is only written where the application already holds the gem.** Measured at the
+  # 7.1.6 rung: moving the `database_cleaner` meta-gem to 2.1 keeps `database_cleaner-active_record`
+  # 2.0.1 locked, because 2.1.0 asks `>= 2, < 3` — and 2.0.1 calls `SchemaMigration.table_name`,
+  # which the rung removed. The component's line is the repair, and `only_if_locked` is what keeps it
+  # from being written into an application that does not use the gem.
+  def test_a_declaration_marked_only_if_locked_needs_the_gem_in_the_lockfile
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "7.0.10"\ngem "database_cleaner", "~> 2.1"\n)
+    corpus = FakeCorpus.new(entries: [entry(gem: "database_cleaner-active_record", kind: "declared",
+      requirement: "~> 2.1", condition: { "rails_at_least" => "7.1" }, only_if_locked: true)])
+
+    without = app(gemfile: gemfile, lockfile: <<~LOCK)
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          database_cleaner (2.1.0)
+
+      DEPENDENCIES
+        database_cleaner
+    LOCK
+    result = preflight(without, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+
+    assert_empty result.repairs
+    refute_includes read(without, "Gemfile"), "database_cleaner-active_record"
+    assert(result.notes.any? { |note| note.include?("does not hold it") },
+      "a declaration skipped for the lockfile that does not hold the gem has to say so: " \
+      "#{result.notes.inspect}")
+
+    with = app(gemfile: gemfile, lockfile: <<~LOCK)
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          database_cleaner (2.1.0)
+            database_cleaner-active_record (>= 2, < 3)
+          database_cleaner-active_record (2.0.1)
+
+      DEPENDENCIES
+        database_cleaner
+    LOCK
+    held = preflight(with, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+    assert_equal %w[database_cleaner-active_record], held.deferred.map { |deferred| deferred["gem"] }
+
+    Preflight.new(root: with, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+      .declare_deferred(held.deferred)
+    assert_includes read(with, "Gemfile"), %(gem "database_cleaner-active_record", "~> 2.1")
+  end
+
+  # **A line with no version at all, which is the shape the real Gemfile had.** Measured at
+  # ohana-api's 7.1 rung: bullet is declared as a bare `gem 'bullet'`, and 7.0.1 raises from its own
+  # dependency check inside `Bundler.require` — `Bullet does not support active_record 7.1.6 yet` —
+  # before `app:update` runs a single stage. There is no old requirement to replace, so the rewrite
+  # has to *add* one, and the entry is rung-scoped so it lands after the pin rather than beside a
+  # Gemfile that still names 7.0.
+  def test_an_unversioned_line_scoped_to_the_rung_gains_the_requirement_after_the_pin
+    gemfile = %(source "https://rubygems.org"\ngroup :development do\n  gem 'bullet'\nend\ngem "rails", "7.0.10"\n)
+    corpus = FakeCorpus.new(entries: [entry(gem: "bullet", replacement: "bullet",
+      requirement: "~> 8.0", condition: { "rails_at_least" => "7.1" })])
+
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    result = preflight(dir, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+
+    assert_equal %w[bullet], result.deferred.map { |deferred| deferred["gem"] }
+    assert_includes read(dir, "Gemfile"), "  gem 'bullet'\n"
+
+    later = Preflight.new(root: dir, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+      .declare_deferred(result.deferred)
+
+    assert_equal %w[bullet], later.repairs.map(&:subject)
+    assert_includes read(dir, "Gemfile"), %(  gem "bullet", "~> 8.0")
+    assert_includes read(dir, "Gemfile"), "end\n", "the group block around the line is still closed"
   end
 
   # **The other half of the same rule: `ruby`-scoped is the machine, so it stays here.** The install

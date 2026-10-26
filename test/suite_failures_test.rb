@@ -15,6 +15,18 @@ class SuiteFailuresTest < Minitest::Test
   # learn.
   DIASPORA = File.expand_path("fixtures/rspec_71_diaspora.txt", __dir__)
 
+  # **The YAML-column failure, copied from the Consul 5.2.8.1 rung.** Its exception is
+  # `Psych::DisallowedClass`, which ends in `Class` rather than `Error`, and the parser's class
+  # pattern used to know only the three common suffixes — so the class and the message were
+  # dropped while the file and line still parsed.
+  YAML_COLUMNS = File.expand_path("fixtures/rspec_528_psych.txt", __dir__)
+
+  # **The 7.1.6 failure whose class is not an `…Error` and whose message is below its source
+  # excerpt.** Copied whole from ohana-api's rung: Rails 7.1 raises
+  # `I18n::MissingTranslationData` for a spec's undefined key, the class ends in `Data`, and the
+  # line after `Failure/Error:` is the two-line excerpt rather than the message.
+  MISSING_TRANSLATION = File.expand_path("fixtures/rspec_71_missing_translation.txt", __dir__)
+
   # Not `failures`: Minitest::Test already owns that name for the assertions that failed.
   def parsed = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
 
@@ -76,5 +88,29 @@ class SuiteFailuresTest < Minitest::Test
     assert_equal "ActionView::Template::Error", first.error
     assert_equal "undefined method `bid_path' for #<#<Class:0x00005578e9acc7d8>:0x00005578e910c7e8>",
       first.message
+  end
+
+  # The failure a serialized column raises after the CVE-2022-32224 backport. Its class is the
+  # evidence the YAML-column repair acts on, and the permitted class is in the sentence below it.
+  def test_a_disallowed_class_is_read_as_the_exception_and_its_class_name
+    failure = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(YAML_COLUMNS)).first
+
+    assert_equal "Psych::DisallowedClass", failure.error
+    assert_includes failure.message, "ActiveSupport::HashWithIndifferentAccess"
+    assert_equal "app/controllers/legislation/annotations_controller.rb", failure.file
+    assert_equal 52, failure.line
+  end
+
+  # **The excerpt above a class is not the exception's message.** RSpec prints the source after a
+  # bare `Failure/Error:`, then the class and its own sentence; a parser that took the first
+  # non-empty line as the message kept `expect(page).` and lost `translation missing: …`, which
+  # is the only line a repair can act on.
+  def test_a_class_line_after_a_source_excerpt_takes_the_message_below_it
+    failure = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(MISSING_TRANSLATION)).first
+
+    assert_equal "I18n::MissingTranslationData", failure.error
+    assert_equal "translation missing: en.admin.navigation.locations", failure.message
+    assert_equal "spec/features/admin/dashboard_spec.rb", failure.file
+    assert_equal 28, failure.line
   end
 end

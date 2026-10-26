@@ -1,0 +1,26 @@
+Failures:
+
+  1) Admin Home page when not signed in does not include a link to Your locations in the navigation
+     Failure/Error:
+       expect(page).
+         not_to have_link I18n.t('admin.navigation.locations'), href: admin_locations_path
+
+     I18n::MissingTranslationData:
+       translation missing: en.admin.navigation.locations
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/activesupport-7.1.6/lib/active_support/i18n_railtie.rb:90:in `block in setup_raise_on_missing_translations_config'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/i18n-1.10.0/lib/i18n.rb:396:in `handle_exception'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/i18n-1.10.0/lib/i18n.rb:226:in `translate'
+     # ./spec/features/admin/dashboard_spec.rb:28:in `block (4 levels) in <top (required)>'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/capybara-3.37.1/lib/capybara/session.rb:363:in `within'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/capybara-3.37.1/lib/capybara/dsl.rb:52:in `call'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/capybara-3.37.1/lib/capybara/dsl.rb:52:in `within_element'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/capybara-3.37.1/lib/capybara/rspec/matcher_proxies.rb:15:in `within'
+     # ./spec/features/admin/dashboard_spec.rb:26:in `block (3 levels) in <top (required)>'
+     # /agents-fyi/bundles/7d1698e5a6276b1c/2.7/ruby/2.7.0/gems/webmock-3.14.0/lib/webmock/rspec.rb:37:in `block (2 levels) in <top (required)>'
+
+Finished in 4 minutes 47.4 seconds (files took 2.45 seconds to load)
+1554 examples, 1 failure, 1 pending
+
+Failed examples:
+
+rspec ./spec/features/admin/dashboard_spec.rb:25 # Admin Home page when not signed in does not include a link to Your locations in the navigation

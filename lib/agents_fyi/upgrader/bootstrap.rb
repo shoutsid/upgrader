@@ -48,7 +48,14 @@ module AgentsFyi
       # here whole rather than only `vendor/bundle`: a vendored gem's test fixture named
       # `something.example` is not this application's configuration.
       SKIP_DIRECTORIES = %w[.git node_modules vendor log tmp coverage storage].freeze
-      SUFFIXES = %w[.example .sample].freeze
+
+      # **The example can come before the extension as well as after it.** `config/database.yml.example`
+      # is the spelling this rule was written for; Figaro applications ship
+      # `config/application.example.yml`, whose target is `config/application.yml` — the same promise,
+      # one suffix further left. Measured on `ohana-api`: the example was tracked and the target
+      # ignored, and the rule looked past it, so `bin/rails` died on `Figaro::MissingKeys` for every
+      # stage after the install.
+      EXAMPLE = %r{\.(example|sample)(\.[^./]+)?\z}
 
       def self.seed(root, out: nil)
         new(root: root, out: out).seed
@@ -90,10 +97,10 @@ module AgentsFyi
             next
           end
 
-          suffix = SUFFIXES.find { |candidate| path.end_with?(candidate) }
-          next if suffix.nil?
+          match = path.match(EXAMPLE)
+          next if match.nil?
 
-          target = path.delete_suffix(suffix)
+          target = path.sub(EXAMPLE, match[2].to_s)
           next if File.exist?(target)
           next unless ignored?(target)
           next unless tracked?(path)

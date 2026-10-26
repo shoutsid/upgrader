@@ -274,6 +274,14 @@ module AgentsFyi
 
       def walk_spec(spec)
         repository, ref = self.class.split(spec)
+        # **A declaration accepted while the cycle is running is still a declaration.** The feed was
+        # read when the cycle began, and an answer accepted after that read was not in the object
+        # this spec would otherwise use — measured on a project whose retry was planned from the
+        # feed read a moment before its accepted answer committed, so the step asked again for a
+        # decision the service already had. The read is per target rather than per step: a target
+        # is where a queue row is priced, and a feed read between two targets is cheap next to the
+        # step that follows it.
+        refresh_account_projects!
         # **The queue names the repository; the declaration says how to walk it.** A loop can serve
         # several applications without being told which file belongs to which row, because the
         # declaration's own repository is the join.
@@ -499,16 +507,37 @@ module AgentsFyi
       # re-walking the rung would both spend it again and change the commit the branch should carry.
       # A tree that is gone cannot be retried (the commit was in it, and the corpus holds the patch but
       # not the objects), so that is said rather than silently skipped.
+      #
+      # **A rung with no attempt at all is a debt too, and it is the shape a loop leaves behind.**
+      # `step --publish` is the one-shot's switch, so a rung walked by hand — or by a loop started
+      # without `--publish`, or before the deployment turned publishing on — passes and records no
+      # delivery. Nothing revisits a settled rung, so without this the chain keeps a hole for ever:
+      # measured on the ohana walk, 7.1.6 passed by hand at 19:17 and by 19:53 the next rung was being
+      # measured on top of a checkpoint whose branch had never been pushed. The evidence for it is the
+      # record the step wrote — its concern commits, its tree, its brief — so the delivery is read from
+      # there rather than by re-walking the rung, and a rung whose record is gone is *said*, not
+      # guessed: a branch cannot be built from a patch.
       def retry_delivery
         blocked = []
         return blocked if @ledger.nil?
 
         @ledger.entries.each do |entry|
           delivery = entry.delivery
-          next unless entry.verdict == Ledger::PASSED && delivery.is_a?(Hash)
-          next unless delivery["attempted"] == true && delivery["delivered"] != true
+          next unless entry.verdict == Ledger::PASSED
+          next if delivery.is_a?(Hash) && delivery["delivered"] == true
+          next if delivery.is_a?(Hash) && delivery["attempted"] != true
 
-          root = delivery["root"].to_s
+          recovered = !delivery.is_a?(Hash)
+          record = recovered ? record_for(entry) : nil
+          commit = recovered ? record_head(record) : delivery["commit"].to_s
+          root = recovered ? record&.worktree.to_s : delivery["root"].to_s
+          if recovered && (record.nil? || commit.empty?)
+            @out.puts("serve: #{entry.repo} — #{entry.to_version} passed and was never published, " \
+                      "and no record of it was kept, so the commit to publish is not known here: " \
+                      "the branch cannot be rebuilt from the patch alone")
+            blocked << Repository.name(entry.repo)
+            next
+          end
           unless File.directory?(root)
             @out.puts("serve: #{entry.repo} — the delivery of #{entry.to_version} cannot be retried: " \
                       "the tree at #{root} is gone")
@@ -519,28 +548,37 @@ module AgentsFyi
           end
 
           project = project_for(entry.repo)
-          base_ref = delivery["base_ref"].to_s
+          base_ref = delivery.is_a?(Hash) ? delivery["base_ref"].to_s : ""
           base_ref = project.base_ref if base_ref.empty? && project && !project.base_ref.to_s.empty?
-          chain = delivery.key?("chain") ? delivery["chain"] != false :
+          pattern = delivery.is_a?(Hash) ? delivery["branch_pattern"] : nil
+          chain = delivery.is_a?(Hash) && delivery.key?("chain") ? delivery["chain"] != false :
             (project.nil? ? true : project.delivery.chain)
           publisher = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
-            to_version: entry.to_version, record: nil, commit: delivery["commit"].to_s,
+            to_version: entry.to_version, record: record, commit: commit,
             out: @out, token: github_token(entry.repo),
-            branch_pattern: delivery["branch_pattern"],
+            branch_pattern: pattern,
             report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref, chain: chain
           )
           result = publisher.call
-          @out.puts("serve: #{entry.repo} — delivery retry: #{result}")
-          state = delivery.merge(
+          @out.puts("serve: #{entry.repo} — #{recovered ? "delivery" : "delivery retry"}: #{result}")
+          # **What a recovered attempt must write down is what a retry reads.** The first attempt of a
+          # rung that never had one is where its `root`, `commit`, pattern and chain are first named;
+          # an entry that recorded only the outcome would leave the next cycle with nothing to retry.
+          state = (delivery.is_a?(Hash) ? delivery : {}).merge(
             "attempted" => true,
             "delivered" => delivered?(result, entry.repo),
             "branch" => result.branch,
-            "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
+            "commit" => result.commit.to_s.empty? ? commit : result.commit,
             "pull_request" => result.pull_request,
             "stack" => result.stack,
             "reason" => result.reason,
-            "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : delivery["brief"].to_s
+            "brief" => publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s : "",
+            "root" => root,
+            "branch_pattern" => pattern.to_s,
+            "base_ref" => base_ref.to_s,
+            "chain" => chain,
+            "run_id" => (delivery.is_a?(Hash) ? delivery["run_id"] : record&.run_id)
           )
           @ledger.deliver(
             repo: entry.repo, commit: entry.commit,
@@ -551,6 +589,30 @@ module AgentsFyi
           blocked << Repository.name(entry.repo) unless delivered?(result, entry.repo)
         end
         blocked.uniq
+      end
+
+      # The commit a recovered delivery publishes: the last of the record's own concern series, which
+      # is the tree's head when the step finished. A record written before the series existed falls
+      # back to the tree's `HEAD`, and a tree that is gone answers nothing rather than a guess.
+      def record_head(record)
+        return "" if record.nil?
+
+        named = Array(record.commits).filter_map do |commit|
+          commit.is_a?(Hash) ? commit["commit"] : commit
+        end.last
+        return named.to_s unless named.to_s.strip.empty?
+
+        Source.head_of(record.worktree).to_s
+      end
+
+      # The record a move left behind, or nil. **Not a failure to read it here**: a rung whose record
+      # is gone is stated by the caller, which is where the decision about the branch is made.
+      def record_for(entry)
+        Record.stored(@home, entry.repo, entry.from_version, entry.to_version)
+      rescue JSON::ParserError, ArgumentError, TypeError => e
+        @out.puts("serve: #{entry.repo} — the record of #{entry.to_version} could not be read: " \
+                  "#{e.class}: #{e.message}")
+        nil
       end
 
       # The operator's list wins when there is one — a deployment that named its repositories

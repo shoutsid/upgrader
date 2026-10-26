@@ -68,6 +68,11 @@ module AgentsFyi
       # repair and a scanned edit the same way.
       Repair = Struct.new(:path, :line, :text, :after, :subject, :note, keyword_init: true)
 
+      # A Gemfile `ruby` directive, with the indentation, the quote the application used and
+      # whatever follows the version. The rest is kept out of the rewrite: an `engine:` names a
+      # different interpreter, and a comment is a sentence this class has no business editing.
+      RUBY_DIRECTIVE = /\A(\s*)ruby\s+(["'])([^"']+)\2(.*)\z/
+
       # Nothing here is an application.
       class NotAnApplication < StandardError; end
 
@@ -156,7 +161,8 @@ module AgentsFyi
             "preflight — this tool moves Rails applications"
         end
 
-        repairs = protocol_repairs + ruby_removal_repairs + framework_removal_repairs
+        repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
+          framework_removal_repairs
         decisions = []
         notes = []
         deferred = []
@@ -200,6 +206,50 @@ module AgentsFyi
       end
 
       private
+
+      # **An exact interpreter pin names a patch the matrix may not have.** The walk's matrix is one
+      # image per era — 2.7 is Ruby 2.7.8 — and a Gemfile saying `ruby "2.7.5"` is a statement Bundler
+      # enforces, so every era but the exact patch is refused before the bundle is read. That is a fact
+      # about the application's deployment note, not about the move: patch releases of a minor are
+      # compatible, and the application's own CI keeps running 2.7.5. The repair is the *floor* the
+      # application meant, `>= 2.7.5`, rather than a pessimistic `~>`: a `~>` would block the later
+      # rungs whose interpreter is a newer minor, which is the one thing a walk exists to cross.
+      #
+      # A line carrying an `engine:`, an `engine_version:` or a comment is not touched: the first two
+      # name a different interpreter, and the last is a sentence whose meaning this class cannot read.
+      def ruby_pin_repairs
+        path = File.join(@root, "Gemfile")
+        return [] unless File.file?(path)
+
+        lines = File.binread(path).split("\n", -1)
+        changed = false
+        repairs = lines.each_with_index.filter_map do |line, index|
+          after = relaxed_ruby_pin(line)
+          next if after.nil?
+
+          lines[index] = after
+          changed = true
+          Repair.new(path: "Gemfile", line: index + 1, text: line, after: after, subject: "ruby",
+            note: "the application pins an exact interpreter patch; patch releases of a minor are " \
+                  "compatible, and a floor keeps the minimum without refusing the rung's newer era")
+        end
+        File.binwrite(path, lines.join("\n")) if changed
+        repairs
+      end
+
+      # One `ruby` line made a floor, or nil when it is already a requirement or carries an option
+      # this class will not rewrite. Only a bare numeric requirement is exact enough to relax; a
+      # range, a `~>`, a comment or an engine is a different statement.
+      def relaxed_ruby_pin(line)
+        match = RUBY_DIRECTIVE.match(line)
+        return nil unless match
+
+        indent, quote, version, rest = match.captures
+        return nil unless rest.to_s.strip.empty?
+        return nil unless version.match?(/\A\d+(?:\.\d+)*\z/)
+
+        %(#{indent}ruby #{quote}>= #{version}#{quote})
+      end
 
       # `git://` was accepted until GitHub turned it off in 2022, and every 2013 Gemfile that
       # pinned a fork carries it — literally, or through Bundler's `github:` shorthand. Both
@@ -463,6 +513,22 @@ module AgentsFyi
         unless holds?(entry)
           notes << "the digest's entry for #{name} was not applied: #{why_not(entry)} " \
                    "(#{condition_sentence(entry)}) — #{entry["note"]}"
+          return
+        end
+
+        # **A declaration for a gem the application only carries transitively is written only
+        # where the lock says it carries it.** Measured at the 7.1 rung: the digest's
+        # `database_cleaner ~> 2.1` moves the meta-gem, 2.1.0's requirement on
+        # `database_cleaner-active_record` is `>= 2, < 3`, and the conservative resolve keeps the
+        # locked 2.0.1 — whose `SchemaMigration.table_name` the rung removed. The component's line
+        # is the repair, and the application declares no line of its own, so it is a declaration;
+        # `only_if_locked` is what keeps that declaration off an application that does not use the
+        # gem at all. Read from the lockfile rather than from the caller, because the lockfile is
+        # the one fact that says whether the gem is installed.
+        if entry["only_if_locked"] == true && !locked_gems.include?(name)
+          notes << "the digest's entry for #{name} was not applied: the application's lockfile " \
+                   "does not hold it, and a declaration is only written where the gem is already " \
+                   "installed — #{entry["note"]}"
           return
         end
 

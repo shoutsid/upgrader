@@ -50,6 +50,30 @@ module AgentsFyi
       # Which machine this step executes on — see `Machine::RUNTIME_ENV` for the three answers.
       RUNTIME_ENV = Machine::RUNTIME_ENV
 
+      # **The browser packages, and the three paths that go with them.** `chromium` is Debian's
+      # package — the one a live-era image installs at build time and an archived era's step installs
+      # from its frozen archive — and its launcher sources `/etc/chromium.d/*` before exec'ing the
+      # browser, which is why the walk's answer can be a file in the machine rather than a line in the
+      # application.
+      BROWSER_PACKAGES = %w[chromium chromium-driver].freeze
+      CHROMIUM_FLAGS = "/etc/chromium.d/agents-fyi"
+      CHROMIUM_FLAGS_VALUE = %(CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-dev-shm-usage")
+      SYSTEM_DRIVER = "/usr/bin/chromedriver"
+
+      # **The browser an era image pins, and the two names a step points at it.** A live Debian's
+      # `chromium` is whatever the repository served that morning, and the protocol an application's
+      # test stack speaks does not move with it — measured on `ohana-api`, 19 `:js` failures on
+      # bookworm's Chromium 156 and none on 120, same tree and same bundle. The image keeps both
+      # browsers and the project declares which it is measured on (`toolchain.chrome`); these are
+      # the paths the image's own build writes (see `images/Dockerfile`).
+      BROWSER_BINARY = "/usr/bin/chromium"
+      # The archive's own directory name, because chromedriver's finder globs `/opt/*/chrome` and a
+      # browser unpacked to that name was `execvp`'d as a directory — see `images/Dockerfile`.
+      PINNED_BROWSER = "/opt/agents-fyi-browser/chrome-linux64/chrome"
+      PINNED_LAUNCHER = "/usr/local/bin/agents-fyi-browser"
+      PINNED_DRIVER = "/opt/agents-fyi-browser/chromedriver"
+
+
       # How many new framework defaults one step may try. **Off unless a number says otherwise**,
       # because every toggle is a suite run: the same posture as the repair budget, for the same
       # reason — a deployment decides what it spends.
@@ -321,6 +345,10 @@ module AgentsFyi
         @out.puts("  interpreter: #{@machine.interpreter}" \
                   "#{@machine.image.to_s.empty? ? "" : ", image #{@machine.image}"}") if @out
         return finish(install_record(install, stages)) unless install.ok?
+
+        # The browser, if this project's declaration names one, on the machine that installed the
+        # bundle rather than on every candidate the probe tried.
+        prepare_browser(stages, @machine)
 
         # The services the suite expects, started before anything is measured, and a
         # required stage: a suite that ran without its database failed for a reason nobody
@@ -921,6 +949,8 @@ module AgentsFyi
                   "#{@machine.image.to_s.empty? ? "" : ", image #{@machine.image}"}") if @out
         return finish(install_record(install, stages)) unless install.ok?
 
+        prepare_browser(stages, @machine)
+
         services = services_stage(stages)
         if services && !services.ok?
           verdict, why = Record.verdict(baseline: nil, suite: nil, stages: stages)
@@ -1216,6 +1246,121 @@ module AgentsFyi
                     "anyway, and this stage says why it may fail")
         end
         stage
+      end
+
+      # **A browser suite is answered by the machine, not by the application's tree.** The walk
+      # measures the application's own suite, and an application with `:js` examples runs a real
+      # Chromium. Two things stop it in an era container, and neither is the application's to fix:
+      #
+      # * **The browser's sandbox needs a capability this walk will not grant.** Chromium's setuid
+      #   helper builds a network and a PID namespace, which needs `CAP_SYS_ADMIN`; handing that to
+      #   a container that executes an untrusted repository's bundle would trade the step's isolation
+      #   for a browser's. Debian's launcher sources `/etc/chromium.d/*` before it execs, so the
+      #   machine turns the sandbox off there — the disposable container, not the browser, is the
+      #   boundary that matters. Measured in the 2.7 era: without the flag every example dies with
+      #   `session not created: DevToolsActivePort file doesn't exist`.
+      # * **The driver gem asks an endpoint that retired the image's browser.** `webdrivers` looks up
+      #   the driver for the installed build on `chromedriver.storage.googleapis.com`, which stopped
+      #   publishing for current Chromium; the driver Debian installs is built *with* the browser.
+      #   The machine seeds `webdrivers`' own cache directory from it, so the gem's update check finds
+      #   a correct local binary and never asks the network. Measured in the 3.3 era: Chromium 156,
+      #   long past the endpoint's last release.
+      #
+      # Both are configuration of the machine the application is measured on. The alternative that
+      # was written first — a support file in the application's `spec/` and a `webdrivers` floor in
+      # its Gemfile — is a change to the repository under measurement, which is the one thing a
+      # baseline must not need.
+      #
+      # **Which browser is the project's to say, because the pair has to speak the protocol its
+      # test stack was written for.** `toolchain.chrome` names `pinned` (the build the era image
+      # verified) or `distro` (the Debian release's own package), and its *presence* is the claim
+      # that the suite drives a browser at all — a project with no `:js` examples leaves the key out
+      # and pays for nothing here, which is most projects. A live release's `chromium` moves under an
+      # application that was measured against an older one — measured on `ohana-api`, 19 `:js`
+      # examples failed on 156 and none on 120 — so the machine offers both and the declaration
+      # chooses.
+      def prepare_browser(stages, machine)
+        choice = @project&.toolchain&.browser.to_s
+        return if choice.empty?
+        return unless machine.respond_to?(:root_command) && machine.respond_to?(:browser_cache)
+
+        @out&.puts("  browser: #{choice} — installed where the image has none, sandbox off, " \
+                   "driver seeded from the image") if @out
+        # **An archived era's image carries no browser**, because a live repository's package would
+        # have been the wrong one to bake; its own frozen archive still has the pair, so the step
+        # installs it. On a live era both executables are already there and this is one `test`.
+        stages << command(Record::BROWSER, ["sh", "-lc", browser_install_command],
+          chdir: @worktree.root, machine: machine, root: true,
+          display: ["apt-get", "install", *BROWSER_PACKAGES])
+        stages << command(Record::BROWSER, ["sh", "-lc", browser_flags_command],
+          chdir: @worktree.root, machine: machine, root: true,
+          display: ["chromium", "--no-sandbox", "--disable-dev-shm-usage"])
+        # **The project's choice, applied to the two names the suite and the driver gem read.** A
+        # declaration that says `distro` keeps the release's own package (already on `/usr/bin`),
+        # and one that says `pinned` — or nothing — gets the image's build where it has one. The
+        # guard is `[ -x ]`, so an archived era whose image carries no pinned pair is unchanged.
+        unless choice == "distro"
+          stages << command(Record::BROWSER, ["sh", "-lc", browser_pin_command],
+            chdir: @worktree.root, machine: machine, root: true,
+            display: ["chromium", "--version"])
+        end
+        stages << command(Record::BROWSER, ["sh", "-lc", browser_seed_command(machine)],
+          chdir: @worktree.root, machine: machine, display: ["chromedriver", "--version"])
+        @browser_prepared = true
+      end
+
+      # **The browser the image does not have is installed from the era's own archive.** The guard
+      # asks both executables because a half-installed pair is the failure this has to survive: a
+      # browser without its driver is a `session not created` the step would otherwise report as the
+      # application's.
+      def browser_install_command
+        <<~SH
+          if [ ! -x #{BROWSER_BINARY} ] || [ ! -x #{SYSTEM_DRIVER} ]; then
+            apt-get update && apt-get install -y --no-install-recommends #{BROWSER_PACKAGES.join(" ")}
+          fi
+        SH
+      end
+
+      # The two links, and both versions read back so the record says which pair measured the rung.
+      # `ln -sf` replaces Debian's `/usr/bin/chromium` symlink rather than editing the package: the
+      # container is disposable and the package is still there for a `distro` project.
+      def browser_pin_command
+        <<~SH
+          if [ -x #{PINNED_BROWSER} ]; then
+            ln -sf #{PINNED_LAUNCHER} #{BROWSER_BINARY}
+            ln -sf #{PINNED_DRIVER} #{SYSTEM_DRIVER}
+          fi
+          chromium --version
+          chromedriver --version
+        SH
+      end
+
+      # The launcher's drop-in, written with the value quoted so the launcher's own line appends
+      # to whatever another file set. `mkdir` because a machine with the driver but not the
+      # browser package has no directory yet, and a missing one is a silent no-op otherwise.
+      def browser_flags_command
+        "mkdir -p #{File.dirname(CHROMIUM_FLAGS)} && printf '%s\\n' " \
+          "#{Shellwords.escape(CHROMIUM_FLAGS_VALUE)} > #{CHROMIUM_FLAGS}"
+      end
+
+      # **The driver Debian built with the browser, linked into the cache `webdrivers` reads.** A
+      # symlink rather than a copy because the two are one release, and the version file is what
+      # makes the gem's update check a local answer: with a valid cache and a driver whose build
+      # is the browser's, `Webdrivers::Chromedriver.update` returns this path and asks nothing.
+      # Both facts are read inside the machine, which is the only place that knows either, and
+      # the directory is the machine's own (`browser_cache`), so two eras sharing the volume do
+      # not overwrite each other's driver.
+      def browser_seed_command(machine)
+        cache = machine.browser_cache
+        <<~SH
+          if [ -x #{SYSTEM_DRIVER} ]; then
+            mkdir -p #{cache}
+            ln -sf #{SYSTEM_DRIVER} #{cache}/chromedriver
+            chromedriver --version | awk '{print $2}' > #{cache}/chromedriver.version
+          fi
+          chromium --version
+          chromedriver --version
+        SH
       end
 
       # **Every gem the installer was building a native extension for, because it builds them in
@@ -1814,7 +1959,17 @@ module AgentsFyi
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
         @tests.machine_test_env(@stack).merge(bundle_env(@machine))
-          .merge(project_env).merge(@suite_env)
+          .merge(project_env).merge(@suite_env).merge(browser_env)
+      end
+
+      # **The cache the machine seeded, named the way the driver gem reads it.** Only a machine
+      # that prepared a browser has one, and only after the packages stage ran; a host walk sets
+      # nothing, so an application that downloads its own driver behaves as it does on a
+      # developer's machine.
+      def browser_env
+        return {} unless @browser_prepared && @machine.respond_to?(:browser_cache)
+
+        { "WD_INSTALL_DIR" => @machine.browser_cache }
       end
 
       # **The bundle's own groups, detected rather than assumed.** The tool's path settings are
@@ -2093,8 +2248,38 @@ module AgentsFyi
           # It edits the assertion that read the body the release no longer sends, so it is asked
           # beside `Associations` and before the route table is read: a rung whose suite failed on
           # three redirect assertions and nothing else must not pay a boot for a router it never uses.
+          #
+          # **A serialized column the release refuses to load is the fourth**, and it is the same
+          # shape: the failure names the class and the application's own `config/application.rb`
+          # names the setting, so no router is read. It is asked here, before the boot, because a
+          # failure it explains is one the route table cannot.
+          #
+          # **A response header the release returns whole is the fifth**, and it is another
+          # assertion the failure names: 6.1's `content_type` includes the charset where the spec
+          # asserted a MIME type, and `media_type` is the reader the assertion was written against.
+          # No router is read for it either.
+          #
+          # **A setting the release moved namespaces is the sixth**, and the failure is the removed
+          # setter itself: 7.0 no longer answers `ActionView::Base.raise_on_missing_translations=`,
+          # so the line moves to `config.i18n.raise_on_missing_translations` in every environment
+          # file that carries it. No boot and no router are read for it.
+          #
+          # **A method the release removed is the seventh**, and the class in the NoMethodError is
+          # the evidence: `ActiveModel::Errors#keys` is `attribute_names`, and the line the failure
+          # names is the call. A Hash's `keys` is not this family's, which is why the class is read.
+          #
+          # **A translation the application never defines is the eighth**, and 7.1 is what makes it
+          # one: the missing-translation setting now applies to every `I18n.t`, so a spec that names
+          # a link's text by a key the application never had treats a `translation missing:` string
+          # as a label and then raises. The repair keeps the `href:` the spec already names, which
+          # is the half that identifies the link. No boot and no router are read for it either.
           edits = Associations.for(root: @worktree.root, failures: failures)
           edits += RedirectBodies.for(root: @worktree.root, failures: failures)
+          edits += ResponseContentTypes.for(root: @worktree.root, failures: failures)
+          edits += TranslationSettings.for(root: @worktree.root, failures: failures)
+          edits += ErrorsKeys.for(root: @worktree.root, failures: failures)
+          edits += YamlColumns.for(root: @worktree.root, failures: failures)
+          edits += MissingTranslations.for(root: @worktree.root, failures: failures)
           routes = if edits.empty?
             Routes.read(machine: @machine, root: @worktree.root, env: application_env, stack: @stack)
           else
