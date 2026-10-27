@@ -249,8 +249,8 @@ module Agents
         call(:get, "/api/upgrades/runs/#{URI.encode_www_form_component(run_id.to_s)}/presentation")
       end
 
-      # The walker's claim that it wrote the lead; the service checks the digest against the
-      # editorial plus the deterministic body it holds.
+      # The walker's claim that it wrote the presentation; the service checks the digest against the
+      # composed body it holds (the narrative override, or the lead plus the deterministic body).
       def presentation_applied(run_id, applied_digest:)
         call(:post, "/api/upgrades/runs/#{URI.encode_www_form_component(run_id.to_s)}/presentation/applied",
           body: { "applied_digest" => applied_digest.to_s })
