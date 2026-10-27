@@ -253,7 +253,7 @@ module AgentsFyi
         # — re-walking it would spend the rung again — and a delivery that failed in a previous cycle
         # is exactly what the ledger now remembers. This runs even when there is nothing to walk: the
         # debt is about a rung that already passed.
-        undelivered = @publish ? retry_delivery : []
+        undelivered = publish_configured? ? retry_delivery : []
 
         # **A delivery debt blocks the repository, not just the publish.** A failed publish is
         # retried above; if it is still absent, walking the next checkpoint would base its branch
@@ -460,6 +460,17 @@ module AgentsFyi
         return true if @publish
 
         %w[branch pr].include?(project&.delivery&.publish.to_s)
+      end
+
+      # **A delivery debt is retried when any account has asked for a handoff.** The old gate was the
+      # deployment-wide `--publish`, so an account-level `publish: pr` published a passed rung and
+      # then never retried a failed one. The feed is the authority; a deployment with every account
+      # at `off` still publishes nothing.
+      def publish_configured?
+        return true if @publish
+
+        refresh_account_projects! if account_projects.empty?
+        account_projects.any? { |project| %w[branch pr].include?(project.delivery.publish.to_s) }
       end
 
       def publish_mode(project)
