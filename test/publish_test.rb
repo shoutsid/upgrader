@@ -1065,6 +1065,16 @@ class PublishTest < Minitest::Test
     assert_includes text, "Your CI, deploy and canary are the release gate"
   end
 
+  def test_a_stored_commit_is_the_delivered_head_in_a_preview
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    text = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      commit: "abc12345").preview_body
+
+    assert_includes text, "delivered head: `abc12345`"
+    refute_includes text, "first delivery attempt"
+  end
+
   def test_the_model_lead_is_prepended_and_the_record_stays_below_it
     record = passed_record(repository: "https://github.com/acme/storefront")
     text = Publish.new(root: "/tmp", repository: record.repository,

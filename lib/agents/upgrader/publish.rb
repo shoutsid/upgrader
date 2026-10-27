@@ -147,8 +147,11 @@ module Agents
         @branch_pattern = branch_pattern.to_s.empty? ? DEFAULT_BRANCH : branch_pattern.to_s
         # **The commit to publish, when the step is not the one publishing it.** A delivery retry
         # carries the commit the first attempt produced: the tree has moved on, and re-committing a
-        # clean tree would publish a different fact than the one the suite established.
+        # clean tree would publish a different fact than the one the suite established. A stored
+        # commit is also the delivered head a preview or a body-only update names; without this the
+        # body says the first attempt could not reach the remote when there was no attempt at all.
         @commit = commit.to_s
+        @publishing_commit = @commit unless @commit.empty?
         # **Where a reviewer can open a report.** The walker's API base is often an internal
         # hostname (`http://service:8001`); a link built from it in a pull request is unopenable.
         # The deployment names the public base, and no base means the report is named rather than
