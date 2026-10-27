@@ -72,6 +72,15 @@ class RepublishTest < Minitest::Test
     end
   end
 
+  # A service that refuses the applied digest, which is the one failure the feed must not record as
+  # an applied presentation: the next cycle has to retry.
+  class RefusingCorpus < FakeCorpus
+    def presentation_applied(_run_id, applied_digest:)
+      raise Agents::Upgrader::Corpus::Refused,
+        "the applied body digest does not match this presentation."
+    end
+  end
+
   REPO = "https://github.com/acme/app.git"
 
   def test_every_delivered_passed_entry_is_republished_from_its_record
@@ -172,6 +181,44 @@ class RepublishTest < Minitest::Test
       assert_includes entry.delivery["brief"], "A lead from the consultant"
       assert_equal 1, corpus.applied.length
       assert_equal "run-1", corpus.applied.first.first
+    end
+  end
+
+  def test_a_refused_applied_digest_is_not_recorded_as_applied
+    Dir.mktmpdir do |home|
+      FakeUpdatePublish.calls = []
+      FakeUpdatePublish.update_calls = []
+      ledger = Ledger.new(path: File.join(home, "ledger.json"), machine: "ruby 3.3")
+      ledger.record(repo: REPO, commit: "base123", from_version: "4.0.0", to_version: "4.1.0",
+        verdict: "passed")
+      ledger.deliver(repo: REPO, commit: "base123", from_version: "4.0.0", to_version: "4.1.0",
+        state: { "attempted" => true, "delivered" => true, "root" => home,
+                 "commit" => "produced1", "branch_pattern" => "agents/upgrade-<release>",
+                 "base" => "main", "base_ref" => "agents/baseline", "run_id" => "run-1",
+                 "brief_digest" => Digest::SHA256.hexdigest("the body the walker wrote"),
+                 "pull_request" => "https://github.com/acme/app/pull/1" })
+
+      record = Record.new(repository: REPO, commit: "base123", from_version: "4.0.0",
+        to_version: "4.1.0", verdict: "passed", why: "the suite was green",
+        machine: "ruby 3.3", interpreter: "ruby 3.3.12", patch: "diff")
+      stem = Record.stem(REPO, "4.0.0", "4.1.0")
+      FileUtils.mkdir_p(File.join(home, "records"))
+      File.write(File.join(home, "records", "#{stem}.json"), JSON.generate(record.to_h))
+
+      corpus = RefusingCorpus.new({ "state" => "drafted", "run_id" => "run-1",
+        "editorial" => "## Summary\n\nA lead.",
+        "body_override" => "## Summary\n\nA lead.\n\n## What moved\n\nThe narrative.",
+        "task_id" => "t1", "model" => "provider/model",
+        "prompt_version" => "presenter-prompt-2" })
+      results = Republish.new(home: home, token: "t", ledger: ledger, corpus: corpus,
+        publish_class: FakeUpdatePublish).apply_presentations(repository: REPO)
+
+      assert_equal 1, results.length
+      entry = ledger.entries.first
+      refute_equal "applied", entry.delivery.dig("presentation", "state"),
+        "a refused digest must stay work for the next cycle"
+      assert_equal Digest::SHA256.hexdigest("## Summary\n\nA lead from the consultant.\n\n## What moved"),
+        entry.delivery["brief_digest"]
     end
   end
 end

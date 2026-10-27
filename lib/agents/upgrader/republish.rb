@@ -76,6 +76,8 @@ module Agents
           if result.published? && result.body_updated?
             body = publisher.respond_to?(:preview_body) ? publisher.preview_body.to_s :
               delivery["brief"].to_s
+            state = presentation.is_a?(Hash) ? presentation["state"].to_s : ""
+            acknowledged = state == "applied" || (state == "drafted" && mark_applied(entry, body))
             updated = delivery.merge(
               "branch" => result.branch.to_s.empty? ? delivery["branch"] : result.branch,
               "commit" => result.commit.to_s.empty? ? delivery["commit"] : result.commit,
@@ -84,11 +86,10 @@ module Agents
               "brief" => body,
               "brief_digest" => Digest::SHA256.hexdigest(body)
             )
-            updated["presentation"] = applied_state(presentation) if presentation.is_a?(Hash) &&
-              %w[drafted applied].include?(presentation["state"].to_s)
+            if acknowledged && %w[drafted applied].include?(state)
+              updated["presentation"] = applied_state(presentation)
+            end
             persist(entry, updated)
-            mark_applied(entry, body) if presentation.is_a?(Hash) &&
-              presentation["state"].to_s == "drafted"
           end
           @out&.puts("republish: #{entry.repo} #{entry.from_version}->#{entry.to_version}: #{result}")
           result
@@ -153,12 +154,12 @@ module Agents
           result = publisher.update_only(current_base: delivery["base"].to_s)
           if result.body_updated?
             body = publisher.preview_body.to_s
+            acknowledged = mark_applied(entry, body)
             updated = delivery.merge(
-              "brief" => body, "brief_digest" => Digest::SHA256.hexdigest(body),
-              "presentation" => applied_state(presentation)
+              "brief" => body, "brief_digest" => Digest::SHA256.hexdigest(body)
             )
+            updated["presentation"] = applied_state(presentation) if acknowledged
             persist(entry, updated)
-            mark_applied(entry, body)
           elsif permanent_skip?(result.reason)
             updated = delivery.merge(
               "presentation" => {
@@ -244,14 +245,16 @@ module Agents
       end
 
       def mark_applied(entry, body)
-        return if @corpus.nil? || !@corpus.respond_to?(:presentation_applied)
+        return true if @corpus.nil? || !@corpus.respond_to?(:presentation_applied)
 
         run_id = entry.delivery.is_a?(Hash) ? entry.delivery["run_id"].to_s : ""
-        return if run_id.empty?
+        return true if run_id.empty?
 
         @corpus.presentation_applied(run_id, applied_digest: Digest::SHA256.hexdigest(body))
+        true
       rescue Corpus::Refused, Corpus::Unreachable => e
         @out&.puts("presentation: #{entry.repo} could not record the applied lead: #{e.message}")
+        false
       end
 
       def persist(entry, delivery)

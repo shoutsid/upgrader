@@ -1138,6 +1138,27 @@ class PublishTest < Minitest::Test
     assert_includes settle[6], "## Summary"
     assert_includes settle[6], "## What moved"
   end
+
+  def test_a_body_only_update_writes_the_composed_override
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    api = FakeApi.new(previous: {
+      "number" => 7, "html_url" => "https://github.com/acme/storefront/pull/7",
+      "body" => "the body the walker wrote", "title" => "Keep this title",
+      "base" => { "ref" => "main" }
+    })
+    override = "## Summary\n\nThe lead and narrative.\n\n## What moved\n\nThe model's prose."
+    publisher = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record, commit: "abc12345",
+      token: "ghp_secret", api: api, editorial: "## Summary\n\nThe lead.",
+      body_override: override,
+      expected_body_digest: Digest::SHA256.hexdigest("the body the walker wrote"), base: "main")
+
+    result = publisher.update_only
+
+    assert result.body_updated?
+    settle = api.calls.find { |call| call.first == :settle }
+    assert_equal override, settle[6]
+  end
 end
 
 # **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through
