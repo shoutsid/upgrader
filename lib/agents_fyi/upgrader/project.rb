@@ -45,7 +45,7 @@ module AgentsFyi
       # are optional because a declaration written before the join existed has neither.
       DECISION_FIELDS = %w[id project change_key question answer accepted_by effects
         verified_by_run_id].freeze
-      EFFECT_FIELDS = %w[kind payload applies_when].freeze
+      EFFECT_FIELDS = %w[id kind payload applies_when phase].freeze
 
       # What a suite can be. `none` is a real answer, not a missing one: an application without a
       # suite is measured by its boot, and a declaration that says so is not one typo away from a
