@@ -44,7 +44,7 @@ module AgentsFyi
       # this one: the same key is the same change, and the project says whose answer it was. They
       # are optional because a declaration written before the join existed has neither.
       DECISION_FIELDS = %w[id project change_key question answer accepted_by effects
-        verified_by_run_id].freeze
+        verified_by_run_id accepted_by_policy review risk_class acceptance].freeze
       EFFECT_FIELDS = %w[id kind payload applies_when phase].freeze
 
       # What a suite can be. `none` is a real answer, not a missing one: an application without a
@@ -102,12 +102,18 @@ module AgentsFyi
       end
 
       # Where a rung is delivered, and whether each request targets the rung before it.
-      Delivery = Struct.new(:provider, :branch, :chain, keyword_init: true) do
+      Delivery = Struct.new(:provider, :branch, :chain, :publish, :deploy, keyword_init: true) do
         def github? = provider == "github"
 
         def branch_for(release) = branch.to_s.gsub("<release>", release.to_s)
 
-        def to_h = { "provider" => provider, "branch" => branch, "chain" => chain }
+        # `publish` is the account's handoff switch (`off`/`branch`/`pr`), not a deploy switch. A
+        # response from an older service omits it and means `off`, which is the safe default.
+        # `deploy` is read-only context the pull-request body names; the walker never runs it.
+        def to_h
+          { "provider" => provider, "branch" => branch, "chain" => chain,
+                     "publish" => publish, "deploy" => Array(deploy) }
+        end
       end
 
       # One command in the application's gate. `external` is the honest answer for a check this
@@ -696,26 +702,33 @@ module AgentsFyi
       end
 
       def read_delivery(value)
-        return Delivery.new(provider: "none", branch: nil, chain: false) if value.nil?
+        return Delivery.new(provider: "none", branch: nil, chain: false, publish: "off",
+          deploy: []) if value.nil?
 
         unless value.is_a?(Hash)
           raise Invalid, "delivery must be an object with provider, branch and chain, not #{value.class}"
         end
 
-        unknown = value.keys - %w[provider branch chain]
+        unknown = value.keys - %w[provider branch chain publish deploy]
         raise Invalid, "unknown delivery field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
 
         provider = value["provider"].to_s
         unless PROVIDERS.include?(provider)
           raise Invalid, "delivery.provider is #{provider.inspect}; known: #{PROVIDERS.join(", ")}"
         end
+        publish = value.fetch("publish", "off").to_s
+        unless %w[off branch pr].include?(publish)
+          raise Invalid, "delivery.publish is #{publish.inspect}; known: off, branch, pr"
+        end
+        deploy = Array(value["deploy"]).map(&:to_s).reject(&:empty?)
 
         # **A branch belongs to a provider that has one.** An explicit null is "none" and is honoured;
         # an absent branch defaults only for GitHub, because a `none` delivery with GitHub's pattern
         # would round-trip into a different declaration than the one that was written.
         branch = value.key?("branch") ? value["branch"] : (provider == "github" ? DEFAULT_BRANCH : nil)
         Delivery.new(provider: provider, branch: branch,
-          chain: value.key?("chain") ? value["chain"] == true : true)
+          chain: value.key?("chain") ? value["chain"] == true : true, publish: publish,
+          deploy: deploy)
       end
     end
   end

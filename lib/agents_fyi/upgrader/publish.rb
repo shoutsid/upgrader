@@ -105,7 +105,7 @@ module AgentsFyi
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
                      out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
-                     report_base: nil, base_ref: nil, chain: true)
+                     report_base: nil, base_ref: nil, chain: true, deploy: [])
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -145,9 +145,13 @@ module AgentsFyi
         # project wants when it reviews one cumulative branch; with it on — the default — each
         # checkpoint stacks on the one below it.
         @chain = chain != false
+        # The profile's deploy facts, named for the customer and never run by this tool.
+        @deploy = Array(deploy).map(&:to_s).reject(&:empty?)
       end
 
-      def call
+      # `open_pr: false` is the account's `publish: branch` mode: the branch is the handoff and no
+      # request is opened. The push is still the same claim that the rung works.
+      def call(open_pr: true)
         if @record && !@record.passed?
           return Result.new(pushed: false, branch: branch, reason:
             "the step's verdict is #{@record.verdict}, and a branch is a claim that this rung " \
@@ -183,6 +187,10 @@ module AgentsFyi
         return Result.new(pushed: false, branch: branch, commit: commit, reason: pushed_why) unless pushed
 
         @base = base_branch
+        unless open_pr
+          return Result.new(pushed: true, branch: branch, base: @base, commit: commit,
+            reason: "branch-only delivery: the account's publish mode is branch")
+        end
         request = request_pull_request(
           owner: owner, name: name, head: branch, base: @base,
           title: title, body: body
@@ -480,6 +488,7 @@ module AgentsFyi
         sections << decisions_section if @record
         sections << app_update_section if @record
         sections << manual_section if @record
+        sections << canary_section if @record
         sections << merge_section
         sections << record_section if @record
         sections.join("\n\n")
@@ -715,9 +724,17 @@ module AgentsFyi
           lines << ""
           lines << "**Answer.** #{decision["answer"]}"
           lines << ""
-          lines << "Accepted by `#{decision["accepted_by"]}`; " \
-                   "#{Array(decision["effects"]).length} effect(s) in force. " \
-                   "The suite ran with them in place."
+          if decision["accepted_by_policy"] == true
+            review = decision["review"].is_a?(Hash) ? decision["review"] : {}
+            lines << "**Accepted by the account's policy**, not a person. Auto class " \
+                     "`#{decision["risk_class"]}`; reviewer `#{review["verdict"]}` " \
+                     "(#{review["agent"]}/#{review["model"]}). " \
+                     "#{Array(decision["effects"]).length} effect(s) in force."
+          else
+            lines << "Accepted by `#{decision["accepted_by"]}`; " \
+                     "#{Array(decision["effects"]).length} effect(s) in force."
+          end
+          lines << "The suite ran with them in place."
           lines << ""
         end
         unless decided.empty?
@@ -876,6 +893,60 @@ module AgentsFyi
       end
 
       # The reviewer's last question: is it safe, how do I undo it, and what merges first.
+      # **The customer's release gate, named rather than claimed.** The walker did not deploy and
+      # cannot canary; what it can do is say which parts of the application changed and which
+      # declared CI/deploy steps are the customer's to run.
+      def canary_section
+        paths = Array(@record.applied).filter_map do |edit|
+          next nil unless edit.respond_to?(:path)
+
+          text = edit.path.to_s
+          text.empty? ? nil : text
+        end.uniq
+        external = Array(@record.checks).select do |check|
+          check.respond_to?(:external?) ? check.external? : check["external"] == true
+        end
+        return "" if paths.empty? && external.empty? && @deploy.empty?
+
+        groups = Hash.new { |hash, key| hash[key] = [] }
+        paths.each do |path|
+          group = case path
+                  when %r{\Aapp/controllers/}, "config/routes.rb" then "HTTP endpoints"
+                  when %r{\Aapp/(jobs|workers)/}, "config/sidekiq.yml" then "background jobs"
+                  when %r{\Adb/migrate/} then "database migrations"
+                  when "Gemfile", "Gemfile.lock" then "dependencies and native extensions"
+                  when %r{\Aconfig/} then "runtime configuration"
+                  when %r{\A(app/models|app/services|lib)/} then "domain behavior"
+                  else "other application files"
+                  end
+          groups[group] << path
+        end
+
+        lines = ["## What to canary", ""]
+        lines << "The agent did not deploy. Your CI, deploy and canary are the release gate."
+        lines << ""
+        groups.each do |group, list|
+          shown = list.first(6).join(", ")
+          shown += " (+#{list.length - 6} more)" if list.length > 6
+          lines << "- **#{group}** — #{shown}"
+        end
+        unless external.empty?
+          lines << ""
+          lines << "Your CI checks (not run here):"
+          external.first(10).each do |check|
+            name = check.respond_to?(:name) ? check.name : check["name"]
+            reason = check.respond_to?(:reason) ? check.reason : check["reason"]
+            lines << "- #{name}#{reason.to_s.empty? ? "" : " — #{reason}"}"
+          end
+        end
+        unless @deploy.empty?
+          lines << ""
+          lines << "Your deploy steps (named by the profile, not run here):"
+          @deploy.first(10).each { |step| lines << "- `#{step}`" }
+        end
+        lines.join("\n")
+      end
+
       def merge_section
         lines = ["## Review and merge", ""]
         lines << "- **Risk:** #{risk}"
