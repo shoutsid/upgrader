@@ -569,7 +569,10 @@ module AgentsFyi
           next if delivery.is_a?(Hash) && delivery["attempted"] != true
 
           recovered = !delivery.is_a?(Hash)
-          record = recovered ? record_for(entry) : nil
+          # **A retry is still the same run, and the record is the report.** The first attempt
+          # wrote the record; a retry that published only the commit produced a pull request that
+          # said the evidence was unavailable. Read the record for both paths.
+          record = record_for(entry)
           commit = recovered ? record_head(record) : delivery["commit"].to_s
           root = recovered ? record&.worktree.to_s : delivery["root"].to_s
           if recovered && (record.nil? || commit.empty?)
@@ -578,6 +581,10 @@ module AgentsFyi
                       "the branch cannot be rebuilt from the patch alone")
             blocked << Repository.name(entry.repo)
             next
+          end
+          if record.nil?
+            @out.puts("serve: #{entry.repo} — the delivery of #{entry.to_version} has no readable " \
+                      "record, so its pull request carries the commit without the report")
           end
           unless File.directory?(root)
             @out.puts("serve: #{entry.repo} — the delivery of #{entry.to_version} cannot be retried: " \
