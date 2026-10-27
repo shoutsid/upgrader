@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "time"
 
@@ -398,6 +399,7 @@ module Agents
       # move the ledger had already settled (nothing ran at all), and `:worked` is a passed rung,
       # where the next one is ready now.
       def walk_repository(repository, ref, project:, target_id: nil)
+        apply_presentations(project: project)
         @rungs.times do
           record = run_one(repository, ref, project: project, target_id: target_id)
           return :idle if record.nil?
@@ -444,12 +446,55 @@ module Agents
         # **The brief is rendered once, here, and stored beside the delivery.** The site admin reads
         # the bytes the pull request would carry rather than reimplementing `Publish#body` in Rails.
         brief = publisher.respond_to?(:preview_body) ? publisher.preview_body : nil
+        title = publisher.respond_to?(:preview_title) ? publisher.preview_title : nil
+        presentation = request_presentation(record, result, body: brief, title: title)
         remember_delivery(record, result, root: root, pattern: pattern,
-          base_ref: project&.base_ref, chain: chain, brief: brief, mode: mode)
+          base_ref: project&.base_ref, chain: chain, brief: brief, mode: mode,
+          presentation: presentation)
         # **A boolean, because the walk's next branch depends on this one.** A plain git remote is a
         # delivered branch with no request, which is complete rather than failed — that distinction
         # already lives on the ledger's answer and is reused here rather than decided twice.
         delivered?(result, record.repository, mode: mode)
+      end
+
+      # **The lead is asked for after the body is delivered, never before.** A model outage, a
+      # policy that is off or a presentation the guide cannot support is a reason the deterministic
+      # body remains, not a reason the rung's delivery failed. The request is recorded on the
+      # delivery feed so the site admin can say which of those happened.
+      def request_presentation(record, result, body:, title:)
+        return {} if record.run_id.to_s.empty? || body.to_s.empty?
+        return {} if result.pull_request.to_s.empty?
+        return {} unless @corpus.respond_to?(:request_presentation)
+
+        payload = @corpus.request_presentation(
+          record.run_id, body: body, title: title, pull_request: result.pull_request,
+          body_digest: Digest::SHA256.hexdigest(body.to_s)
+        )
+        return {} unless payload.is_a?(Hash)
+
+        {
+          "state" => payload["state"].to_s,
+          "reason" => payload["reason"].to_s,
+          "task_id" => payload["task_id"].to_s
+        }
+      rescue Corpus::Refused, Corpus::Unreachable => e
+        @out.puts("presentation: #{record.repository} could not request a lead: #{e.message}")
+        { "state" => "unavailable", "reason" => e.message.to_s[0, 300] }
+      end
+
+      # A delivered rung whose lead is ready is rewritten in place, without a push. This runs
+      # before the next rung so a model that answered while the walk was busy does not wait for a
+      # person to remember `republish`.
+      def apply_presentations(project:)
+        return if project.nil? || @ledger.nil? || @corpus.nil?
+        return unless @corpus.respond_to?(:presentation)
+
+        Republish.new(
+          home: @home, token: github_token(project.repo_url), out: @out,
+          report_base: ENV["UPGRADER_PUBLIC_URL"], ledger: @ledger, corpus: @corpus
+        ).apply_presentations(repository: project.repo_url)
+      rescue Corpus::Refused, Corpus::Unreachable => e
+        @out.puts("presentation: #{project.repo_url} could not apply a lead: #{e.message}")
       end
 
       # **The account's handoff switch, with the CLI as an override.** A loop started with
@@ -504,7 +549,7 @@ module Agents
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
       def remember_delivery(record, result, root:, pattern:, base_ref: nil, chain: true, brief: nil,
-        mode: nil)
+        mode: nil, presentation: nil)
         state = {
           "attempted" => true,
           "delivered" => delivered?(result, record.repository, mode: mode),
@@ -526,6 +571,13 @@ module Agents
           # The rendered review brief is evidence a person reads, not a second renderer in the
           # service. It is kept with the delivery because that is where the branch and PR are.
           "brief" => brief.to_s,
+          # **The bytes the walker wrote.** A later presentation update may only replace a body
+          # whose digest is still this one; a person's edit is the owner's now.
+          "brief_digest" => Digest::SHA256.hexdigest(brief.to_s),
+          # What became of the lead: requested, drafted, applied, unavailable or skipped. An empty
+          # hash is "no presentation was requested", which is different from "the model did not
+          # answer".
+          "presentation" => presentation.is_a?(Hash) ? presentation : {},
           "root" => root.to_s,
           "branch_pattern" => pattern.to_s,
           "base_ref" => base_ref.to_s,

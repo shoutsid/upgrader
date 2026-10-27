@@ -144,6 +144,30 @@ class CorpusTest < Minitest::Test
   # first real walk's facts writes all succeeded and all were reported as failures
   # ("answered HTTP 201 instead of a plan"), so the routing's `unknown` pins stayed unknown
   # and no gem could move. Every 2xx is an answer; the body still has to be one.
+  def test_a_presentation_request_read_and_apply_are_the_runs_routes
+    corpus = StubbedCorpus.new(
+      FakeResponse.new("201", JSON.generate("state" => "requested")),
+      FakeResponse.new("200", JSON.generate("state" => "drafted", "editorial" => "## Summary")),
+      FakeResponse.new("200", JSON.generate("state" => "applied"))
+    )
+
+    created = corpus.request_presentation("r1", body: "a body", title: "a title",
+      pull_request: "https://github.com/acme/app/pull/1", body_digest: "a" * 64)
+    read = corpus.presentation("r1")
+    applied = corpus.presentation_applied("r1", applied_digest: "b" * 64)
+
+    assert_equal "requested", created["state"]
+    assert_equal "drafted", read["state"]
+    assert_equal "applied", applied["state"]
+    paths = corpus.requests.map { |uri, _request| uri.path }
+    assert_equal ["/api/upgrades/runs/r1/presentation",
+                  "/api/upgrades/runs/r1/presentation",
+                  "/api/upgrades/runs/r1/presentation/applied"], paths
+    body = JSON.parse(corpus.requests.first.last.body)
+    assert_equal "a" * 64, body["body_digest"]
+    assert_equal "a body", body["body"]
+  end
+
   def test_a_created_response_is_an_answer_rather_than_an_outage
     payload = { "recorded" => 3 }
     corpus = StubbedCorpus.new(FakeResponse.new("201", JSON.generate(payload)))

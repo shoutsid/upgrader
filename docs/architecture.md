@@ -267,6 +267,16 @@ pull request would carry from a stored record, without a checkout, a token or a 
 stores the rendered brief beside the delivery, so a retry does not re-render it and a site admin
 reads the bytes the pull request carried rather than reimplementing the body in Rails.
 
+**The lead is a presentation over the record, never a replacement for it.** After a GitHub pull
+request is delivered, `serve` posts the deterministic body to the service's presentation route; the
+service stores it, builds a fact sheet from the run/brief/effects and enqueues one low-priority
+`present` task. The consultant returns a summary and typed review-focus anchors, the service checks
+each anchor and check claim against the fact sheet, and the next cycle's `republish` path patches
+the body only if the pull request still holds the bytes the walker wrote. A refused draft, a policy
+that is off or a model that never answers leaves the deterministic body in place. The project's
+`ReviewGuide` (its template, rules and merged-PR examples) is accepted by a person in the account
+admin and is never part of the walker's declaration or feed.
+
 ## Why no dependencies
 
 The default image is Ruby and `git`. The tool reads a `Gemfile.lock` with

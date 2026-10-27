@@ -175,7 +175,7 @@ class ServeTest < Minitest::Test
   # The service, as much of it as the loop touches: one method, and it records what it
   # was asked for so a test can tell a queue read from a queue read that never happened.
   class FakeCorpus
-    attr_reader :asked, :ladder_reads
+    attr_reader :asked, :ladder_reads, :presentation_requests
 
     def initialize(targets: [], raises: nil, ladder: "8.1.0", ladder_raises: nil)
       @targets = targets
@@ -184,6 +184,7 @@ class ServeTest < Minitest::Test
       @ladder_raises = ladder_raises
       @asked = []
       @ladder_reads = 0
+      @presentation_requests = []
     end
 
     def targets(limit:)
@@ -198,6 +199,13 @@ class ServeTest < Minitest::Test
       raise @ladder_raises if @ladder_raises
 
       { "top" => @ladder }
+    end
+
+    # The delivery posts the deterministic body after the PR is open. A fake that answers
+    # `requested` is enough for the loop: the model's answer arrives later, on the next cycle.
+    def request_presentation(run_id, **kwargs)
+      @presentation_requests << [run_id, kwargs]
+      { "state" => "requested", "task_id" => "task-1" }
     end
   end
 
@@ -386,8 +394,9 @@ class ServeTest < Minitest::Test
   def test_a_project_s_publishing_pattern_reaches_the_publisher
     project = Agents::Upgrader::Project.find("lighthouse")
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
+    corpus = FakeCorpus.new
 
-    serve(corpus: FakeCorpus.new, to: nil, repos: [], project: project, cycles: 1, publish: true,
+    serve(corpus: corpus, to: nil, repos: [], project: project, cycles: 1, publish: true,
       walk: true, rungs: 1).run
 
     assert_equal "agents/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
@@ -395,6 +404,9 @@ class ServeTest < Minitest::Test
       "the declaration's starting ref did not reach the publisher"
     assert FakePublish.calls.last[:chain],
       "the declaration's chain setting did not reach the publisher"
+    assert_equal "run-1", corpus.presentation_requests.first.first
+    assert_includes corpus.presentation_requests.first.last[:body], "## What moved"
+    refute_empty corpus.presentation_requests.first.last[:body_digest].to_s
   end
 
   # **The loop waits only when waiting is the answer.** A passed rung has the next one ready now, and

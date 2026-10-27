@@ -237,6 +237,25 @@ module Agents
         call(:post, "/api/upgrades/runs", body: payload)
       end
 
+      # The pull-request lead is requested after the deterministic body is delivered. The body is
+      # the one large field; the service checks the digest before it queues any model work.
+      def request_presentation(run_id, body:, title: nil, pull_request: nil, body_digest: nil)
+        call(:post, "/api/upgrades/runs/#{URI.encode_www_form_component(run_id.to_s)}/presentation",
+          body: { "body" => body.to_s, "title" => title.to_s,
+                  "pull_request" => pull_request.to_s, "body_digest" => body_digest.to_s })
+      end
+
+      def presentation(run_id)
+        call(:get, "/api/upgrades/runs/#{URI.encode_www_form_component(run_id.to_s)}/presentation")
+      end
+
+      # The walker's claim that it wrote the lead; the service checks the digest against the
+      # editorial plus the deterministic body it holds.
+      def presentation_applied(run_id, applied_digest:)
+        call(:post, "/api/upgrades/runs/#{URI.encode_www_form_component(run_id.to_s)}/presentation/applied",
+          body: { "applied_digest" => applied_digest.to_s })
+      end
+
       # **The questions the walk could not answer.** A block is the service's row for "this
       # stage needs a person or an agent"; this is the read a walker or a script uses to find
       # the work it already posted rather than asking the same question twice.

@@ -148,6 +148,11 @@ class PublishTest < Minitest::Test
       { "html_url" => @url, "base" => base }
     end
 
+    def settle(owner:, name:, number:, base:, title:, body:, current:)
+      @calls << [:settle, owner, name, number, base, title, body, current]
+      { "html_url" => @url, "base" => current }
+    end
+
     def pull_request_for(owner:, name:, head:)
       @calls << [:pull_request_for, owner, name, head]
       @chain[head.to_s] || @previous
@@ -1058,6 +1063,58 @@ class PublishTest < Minitest::Test
     assert_includes text, "What to canary"
     assert_includes text, "HTTP endpoints"
     assert_includes text, "Your CI, deploy and canary are the release gate"
+  end
+
+  def test_the_model_lead_is_prepended_and_the_record_stays_below_it
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    text = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      editorial: "## Summary\n\nThe serialize call is the one change to review.").preview_body
+
+    assert text.start_with?("## Summary")
+    assert_includes text, "The serialize call is the one change to review."
+    assert_includes text, "## What moved"
+    assert_includes text, "## Checks"
+  end
+
+  def test_a_body_only_update_refuses_to_overwrite_a_person_s_edit
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    api = FakeApi.new(previous: {
+      "number" => 7, "html_url" => "https://github.com/acme/storefront/pull/7",
+      "body" => "a person edited this", "title" => "Keep this title",
+      "base" => { "ref" => "main" }
+    })
+    publisher = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record, commit: "abc12345",
+      token: "ghp_secret", api: api, editorial: "## Summary\n\nThe lead.",
+      expected_body_digest: Digest::SHA256.hexdigest("the body the walker wrote"), base: "main")
+
+    result = publisher.update_only
+
+    refute result.body_updated?
+    assert_includes result.reason, "edited"
+    assert_empty api.calls.select { |call| call.first == :settle }
+  end
+
+  def test_a_body_only_update_patches_the_existing_request_when_the_body_is_still_ours
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    api = FakeApi.new(previous: {
+      "number" => 7, "html_url" => "https://github.com/acme/storefront/pull/7",
+      "body" => "the body the walker wrote", "title" => "Keep this title",
+      "base" => { "ref" => "main" }
+    })
+    publisher = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record, commit: "abc12345",
+      token: "ghp_secret", api: api, editorial: "## Summary\n\nThe lead.",
+      expected_body_digest: Digest::SHA256.hexdigest("the body the walker wrote"), base: "main")
+
+    result = publisher.update_only
+
+    assert result.body_updated?
+    settle = api.calls.find { |call| call.first == :settle }
+    assert_equal "Keep this title", settle[5]
+    assert_includes settle[6], "## Summary"
+    assert_includes settle[6], "## What moved"
   end
 end
 

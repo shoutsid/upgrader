@@ -15,6 +15,9 @@ versioning for its command-line surface and record format.
 
 ### Added
 
+- A delivered pull request can gain a model-written lead without a re-walk. `serve` requests a
+  presentation after a GitHub delivery and applies it on a later cycle; the branch is untouched,
+  the evidence sections stay the record's, and a body a person edited is never overwritten.
 - A browser suite runs in the era container without an edit to the application: the machine
   writes Chromium's `/etc/chromium.d` drop-in (no sandbox, no `/dev/shm`) and seeds
   `webdrivers`' cache from the driver Debian builds with the browser, so the gem's retired

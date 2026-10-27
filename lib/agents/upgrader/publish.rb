@@ -4,6 +4,7 @@ require "json"
 require "net/http"
 require "open3"
 require "uri"
+require "digest"
 
 module Agents
   module Upgrader
@@ -72,18 +73,25 @@ module Agents
       # they fail separately: a branch can reach the remote and the API refuse to open a
       # request for it.
       Result = Struct.new(:pushed, :branch, :base, :commit, :pull_request, :stack, :reason,
-        keyword_init: true) do
+        :body_updated, keyword_init: true) do
         def published? = pushed && !pull_request.to_s.empty?
+
+        # **A body that was not written is not a failed delivery.** The branch and the request are
+        # the delivery; a guard that declined to overwrite a person's edit says so in `reason` and
+        # leaves the delivery successful.
+        def body_updated? = body_updated != false
 
         def to_h
           { "pushed" => pushed, "branch" => branch, "base" => base, "commit" => commit,
-            "pull_request" => pull_request, "stack" => stack, "reason" => reason }
+            "pull_request" => pull_request, "stack" => stack, "reason" => reason,
+            "body_updated" => body_updated? }
         end
 
         def to_s
           if published?
             "published: #{branch} -> #{pull_request}" \
-              "#{stack.to_s.empty? ? "" : " (stack #{stack})"}"
+              "#{stack.to_s.empty? ? "" : " (stack #{stack})"}" \
+              "#{body_updated? ? "" : " (body not updated: #{reason})"}"
           elsif pushed
             "published: #{branch} pushed, and no pull request was opened: #{reason}"
           else
@@ -105,12 +113,23 @@ module Agents
 
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
                      out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
-                     report_base: nil, base_ref: nil, chain: true, deploy: [])
+                     report_base: nil, base_ref: nil, chain: true, deploy: [],
+                     editorial: nil, expected_body_digest: nil, base: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
         @to_version = to_version.to_s
         @record = record
+        # **The model's lead, when there is one.** The deterministic body is composed first and the
+        # editorial is prepended; the evidence sections below it are still the record's. An empty
+        # editorial is the no-model path, not a different body shape.
+        @editorial = editorial.to_s
+        # **The body the publisher last wrote, for a maintenance update.** A republish may only
+        # replace a body that still matches this digest; a person's edit is the owner's now.
+        @expected_body_digest = expected_body_digest.to_s
+        # The base recorded on the delivery, so a body-only update names the same base the first
+        # publication did instead of asking the remote a second time.
+        @given_base = base.to_s
         # nil asks the environment; anything else, including "", is what the caller said —
         # a test that pinned nothing would otherwise publish with the developer's own token.
         @token = (token.nil? ? ENV[ENV_TOKEN] : token).to_s
@@ -181,6 +200,21 @@ module Agents
             "keep working from the patch this step left behind")
         end
 
+        # **A body-only update never overwrites a person's edit.** The delivery records the digest
+        # of the body the walker wrote; if GitHub holds different bytes, someone has taken ownership
+        # of the request's prose and this pass leaves it alone. The branch is already delivered, so
+        # the result is a successful delivery with `body_updated: false`.
+        if @expected_body_digest != ""
+          existing = api.pull_request_for(owner: owner, name: name, head: branch)
+          if existing && Digest::SHA256.hexdigest(existing["body"].to_s) != @expected_body_digest
+            return Result.new(pushed: true, branch: branch,
+              base: existing.dig("base", "ref").to_s, commit: @commit,
+              pull_request: existing["html_url"].to_s,
+              reason: "the pull request body was edited after the delivery, so this republish " \
+                      "left it alone", body_updated: false)
+          end
+        end
+
         commit = publish_commit
         @publishing_commit = commit
         pushed, pushed_why = push(commit)
@@ -216,6 +250,49 @@ module Agents
       # dry run is an ordinary call rather than a test's `send`.
       def preview_body = body
 
+      def preview_title = title
+
+      # **A maintenance update of an existing request.** The branch and its commit are already on
+      # the remote; this finds the request, refuses to replace a body a person edited, and PATCHes
+      # the title and body only. It does not commit, push or move a base, which is what makes a
+      # presentation apply cheap and safe after the walk has moved on.
+      def update_only(current_base: nil, expected_body_digest: nil)
+        digest = expected_body_digest.to_s
+        digest = @expected_body_digest if digest.empty?
+        unless github?
+          return Result.new(pushed: true, branch: branch, commit: @commit, body_updated: false,
+            reason: "the repository is not on github.com, so there is no pull request to update")
+        end
+        if @token.empty?
+          return Result.new(pushed: true, branch: branch, commit: @commit, body_updated: false,
+            reason: "no GitHub token, so the pull request body was not updated")
+        end
+
+        existing = api.pull_request_for(owner: owner, name: name, head: branch)
+        if existing.nil?
+          return Result.new(pushed: true, branch: branch, commit: @commit, body_updated: false,
+            reason: "no pull request was found for #{branch}, so there was no body to update")
+        end
+
+        base = current_base.to_s
+        base = existing.dig("base", "ref").to_s if base.empty?
+        @base = base
+        if digest != "" && Digest::SHA256.hexdigest(existing["body"].to_s) != digest
+          return Result.new(pushed: true, branch: branch, base: base, commit: @commit,
+            pull_request: existing["html_url"].to_s, body_updated: false,
+            reason: "the pull request body was edited after the delivery, so it was left alone")
+        end
+
+        updated = api.settle(owner: owner, name: name, number: existing["number"],
+          base: existing.dig("base", "ref").to_s, title: existing["title"].to_s, body: body,
+          current: existing.dig("base", "ref").to_s)
+        Result.new(pushed: true, branch: branch, base: updated["base"].to_s,
+          commit: @commit, pull_request: updated["html_url"].to_s, body_updated: true, reason: "")
+      rescue GitHub::Refused => e
+        Result.new(pushed: true, branch: branch, commit: @commit, body_updated: false,
+          reason: redact(e.message))
+      end
+
       private
 
       # **The request is the network too, and a push that retries while the request beside it does not
@@ -247,6 +324,7 @@ module Agents
       # request needs a base and refusing to open one over a naming guess is worse than
       # saying which guess was made — the branch and the request are both in the record.
       def base_branch
+        return @given_base unless @given_base.empty?
         return configured_base unless @chain
 
         previous = self.class.branch_for(@from_version, pattern: @branch_pattern)
@@ -481,6 +559,13 @@ module Agents
       # not the first thing a person should have to read. Every line is composed from the record, so
       # the request cannot say something the record does not.
       def body
+        [@editorial, deterministic_body].reject(&:empty?).join("\n\n")
+      end
+
+      # The record's review brief, without the model's lead. Kept separate so a body-only update
+      # can compose the same evidence the first publication did and a test can hold the two halves
+      # to their own promises.
+      def deterministic_body
         sections = [moved_section]
         sections << checks_section
         sections << brief_section if @record&.brief

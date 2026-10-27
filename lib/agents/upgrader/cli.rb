@@ -283,8 +283,9 @@ module Agents
       # rather than a walk: it reads the ledger's delivered entries, rebuilds each step's record and
       # publishes again, so a body composed by an older publisher is replaced. No branch is moved.
       def republish(options)
+        corpus = options[:api].to_s.empty? ? nil : corpus_for(options)
         Republish.new(home: options[:home], token: ENV[Publish::ENV_TOKEN], out: @out,
-          report_base: ENV["UPGRADER_PUBLIC_URL"]).call
+          report_base: ENV["UPGRADER_PUBLIC_URL"], corpus: corpus).call
         EXIT_OK
       end
 
