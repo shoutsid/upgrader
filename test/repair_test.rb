@@ -417,6 +417,22 @@ class RepairTest < Minitest::Test
     assert_includes File.read(seen), "opencode.json"
   end
 
+  # **The model process gets an allowlist, not the walker's environment.** The walker holds the
+  # corpus key and the application's suite environment; a prompt-injected repository would carry
+  # both to the provider. Only what opencode needs to find its config crosses.
+  def test_the_agent_environment_is_an_allowlist_rather_than_the_walker_s_own
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      env: { "PATH" => "/usr/bin:/bin", "AGENTS_FYI_KEY" => "afy_canary",
+             "UPGRADER_SUITE_ENV" => "DATABASE_URL=postgres://secret" }).run
+
+    env = agent.calls.first[:env]
+    assert_equal "/usr/bin:/bin", env["PATH"]
+    refute env.key?("AGENTS_FYI_KEY")
+    refute env.key?("UPGRADER_SUITE_ENV")
+  end
+
   # --- the config file --------------------------------------------------------------------
 
   # **The config is named to the agent, not left beside the application.** Measured on the
@@ -496,6 +512,8 @@ class RepairTest < Minitest::Test
 
     assert_nil problem
     assert_equal %w[file delete], effects.map { |effect| effect["kind"] }
+    assert_equal %w[post post], effects.map { |effect| effect["phase"] },
+      "a repair is applied after the move, not before the baseline it is meant to repair"
     assert_equal({ "path" => "config/example.rb", "content" => "VALUE = 1\n" },
       effects.first["payload"])
     assert_equal({ "path" => "config/gone.rb" }, effects.last["payload"])
@@ -517,6 +535,19 @@ class RepairTest < Minitest::Test
   # gate measured.
   def test_a_path_outside_the_working_copy_is_refused
     effects, problem = Repair.effects_for(files: ["../outside.rb"], root: @root)
+
+    assert_empty effects
+    assert_includes problem, "outside the working copy"
+  end
+
+  # **A symlink that leaves the tree is not a file the repair edited.** `expand_path` followed it,
+  # so the proposal could carry the content of a file outside the worktree while the record said
+  # the repair had changed one inside it.
+  def test_a_symlink_out_of_the_working_copy_is_refused
+    FileUtils.mkdir_p(File.join(@root, "config"))
+    File.symlink("/etc/passwd", File.join(@root, "config", "passwd"))
+
+    effects, problem = Repair.effects_for(files: ["config/passwd"], root: @root)
 
     assert_empty effects
     assert_includes problem, "outside the working copy"

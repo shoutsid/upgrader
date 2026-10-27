@@ -93,7 +93,7 @@ module AgentsFyi
       MAX_RULE_FILES = 500
 
       Effect = Struct.new(:decision, :question, :answer, :kind, :payload, :applies_when, :order,
-        :id, keyword_init: true)
+        :id, :phase, keyword_init: true)
 
       Result = Struct.new(:applied, :refused, :rules, keyword_init: true) do
         def empty? = applied.empty? && refused.empty? && rules.empty?
@@ -118,7 +118,11 @@ module AgentsFyi
       # `decisions` is the declaration's list. Returns the edits this applied, in the shape the record
       # and the run already carry, so a decision's change is indistinguishable from the ladder's in
       # `applied` except by its `origin` — which is the point: one list of what was written.
-      def apply(decisions)
+      #
+      # **`phase:` selects when.** The walk calls this twice: `"pre"` before the baseline (a decision
+      # about how the application is), `"post"` after `app:update` and before the suite (a repair of
+      # the move). nil applies both, which is what the existing effects tests use.
+      def apply(decisions, phase: nil)
         applied = []
         refused = []
         fired = []
@@ -138,7 +142,7 @@ module AgentsFyi
             parsed = parse(decision, effect, order: [index, position])
             if parsed.is_a?(Applier::Refused)
               refused << parsed
-            else
+            elsif phase.nil? || parsed.phase == phase
               effects << parsed
             end
           end
@@ -152,6 +156,16 @@ module AgentsFyi
             next
           end
           next unless applies?(effect)
+
+          # **The service's `forbidden` class, enforced at the only door that touches the tree.**
+          # A declaration can be hand-written and a rule can be promoted by hand, so the service's
+          # refusal is not the last one: no accepted effect writes the Git directory, a credential,
+          # an environment file or a private key.
+          denied = denied_path(effect_path(effect))
+          if denied
+            refused << refusal(effect.decision, effect, denied)
+            next
+          end
 
           case effect.kind
           when "patch", "config" then apply_text(effect, applied, refused)
@@ -215,10 +229,16 @@ module AgentsFyi
 
         applies_when = effect["applies_when"]
         applies_when = {} unless applies_when.is_a?(Hash)
+        phase = effect["phase"].to_s
+        phase = "pre" if phase.empty?
+        unless %w[pre post].include?(phase)
+          return refusal(decision, nil,
+            "`#{decision["id"]}` carries phase #{phase.inspect}; it is `pre` or `post`")
+        end
 
         Effect.new(decision: decision, question: decision["question"], answer: decision["answer"],
           kind: kind, payload: payload, applies_when: applies_when, order: order,
-          id: effect["id"].to_s)
+          id: effect["id"].to_s, phase: phase)
       end
 
       # The origin an edit or a fired rule carries. An effect with no id keeps the decision-only
@@ -796,27 +816,33 @@ module AgentsFyi
           note: effect.answer.to_s)
       end
 
-      # A new file is its own effect because it has no `find`; an existing path is refused so a
-      # decision cannot silently overwrite the application's own file.
+      # A new file is its own effect because it has no `find`; an **existing** path is a whole-file
+      # write, not a refusal. A repair proposal is exactly this shape — the file the model changed
+      # already exists — and refusing it meant an accepted repair could never apply. The effect is
+      # `high` risk in `Decision::Risk`, so no policy accepts it automatically; the person's
+      # acceptance is the warrant, and the write is still sealed, bounded and atomic.
       def apply_file(effect, applied, refused)
         payload = effect.payload
         path = payload["path"].to_s
         return refused << refusal(effect.decision, effect,
           "`#{effect.decision["id"]}` is a file effect with no `path`") if path.empty?
 
-        full, unsafe = safe_create_path(path)
+        exists = File.exist?(File.expand_path(path, @root))
+        full, unsafe = exists ? Sealed.path(@root, path, root_real: @root_real) : safe_create_path(path)
         return refused << refusal(effect.decision, effect, unsafe) if full.nil?
-        if File.exist?(full)
-          return refused << refusal(effect.decision, effect,
-            "#{path} already exists; a file effect creates a new file, and an existing one is a patch")
+        if File.directory?(full)
+          return refused << refusal(effect.decision, effect, "#{path} is a directory")
         end
 
         content = payload["content"].to_s
-        FileUtils.mkdir_p(File.dirname(full))
-        # Resolve once more after creating the directories: a symlink in the parent chain is the
-        # escape `Sealed` exists for, and the first check may only have reached the nearest ancestor.
-        full, unsafe = Sealed.path(@root, path, root_real: @root_real)
-        return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        unless exists
+          FileUtils.mkdir_p(File.dirname(full))
+          # Resolve once more after creating the directories: a symlink in the parent chain is the
+          # escape `Sealed` exists for, and the first check may only have reached the nearest
+          # ancestor.
+          full, unsafe = Sealed.path(@root, path, root_real: @root_real)
+          return refused << refusal(effect.decision, effect, unsafe) if full.nil?
+        end
 
         File.binwrite(full, content)
         mode = payload["mode"].to_s
@@ -873,6 +899,44 @@ module AgentsFyi
       rescue ArgumentError
         refused << refusal(effect.decision, effect,
           "#{path} has mode #{payload["mode"].inspect}, which is not an octal mode")
+      end
+
+      # **Paths no accepted effect may write.** The service's `Decision::Risk` calls this class
+      # `forbidden`; the walk repeats the list because it is the process that holds the tree. The
+      # names are the ones everywhere: the repository's metadata, credentials, environment files and
+      # private keys. A prefix matches a directory; a basename matches any directory's file of that
+      # name, which is conservative on purpose.
+      DENIED_PREFIXES = %w[.git/ .hg/ .svn/ secrets/ config/credentials].freeze
+      DENIED_BASENAMES = %w[.env .env.local .env.production .env.development .env.test
+        config/master.key].freeze
+      DENIED_EXTENSIONS = %w[.pem .key .p12 .pfx].freeze
+
+      def denied_path(path)
+        text = path.to_s.tr("\\", "/").delete_prefix("./")
+        return nil if text.empty?
+
+        if DENIED_PREFIXES.any? { |prefix| text.start_with?(prefix) }
+          return "#{path} is a path no accepted decision may write (the repository's metadata or " \
+                 "a credential)"
+        end
+        if DENIED_BASENAMES.include?(text) || DENIED_BASENAMES.include?(File.basename(text))
+          return "#{path} is a secret file no accepted decision may write"
+        end
+        if DENIED_EXTENSIONS.include?(File.extname(text))
+          return "#{path} is a key file no accepted decision may write"
+        end
+        nil
+      end
+
+      # The path an effect would write, whichever kind carries it: a patch/config/file/delete/chmod
+      # at the top, a rule's mechanism one level down.
+      def effect_path(effect)
+        payload = effect.payload
+        path = payload["path"].to_s
+        return path unless path.empty?
+
+        inner = payload["payload"]
+        inner.is_a?(Hash) ? inner["path"].to_s : ""
       end
 
       # A file effect creates a path whose parent may not exist yet, which `Sealed.path` cannot

@@ -105,6 +105,10 @@ module AgentsFyi
       # scan read it — and the edits carry `origin: decision:<id>`, so the stage and the applied list
       # agree about which decision made them.
       DECISIONS = "decisions"
+      # **The repair decisions, after `app:update` and before the suite.** A post effect's subject is
+      # the move, so it cannot be applied before the baseline: its files are the ones the move wrote,
+      # and an edit that changes the pre-move tree can break the baseline it was meant to repair.
+      DECISIONS_POST = "decisions_post"
       # **The digest's rung-scoped entries, made between the pin rewrite and its resolve.** A
       # `declared` entry is about a gem the target framework brings in, and a rewrite is about a
       # line that release asks for, so neither can be applied while the Gemfile still names the

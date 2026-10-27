@@ -5,6 +5,8 @@ require "json"
 require "open3"
 require "timeout"
 
+require_relative "sealed"
+
 module AgentsFyi
   module Upgrader
     # The one place a model changes somebody's application, and the reason it is bounded.
@@ -121,8 +123,10 @@ module AgentsFyi
       #
       # The bound is the request body's: a proposal is one request. A repair that touched more
       # files than a body can carry is not proposed and says so, rather than being sent in part.
+      # 48 KiB rather than the old 96: the decision route's body is 64 KiB, so a larger proposal
+      # was refused by the service after the model had spent the call.
       MAX_PROPOSAL_FILES = 20
-      MAX_PROPOSAL_BYTES = 96 * 1024
+      MAX_PROPOSAL_BYTES = 48 * 1024
 
       def self.effects_for(files:, root:)
         paths = Array(files).map(&:to_s).reject(&:empty?).uniq
@@ -132,13 +136,15 @@ module AgentsFyi
         end
 
         base = File.expand_path(root.to_s)
+        base_real = Sealed.resolved(base)
         effects = []
         total = 0
         paths.each do |path|
-          full = File.expand_path(path, base)
-          unless full.start_with?("#{base}#{File::SEPARATOR}")
-            return [[], "#{path} is outside the working copy"]
-          end
+          # **Sealed, not `expand_path`.** A repair can name a symlink, and the old check followed
+          # it: a file the model "edited" could have been a link out of the worktree. The rule the
+          # applier uses is the rule the proposal uses.
+          full, unsafe = Sealed.path(base, path, root_real: base_real)
+          return [[], unsafe] if full.nil?
 
           if File.directory?(full)
             return [[], "#{path} is a directory"]
@@ -155,12 +161,12 @@ module AgentsFyi
 
             effects << { "kind" => "file",
                          "payload" => { "path" => path, "content" => content },
-                         "applies_when" => {} }
+                         "applies_when" => {}, "phase" => "post" }
           else
             # Absent is a deletion the repair made, which is a fact about the tree rather than a
             # read that failed.
             effects << { "kind" => "delete", "payload" => { "path" => path },
-                         "applies_when" => {} }
+                         "applies_when" => {}, "phase" => "post" }
           end
         end
         [effects, nil]
@@ -329,6 +335,13 @@ module AgentsFyi
         path
       end
 
+      # **The model process gets an allowlist, not the walker's environment.** The walker holds the
+      # corpus key and the application's own suite environment; a prompt-injected repository (or a
+      # model that reads `/proc/self/environ`) would carry both to the provider and into a proposal.
+      # Only the variables `opencode` needs to find its config and its home cross the boundary.
+      AGENT_ENV = %w[HOME PATH LANG LC_ALL LC_CTYPE TMPDIR TEMP TMP XDG_CONFIG_HOME
+        XDG_DATA_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR NODE_OPTIONS SHELL].freeze
+
       def run_agent(prompt, model)
         # **No `--standalone`, because the flag is gone from the client this runs.** The
         # argument was accepted by an older `opencode run` and is a usage error in the
@@ -349,7 +362,8 @@ module AgentsFyi
         # `undefined method 'merge' for #<Object:0x...>`, which names neither the environment
         # nor the method's real subject. Every test had passed a Hash, which is why the first
         # live repair was where this was found.
-        env = @env.to_h.merge("OPENCODE_CONFIG" => config_path(model))
+        env = @env.to_h.slice(*AGENT_ENV)
+        env["OPENCODE_CONFIG"] = config_path(model)
         env["HOME"] = @home unless @home.empty?
         answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)
         exit_code, output, outcome = answer

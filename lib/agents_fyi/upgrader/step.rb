@@ -406,6 +406,11 @@ module AgentsFyi
 
         checkpoint("pin Rails and move gems")
         update(stages)
+        # **A repair waits for the files it is about.** `app:update` has written the release's
+        # generated files; now the post effects may change them, and the suite below measures the
+        # result. Applying these before the baseline was how a repair could turn a green starting
+        # tree red and make the move look unmeasurable.
+        decisions_stage(stages, step, phase: "post", stage: Record::DECISIONS_POST)
         migrate_after_update(stages)
         checkpoint("run app:update")
         # **The first asset stage proves the baseline's environment, not the move's.** It
@@ -2478,12 +2483,19 @@ module AgentsFyi
       # application is measured as it is with its decisions in force. Nothing is applied that no
       # operator accepted, and a condition this build does not understand refuses rather than applies;
       # both rules live in `Effects`, beside the write they protect.
-      def decisions_stage(stages, step)
+      #
+      # **`phase` is the difference between a decision and a repair.** A pre effect is how the
+      # application is and belongs before the baseline; a post effect is a repair of the move and is
+      # applied after `app:update`. The caller names which pass it is, and an empty pass records no
+      # stage — "0 effects" twice would read as a pass that did something.
+      def decisions_stage(stages, step, phase: "pre", stage: Record::DECISIONS)
         decisions = @project&.decisions
         return if decisions.nil? || decisions.empty?
 
         result = Effects.new(root: @worktree.root, rung: step["to_version"],
-          source_roots: source_roots).apply(decisions)
+          source_roots: source_roots).apply(decisions, phase: phase)
+        return if result.empty?
+
         @applied.concat(result.applied)
         @refused.concat(result.refused)
         # **A rule that fires is recorded, and a rule that only waits is not.** `skip` fires only
@@ -2503,7 +2515,7 @@ module AgentsFyi
             @fired_rules << rule
           end
         end
-        stages << Record::Command.new(stage: Record::DECISIONS,
+        stages << Record::Command.new(stage: stage,
           command: "decisions: #{result}",
           ran: true, exit_code: result.refused.empty? ? 0 : 1, seconds: 0.0,
           output_tail: result.applied.map { |edit|
@@ -4603,7 +4615,11 @@ module AgentsFyi
             "note" => decision.reason,
             "source" => decision.source,
             "path" => decision.path,
-            "line" => decision.line
+            "line" => decision.line,
+            # **The change the decision is about.** The scan hit and its refusal name the same key,
+            # which is what lets a report or a promoted rule be joined to the line a person must
+            # decide; a decision without one stays on its question's page.
+            "change_key" => decision.change_key
           })
         end
       end

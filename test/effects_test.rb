@@ -37,6 +37,43 @@ class EffectsTest < Minitest::Test
     effect
   end
 
+  def test_pre_and_post_effects_are_applied_in_their_own_passes
+    with_tree("app/a.rb" => "A = 1\n", "app/b.rb" => "B = 1\n") do |dir|
+      decisions = [decision(effects: [
+        patch(path: "app/a.rb", find: "A = 1", replace: "A = 2").merge("phase" => "pre"),
+        patch(path: "app/b.rb", find: "B = 1", replace: "B = 2").merge("phase" => "post")
+      ])]
+      effects = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0")
+
+      before = effects.apply(decisions, phase: "pre")
+
+      assert_empty before.refused
+      assert_equal ["app/a.rb"], before.applied.map(&:path)
+      assert_equal "A = 2\n", File.read(File.join(dir, "app/a.rb"))
+      assert_equal "B = 1\n", File.read(File.join(dir, "app/b.rb")),
+        "a post effect was applied before the move measured the baseline"
+
+      after = effects.apply(decisions, phase: "post")
+
+      assert_empty after.refused
+      assert_equal ["app/b.rb"], after.applied.map(&:path)
+      assert_equal "B = 2\n", File.read(File.join(dir, "app/b.rb"))
+    end
+  end
+
+  def test_an_unknown_phase_is_refused_rather_than_applied
+    with_tree("app/a.rb" => "A = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [patch(path: "app/a.rb", find: "A = 1", replace: "A = 2")
+          .merge("phase" => "during")])
+      ])
+
+      assert_equal 1, result.refused.length
+      assert_includes result.refused.first.reason, "phase \"during\""
+      assert_equal "A = 1\n", File.read(File.join(dir, "app/a.rb"))
+    end
+  end
+
   def test_a_patch_is_written_once_at_the_line_it_located
     with_tree("app/views/bids/index.html.erb" => "<% @bids.each do |bid| %>\n  <%= link_to 'Show', bid %>\n<% end %>\n") do |dir|
       result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
@@ -477,6 +514,39 @@ class EffectsTest < Minitest::Test
       assert_equal 1, result.applied.length
       assert_equal "gem", result.rules.first["kind"]
       assert_includes File.read(File.join(dir, "Gemfile")), %(gem "rails", "5.0.0")
+    end
+  end
+
+  def test_a_file_effect_replaces_an_existing_file
+    with_tree("app/services/user.rb" => "OLD = true\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [
+          { "kind" => "file",
+            "payload" => { "path" => "app/services/user.rb", "content" => "NEW = true\n" } }
+        ])
+      ])
+
+      assert_empty result.refused
+      assert_equal "NEW = true\n", File.read(File.join(dir, "app/services/user.rb")),
+        "a repair proposal writes a whole file, and the file it changed already exists"
+    end
+  end
+
+  # **Some paths no accepted decision writes.** A declaration can be hand-written; the service's
+  # `forbidden` class is enforced again here, at the only process that touches the tree.
+  def test_a_denied_path_is_refused_whoever_accepted_it
+    with_tree(".env" => "SECRET=1\n", "app/x.rb" => "x = 1\n") do |dir|
+      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+        decision(effects: [
+          { "kind" => "patch", "payload" => { "path" => ".env", "find" => "SECRET=1",
+                                              "replace" => "SECRET=2" } },
+          { "kind" => "delete", "payload" => { "path" => ".git/config" } }
+        ])
+      ])
+
+      assert_equal 2, result.refused.length
+      assert(result.refused.all? { |refusal| refusal.reason.include?("no accepted decision may write") })
+      assert_equal "SECRET=1\n", File.read(File.join(dir, ".env"))
     end
   end
 
