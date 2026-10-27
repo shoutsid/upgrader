@@ -4376,6 +4376,10 @@ module AgentsFyi
                           "on #{record.from_version} → #{record.to_version}. Should a later rung " \
                           "apply this repair?",
             "context" => { "stage" => Record::REPAIR, "files" => Array(files).map(&:to_s) },
+            # The run is named at the top level as well as in the evidence: the consultant reads
+            # the patch off the run it names, and a question whose `run_id` is null makes the
+            # repair task carry no run at all.
+            "run_id" => record.run_id,
             "evidence" => { "failure" => failure.to_s[0, 4_000], "attempts" => attempts,
                             "gate" => gate, "run_id" => record.run_id },
             "source" => "walker"
