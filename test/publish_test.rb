@@ -1018,6 +1018,47 @@ class PublishTest < Minitest::Test
     assert_equal "agents-fyi/upgrade-4.1.0", call[4],
       "a later rung was based on the starting ref instead of the previous rung"
   end
+
+  # **`publish: branch` is a handoff without a request.** The branch is still a claim that the rung
+  # works, and the account's CI can run on it; only the pull request is absent.
+  def test_branch_only_publishes_without_opening_a_pull_request
+    _bare, clone = origin_and_clone
+    write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.0"\n))
+    repository = "https://github.com/acme/storefront"
+    api = FakeApi.new
+
+    result = Publish.new(root: clone, repository: repository, from_version: "4.0.0.rc1",
+      to_version: "4.1.0", record: passed_record(repository: repository),
+      token: "ghp_secret", git: FakeGit.new, api: api).call(open_pr: false)
+
+    assert result.pushed, result.reason
+    assert_nil result.pull_request
+    assert_empty api.calls.select { |call| call.first == :pull_request },
+      "branch-only publishing opened a pull request"
+  end
+
+  def test_the_body_names_a_policy_accepted_decision_and_what_to_canary
+    applied = AgentsFyi::Upgrader::Applier::Applied.new(
+      path: "app/controllers/users_controller.rb", line: 4, text: "before_filter :x",
+      after: "before_action :x", subject: "before_filter", origin: "decision:q1"
+    )
+    record = passed_record(repository: "https://github.com/acme/storefront", applied: [applied],
+      accepted_decisions: [{
+        "id" => "q1", "question" => "Which filter?", "answer" => "rename it",
+        "accepted_by" => "policy:auto", "accepted_by_policy" => true,
+        "risk_class" => "medium",
+        "review" => { "verdict" => "safe", "agent" => "reviewer", "model" => "test/model" },
+        "effects" => [{ "kind" => "patch", "payload" => { "path" => applied.path } }]
+      }])
+    text = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record).preview_body
+
+    assert_includes text, "Accepted by the account's policy"
+    assert_includes text, "reviewer/test/model"
+    assert_includes text, "What to canary"
+    assert_includes text, "HTTP endpoints"
+    assert_includes text, "Your CI, deploy and canary are the release gate"
+  end
 end
 
 # **An open pull request for the rung is edited, not duplicated.** The GitHub class is driven through

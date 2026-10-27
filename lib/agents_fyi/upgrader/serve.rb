@@ -146,6 +146,9 @@ module AgentsFyi
         @step_class = step_class
         @queue_limit = queue_limit
         @contribute = contribute
+        # The queue row id, by repository, for the target lease. A declaration-driven walk has no
+        # queue row and therefore no lease; the row's own id is the only thing the claim names.
+        @target_ids = {}
         @stop = false
       end
 
@@ -294,12 +297,17 @@ module AgentsFyi
         if ref.to_s.empty? && project && !project.base_ref.to_s.empty?
           ref = project.base_ref
         end
-        return walk_repository(repository, ref, project: project) if @walk
+        target_id = @target_ids[Repository.name(repository)]
+        return walk_repository(repository, ref, project: project, target_id: target_id) if @walk
 
-        record = run_one(repository, ref, project: project)
+        record = run_one(repository, ref, project: project, target_id: target_id)
         return :idle if record.nil?
+        return :blocked unless record.passed?
 
-        record.passed? ? :worked : :blocked
+        if publish_wanted?(project) && !publish(record, project: project)
+          return :blocked
+        end
+        :worked
       end
 
       # The declaration for a repository: the one this loop was started with when it matches, and
@@ -389,9 +397,9 @@ module AgentsFyi
       # `:blocked` is a rung that ran and did not pass (retry soon, not instantly), `:idle` is a
       # move the ledger had already settled (nothing ran at all), and `:worked` is a passed rung,
       # where the next one is ready now.
-      def walk_repository(repository, ref, project:)
+      def walk_repository(repository, ref, project:, target_id: nil)
         @rungs.times do
-          record = run_one(repository, ref, project: project)
+          record = run_one(repository, ref, project: project, target_id: target_id)
           return :idle if record.nil?
 
           return :blocked unless record.passed?
@@ -400,7 +408,7 @@ module AgentsFyi
           # publish that did not arrive must stop the walk rather than stack a pull request on a
           # branch that is not there. `:blocked` is the retry-soon outcome and delivery has its own
           # retry (`retry_delivery`) that does not re-walk the rung.
-          if @publish && !publish(record, project: project)
+          if publish_wanted?(project) && !publish(record, project: project)
             @out.puts("serve: #{repository} — the delivery of #{record.to_version} did not arrive, " \
                       "so the walk stops here rather than stacking the next checkpoint on it")
             return :blocked
@@ -423,23 +431,42 @@ module AgentsFyi
         root = record.worktree.to_s.empty? ? @home : record.worktree
         pattern = project&.delivery&.branch
         chain = project.nil? ? true : project.delivery.chain
+        mode = publish_mode(project)
         publisher = @publish_class.new(
           root: root, repository: record.repository, from_version: record.from_version,
           to_version: record.to_version, record: record, out: @out,
           token: github_token(record.repository), branch_pattern: pattern,
-          report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref, chain: chain
+          report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: project&.base_ref, chain: chain,
+          deploy: project&.delivery&.deploy
         )
-        result = publisher.call
+        result = mode == "branch" ? publisher.call(open_pr: false) : publisher.call
         @out.puts("serve: #{record.repository} — #{result}")
         # **The brief is rendered once, here, and stored beside the delivery.** The site admin reads
         # the bytes the pull request would carry rather than reimplementing `Publish#body` in Rails.
         brief = publisher.respond_to?(:preview_body) ? publisher.preview_body : nil
         remember_delivery(record, result, root: root, pattern: pattern,
-          base_ref: project&.base_ref, chain: chain, brief: brief)
+          base_ref: project&.base_ref, chain: chain, brief: brief, mode: mode)
         # **A boolean, because the walk's next branch depends on this one.** A plain git remote is a
         # delivered branch with no request, which is complete rather than failed — that distinction
         # already lives on the ledger's answer and is reused here rather than decided twice.
-        delivered?(result, record.repository)
+        delivered?(result, record.repository, mode: mode)
+      end
+
+      # **The account's handoff switch, with the CLI as an override.** A loop started with
+      # `--publish` publishes everything it walks; a project that names `off` is still a project
+      # the operator asked to publish by starting the loop that way. A project that names
+      # `branch` publishes without opening a request.
+      def publish_wanted?(project)
+        return true if @publish
+
+        %w[branch pr].include?(project&.delivery&.publish.to_s)
+      end
+
+      def publish_mode(project)
+        mode = project&.delivery&.publish.to_s
+        return mode if %w[branch pr].include?(mode)
+
+        @publish ? "pr" : "off"
       end
 
       # **A connected account gets its own token; there is no deployment-wide customer credential
@@ -458,10 +485,12 @@ module AgentsFyi
       # **What the delivery was, kept on the rung's ledger entry.** The next cycle reads this instead
       # of the record — which is gone by then — and the retry needs the produced commit and the tree
       # it lives in; neither is in the publisher's result or the service's run row.
-      def remember_delivery(record, result, root:, pattern:, base_ref: nil, chain: true, brief: nil)
+      def remember_delivery(record, result, root:, pattern:, base_ref: nil, chain: true, brief: nil,
+        mode: nil)
         state = {
           "attempted" => true,
-          "delivered" => delivered?(result, record.repository),
+          "delivered" => delivered?(result, record.repository, mode: mode),
+          "publish" => mode.to_s,
           # **The run this delivery belongs to.** The feed is keyed by the move as well, and a
           # later attempt at the same move must not make an older run page claim its pull request.
           "run_id" => record.run_id,
@@ -495,8 +524,9 @@ module AgentsFyi
       # A branch is delivered when it is on the remote. A pull request is part of delivery only on
       # github.com; a plain git remote has nowhere to open one, and treating that as unfinished is how
       # a mirror would be retried for ever.
-      def delivered?(result, repository)
+      def delivered?(result, repository, mode: nil)
         return false unless result.pushed
+        return true if mode.to_s == "branch"
 
         github = @publish_class.respond_to?(:github?) ? @publish_class.github?(repository) : true
         !github || !result.pull_request.to_s.empty?
@@ -553,21 +583,25 @@ module AgentsFyi
           pattern = delivery.is_a?(Hash) ? delivery["branch_pattern"] : nil
           chain = delivery.is_a?(Hash) && delivery.key?("chain") ? delivery["chain"] != false :
             (project.nil? ? true : project.delivery.chain)
+          mode = delivery.is_a?(Hash) ? delivery["publish"].to_s : ""
+          mode = "pr" if mode.empty?
           publisher = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: record, commit: commit,
             out: @out, token: github_token(entry.repo),
             branch_pattern: pattern,
-            report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref, chain: chain
+            report_base: ENV["UPGRADER_PUBLIC_URL"], base_ref: base_ref, chain: chain,
+            deploy: project&.delivery&.deploy
           )
-          result = publisher.call
+          result = mode == "branch" ? publisher.call(open_pr: false) : publisher.call
           @out.puts("serve: #{entry.repo} — #{recovered ? "delivery" : "delivery retry"}: #{result}")
           # **What a recovered attempt must write down is what a retry reads.** The first attempt of a
           # rung that never had one is where its `root`, `commit`, pattern and chain are first named;
           # an entry that recorded only the outcome would leave the next cycle with nothing to retry.
           state = (delivery.is_a?(Hash) ? delivery : {}).merge(
             "attempted" => true,
-            "delivered" => delivered?(result, entry.repo),
+            "delivered" => delivered?(result, entry.repo, mode: mode),
+            "publish" => mode,
             "branch" => result.branch,
             "commit" => result.commit.to_s.empty? ? commit : result.commit,
             "pull_request" => result.pull_request,
@@ -586,7 +620,8 @@ module AgentsFyi
           )
           @deliveries.record(repo: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, delivery: state)
-          blocked << Repository.name(entry.repo) unless delivered?(result, entry.repo)
+          blocked << Repository.name(entry.repo) unless
+            delivered?(result, entry.repo, mode: mode)
         end
         blocked.uniq
       end
@@ -652,7 +687,13 @@ module AgentsFyi
       # caller does about either.
       def queued
         rows = @corpus.targets(limit: @queue_limit)
-        specs = rows.to_a.filter_map { |row| self.class.spec_from(row, out: @out) }
+        specs = []
+        rows.to_a.each do |row|
+          url = row.is_a?(Hash) ? row["repo_url"].to_s : ""
+          @target_ids[Repository.name(url)] = row["id"].to_s unless url.empty? || row["id"].nil?
+          spec = self.class.spec_from(row, out: @out)
+          specs << spec if spec
+        end
         if specs.empty?
           @out.puts("serve: the service's queue is empty, so this cycle has nothing to walk")
         end
@@ -709,8 +750,18 @@ module AgentsFyi
       # One repository, one step. `nil` means the move it resolved to was already
       # settled, which is not an error: it is the ledger doing its job, and it is worth a
       # line because it is also what a lost volume would look like from the other side.
-      def run_one(repository, ref, project: nil)
+      def run_one(repository, ref, project: nil, target_id: nil)
         project ||= project_for(repository)
+        lease_token = nil
+        if !target_id.to_s.empty?
+          claimed, problem = @corpus.claim_target(target_id,
+            seconds: @step_timeout.to_i + 300)
+          if problem
+            @out.puts("serve: #{repository} — #{problem}")
+            return nil
+          end
+          lease_token = claimed["lease_token"].to_s
+        end
         # **The checkpoint when the project has one, the destination otherwise.** A feed written
         # before checkpoints existed carries neither field, so an old row keeps walking to `to` —
         # and a service that is mid-upgrade publishes a checkpoint the client already understands
@@ -746,6 +797,15 @@ module AgentsFyi
         # repository is walked, and the cycle's heartbeat still moves — a service that
         # died because one clone failed is a service that stops working for everybody.
         @out.puts("serve: #{repository}: #{e.class}: #{e.message}")
+      ensure
+        if lease_token && !target_id.to_s.empty?
+          begin
+            @corpus.release_target(target_id, lease_token)
+          rescue Corpus::Unreachable, Corpus::Refused, Corpus::Duplicate => e
+            @out.puts("serve: #{repository} — the target lease could not be released: " \
+                      "#{e.message}")
+          end
+        end
       end
 
       # What the tree becomes, and this is the difference between a loop and a loop that

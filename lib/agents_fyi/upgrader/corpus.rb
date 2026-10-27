@@ -219,6 +219,18 @@ module AgentsFyi
         payload["targets"].select { |row| row.is_a?(Hash) && !row["repo_url"].to_s.empty? }
       end
 
+      # **The target lease, so two walkers cannot walk one row.** A claim is a token the release
+      # names; a stale lease is claimable by the next walker after its deadline.
+      def claim_target(target_id, seconds: 3600)
+        call(:post, "/api/upgrades/targets/#{URI.encode_www_form_component(target_id.to_s)}/claim",
+          body: { "seconds" => seconds.to_i })
+      end
+
+      def release_target(target_id, lease_token)
+        call(:post, "/api/upgrades/targets/#{URI.encode_www_form_component(target_id.to_s)}/release",
+          body: { "lease_token" => lease_token.to_s })
+      end
+
       # One step, as the service files it: the verdict, the commands with their exit
       # codes, the refusals, and the patch.
       def record_run(payload)
