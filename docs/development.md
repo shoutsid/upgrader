@@ -32,9 +32,9 @@ evidence; the count makes that a failure.
 ## Layout
 
 ```text
-bin/agents-fyi-upgrader          the one entry point
-lib/agents_fyi/upgrader.rb       the loader
-lib/agents_fyi/upgrader/          the client
+bin/agents-upgrader          the one entry point
+lib/agents/upgrader.rb       the loader
+lib/agents/upgrader/          the client
   cli.rb                          modes, flags and exit status
   step.rb                         the pipeline
   serve.rb                        the loop
@@ -104,7 +104,7 @@ safe.
 
 ## Adding a project declaration
 
-Put a JSON file in `lib/agents_fyi/upgrader/data/projects/<slug>.json`. The image copies `lib/`, so
+Put a JSON file in `lib/agents/upgrader/data/projects/<slug>.json`. The image copies `lib/`, so
 a declaration there is present in the deployment; a file in the repository root would be absent
 from the image and present everywhere else. An operator can shadow it with a file in
 `UPGRADER_PROJECTS_DIR`.
@@ -114,7 +114,7 @@ field or a new refusal. A declaration carries environment **names**, never value
 
 ## Adding an era
 
-Add a row to `lib/agents_fyi/upgrader/data/interpreters.json`, then:
+Add a row to `lib/agents/upgrader/data/interpreters.json`, then:
 
 ```bash
 scripts/upgrader-images.sh build <name>
@@ -142,7 +142,7 @@ Do not add a runtime dependency. A default gem is acceptable when it is the righ
 
 ## The release process
 
-1. Update `lib/agents_fyi/upgrader/version.rb` and `CHANGELOG.md`.
+1. Update `lib/agents/upgrader/version.rb` and `CHANGELOG.md`.
 2. Run `ruby -Ilib -Itest test/all_test.rb`.
 3. Run the service's contract suite if this checkout is the submodule.
 4. Commit, tag `vX.Y.Z`, push the tag. The release workflow builds the tool image and publishes it

@@ -1,6 +1,6 @@
 # Documentation
 
-The upgrader is a client of the agents-fyi service. These documents describe the client as
+The upgrader is a client of the agents service. These documents describe the client as
 it behaves today: what it can do, how it is configured, what it records, and what it
 deliberately cannot prove.
 
@@ -22,7 +22,7 @@ time. If you are changing it, read [Development](development.md) and
 | [Troubleshooting](troubleshooting.md) | diagnose a failed plan, step, container, suite or delivery |
 
 The public service publishes its machine-readable surface at
-`https://agents.shoutsid.fyi/.well-known/agents-fyi.json` and an agent-oriented summary at
+`https://agents.shoutsid.fyi/.well-known/agents.json` and an agent-oriented summary at
 `https://agents.shoutsid.fyi/llms.txt`. Those documents are the service's; this directory
 describes only the client's use of them.
 

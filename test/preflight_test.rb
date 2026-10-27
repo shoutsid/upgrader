@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The moves an old application's Gemfile needs before anything can be installed.
 #
@@ -14,9 +14,9 @@ require "agents_fyi/upgrader"
 # decision or a note is a Gemfile this class refused to rewrite, which is the property
 # that keeps a preflight from breaking an application quietly.
 class PreflightTest < Minitest::Test
-  Preflight = AgentsFyi::Upgrader::Preflight
-  Corpus = AgentsFyi::Upgrader::Corpus
-  Companions = AgentsFyi::Upgrader::Companions
+  Preflight = Agents::Upgrader::Preflight
+  Corpus = Agents::Upgrader::Corpus
+  Companions = Agents::Upgrader::Companions
 
   GEMFILE = <<~GEM
     source "https://rubygems.org"

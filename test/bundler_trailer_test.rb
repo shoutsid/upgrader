@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The trailer that stops an era installing an application, driven against real lockfiles.
 #
@@ -10,7 +10,7 @@ require "agents_fyi/upgrader"
 # an instance of Pathname` from bundler 1.17.3's own `shared_helpers.rb:29`. Dropping the trailer lets
 # the era's own bundler read the lock and write its version back.
 class BundlerTrailerTest < Minitest::Test
-  BundlerTrailer = AgentsFyi::Upgrader::BundlerTrailer
+  BundlerTrailer = Agents::Upgrader::BundlerTrailer
 
   LOCK = <<~LOCK
     GEM

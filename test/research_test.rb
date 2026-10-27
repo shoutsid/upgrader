@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The facts the service cannot read for itself, as the client that can read them.
 #
@@ -12,7 +12,7 @@ require "agents_fyi/upgrader"
 # format is a third party's and a fixture invented by whoever wrote the reader would agree
 # with whatever the reader does.
 class ResearchTest < Minitest::Test
-  Research = AgentsFyi::Upgrader::Research
+  Research = Agents::Upgrader::Research
 
   # Copied from `https://index.rubygems.org/info/devise`, verbatim.
   DEVISE = <<~INDEX

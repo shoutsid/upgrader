@@ -3,10 +3,10 @@
 require "minitest/autorun"
 require "tmpdir"
 require "fileutils"
-require "agents_fyi/upgrader/suite_failures"
-require "agents_fyi/upgrader/yaml_columns"
-require "agents_fyi/upgrader/sealed"
-require "agents_fyi/upgrader/applier"
+require "agents/upgrader/suite_failures"
+require "agents/upgrader/yaml_columns"
+require "agents/upgrader/sealed"
+require "agents/upgrader/applier"
 
 # **The repair a serialized column earns after the safe-load change.** The tree is synthetic because
 # the rule's subject is the class line and the setting, not the application; the failure itself is
@@ -35,7 +35,7 @@ class YamlColumnsTest < Minitest::Test
   end
 
   def failure(classes = "ActiveSupport::HashWithIndifferentAccess")
-    AgentsFyi::Upgrader::SuiteFailures::Failure.new(
+    Agents::Upgrader::SuiteFailures::Failure.new(
       name: "Legislation::AnnotationsController POST #create accepts a serialized range",
       source: "@annotation = Legislation::Annotation.new(annotation_params)",
       error: "Psych::DisallowedClass",
@@ -45,7 +45,7 @@ class YamlColumnsTest < Minitest::Test
   end
 
   def edits(classes = "ActiveSupport::HashWithIndifferentAccess")
-    AgentsFyi::Upgrader::YamlColumns.for(root: @root, failures: [failure(classes)])
+    Agents::Upgrader::YamlColumns.for(root: @root, failures: [failure(classes)])
   end
 
   def test_the_class_the_failure_names_becomes_the_release_s_permitted_classes_line
@@ -64,7 +64,7 @@ class YamlColumnsTest < Minitest::Test
   # The applier is the only writer, so the repair is proved by the bytes it leaves: the class line
   # is unchanged above the insertion and the setting is inside the class.
   def test_the_edit_is_written_by_the_applier_and_leaves_the_class_line_in_place
-    result = AgentsFyi::Upgrader::Applier.new(@root).apply(edits)
+    result = Agents::Upgrader::Applier.new(@root).apply(edits)
 
     assert_empty result.refused
     assert_equal 1, result.applied.size
@@ -78,13 +78,13 @@ class YamlColumnsTest < Minitest::Test
   # A retry reads the file the first edit wrote; a second line would be a duplicate setting rather
   # than a second repair.
   def test_a_second_run_finds_the_setting_and_writes_nothing
-    AgentsFyi::Upgrader::Applier.new(@root).apply(edits)
+    Agents::Upgrader::Applier.new(@root).apply(edits)
 
     assert_empty edits, "the same failure produced a second setting after the first was written"
   end
 
   def test_two_failures_name_their_classes_once_and_in_a_stable_order
-    edit = AgentsFyi::Upgrader::YamlColumns.for(root: @root, failures: [
+    edit = Agents::Upgrader::YamlColumns.for(root: @root, failures: [
       failure("Symbol"), failure("ActiveSupport::HashWithIndifferentAccess"), failure("Symbol")
     ]).first
 
@@ -96,7 +96,7 @@ class YamlColumnsTest < Minitest::Test
     other.error = "NoMethodError"
     other.message = "undefined method `ranges' for nil"
 
-    assert_empty AgentsFyi::Upgrader::YamlColumns.for(root: @root, failures: [other])
+    assert_empty Agents::Upgrader::YamlColumns.for(root: @root, failures: [other])
   end
 
   def test_an_application_with_no_application_class_is_left_alone

@@ -5,7 +5,7 @@ line flag. The precedence is:
 
 1. a command-line flag;
 2. a project declaration, for the repository, ref or target the caller did not set;
-3. the environment variable that seeds the flag (`AGENTS_FYI_URL`, `UPGRADER_HOME`,
+3. the environment variable that seeds the flag (`AGENTS_URL`, `UPGRADER_HOME`,
    `UPGRADER_PROJECT`);
 4. the default named below.
 
@@ -18,13 +18,13 @@ A setting that is not present is a setting the caller did not make.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTS_FYI_URL` | none | the service base URL. `--api` overrides it. A mode that needs the service and has neither refuses to run. |
-| `AGENTS_FYI_KEY` | empty | the operator key, sent as `X-API-Key`. Empty means anonymous reads only. |
-| `UPGRADER_HOME` | `~/.cache/agents-fyi-upgrader` | worktrees, the ledger, per-run bundles, `state/` and the repair agent's config. `--home` overrides it. |
+| `AGENTS_URL` | none | the service base URL. `--api` overrides it. A mode that needs the service and has neither refuses to run. |
+| `AGENTS_KEY` | empty | the operator key, sent as `X-API-Key`. Empty means anonymous reads only. |
+| `UPGRADER_HOME` | `~/.cache/agents-upgrader` | worktrees, the ledger, per-run bundles, `state/` and the repair agent's config. `--home` overrides it. |
 | `UPGRADER_PROJECT` | empty | the project declaration walked when `--project` is not named. |
 | `UPGRADER_PROJECTS_DIR` | none | a directory of declarations read **before** the built-in ones. A file here shadows a built-in of the same slug. |
 | `UPGRADER_PUBLIC_URL` | empty | the public base a review brief links reports to. Empty names reports rather than linking them. |
-| `UPGRADER_IMAGE` | empty | an optional stamp appended to the machine identity in the ledger, for example `agents-fyi-upgrader:0.1.0`. |
+| `UPGRADER_IMAGE` | empty | an optional stamp appended to the machine identity in the ledger, for example `agents-upgrader:0.1.0`. |
 | `UPGRADER_COMMAND_TIMEOUT` | `900` | seconds one pipeline command may run before its process group is killed. |
 | `UPGRADER_DEFAULT_STEPS` | empty / `0` | how many new framework defaults a step may try. Each toggle is a suite run. |
 | `UPGRADER_GITHUB_TOKEN` | empty | the token `step --publish` uses. `serve --publish` asks the service for a connected account's credential instead. It is read and never written into a record. |
@@ -37,7 +37,7 @@ A setting that is not present is a setting the caller did not make.
 | `UPGRADER_INTERPRETER_IMAGES` | empty | digest pins for era images, as `2.2=sha256:…,2.5=sha256:…`; a bare digest inherits the matrix image's repository. Empty uses the tags the matrix carries. |
 | `UPGRADER_DOCKER_VOLUME` | discovered | the named volume the walker's home is mounted from, so an era container can mount the same worktree. Set only when discovery cannot answer. |
 | `UPGRADER_RVM_ROOT` | `~/.rvm` | rvm's directory, for `UPGRADER_RUNTIME=rvm`. |
-| `UPGRADER_RVM_GEMSET` | `agents-fyi-upgrader` | the gemset this tool keeps its eras in, so it does not install into the developer's default. |
+| `UPGRADER_RVM_GEMSET` | `agents-upgrader` | the gemset this tool keeps its eras in, so it does not install into the developer's default. |
 
 ### The repair loop
 
@@ -90,7 +90,7 @@ configured without changing its command.
 | `UPGRADER_SUITE_ENV_FILE` | empty | a path to a suite environment file already inside the container. |
 | `UPGRADER_PROJECT` | empty | the declaration to walk, passed through as `--project`. |
 | `UPGRADER_PROJECTS_DIR` | none | read by the client itself; set here so the container sees the operator's declarations. |
-| `UPGRADER_API_KEY` and `UPGRADER_API_BASE_URL` | none | not read by this client. A deployment wrapper may use these names and map them to `AGENTS_FYI_KEY` and `API_BASE_URL`. |
+| `UPGRADER_API_KEY` and `UPGRADER_API_BASE_URL` | none | not read by this client. A deployment wrapper may use these names and map them to `AGENTS_KEY` and `API_BASE_URL`. |
 
 `UPGRADER_REPOS` is **retired**. The service's queue is the deployment's source of work; a
 second list in the environment would override the order the service computes, silently.
@@ -113,7 +113,7 @@ Declarations are read from:
 1. an explicit directory passed to `Project.find(..., dir:)`; the CLI does not expose one, and it
    exists for tests and embedders;
 2. `UPGRADER_PROJECTS_DIR`, the operator's directory;
-3. `lib/agents_fyi/upgrader/data/projects/`, the built-ins shipped in the image.
+3. `lib/agents/upgrader/data/projects/`, the built-ins shipped in the image.
 
 A file in an earlier directory shadows one of the same slug later. A named project that cannot
 be read is a refusal at startup, naming the directories it looked in; one bad file does not hide
@@ -138,7 +138,7 @@ the others from a catalogue listing.
 | `services` | `[]` | names of services the application needs, for example `postgres`, `redis`. |
 | `env_names` | `[]` | environment **names** the suite reads, for example `RAILS_SECRET_TOKEN`. A value here is rejected. |
 | `eras` | `"auto"` | `"auto"` or a list of era names the walk may use. |
-| `delivery` | `{"provider":"none","chain":false}` when absent | where a passed rung goes: `provider` is `github` or `none`; `branch` defaults to `agents-fyi/upgrade-<release>` for GitHub; inside an object, `chain` defaults to `true`. |
+| `delivery` | `{"provider":"none","chain":false}` when absent | where a passed rung goes: `provider` is `github` or `none`; `branch` defaults to `agents/upgrade-<release>` for GitHub; inside an object, `chain` defaults to `true`. |
 | `source_roots` | `[]` (the whole repository) | relative directories a rule may scan, for example `app`, `lib`, `components`, `engines`. An absolute path or one containing `..` is rejected. |
 | `checks` | `[]` | the rest of the application's gate, beside the suite. |
 | `toolchain` | none | build facts, carried and quoted; the overlay image that spends them is a later phase. `chrome` chooses the browser a suite is measured on — see below. |
@@ -183,7 +183,7 @@ there (`firefox-esr`, which no era image carries).
   "source_roots": ["app", "lib", "config", "components", "engines"],
   "delivery": {
     "provider": "github",
-    "branch": "agents-fyi/upgrade-<release>",
+    "branch": "agents/upgrade-<release>",
     "chain": true
   },
   "checks": [
@@ -348,7 +348,7 @@ The delivery credential depends on the mode:
   the cycle says so. There is deliberately no deployment-wide customer credential to fall back
   to; the account admin surface is where the connection is repaired.
 
-Each passed rung becomes a branch named by the declaration (`agents-fyi/upgrade-<release>` by
+Each passed rung becomes a branch named by the declaration (`agents/upgrade-<release>` by
 default), and with `chain: true` each pull request targets the rung before it rather than the
 base branch. A step that did not pass is never published: a branch is a claim that the rung
 works.

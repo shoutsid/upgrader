@@ -1,7 +1,7 @@
 #!/bin/sh
 # The services a Rails application's suite expects, started inside the step's own container.
 #
-# Called by the walker as `agents-fyi-services` with the application's directory as the
+# Called by the walker as `agents-services` with the application's directory as the
 # working directory, once per step, before the baseline runs. Everything it starts lives in
 # the container and dies with it, which is the property that matters: an environment that
 # survives a step is an environment the next step can silently inherit evidence from.
@@ -15,7 +15,7 @@
 # runs as (`--user` from the walker), `initdb` refuses root, and authentication is `trust`
 # over loopback and the socket: a throwaway server, for one step, on a private namespace.
 #
-# **The socket directory is `/tmp/agents-fyi-socket`, and `/var/run/postgresql` is a symlink
+# **The socket directory is `/tmp/agents-socket`, and `/var/run/postgresql` is a symlink
 # to it from the image.** A `database.yml` with no `host:` connects over the Unix socket at
 # the directory libpq was compiled with, and the container's account cannot create anything
 # under `/var/run`. The image carries the link; see its comment for the failure that found
@@ -32,18 +32,18 @@ set -u
 # script (the container's only root process) creates it and hands it to the walker's uid.
 # The fallback `mkdir` here is for a native or unusual context where nothing else did it.
 DATABASE_CONFIG="config/database.yml"
-DATA_DIR="/tmp/agents-fyi-postgres"
-SOCKET_DIR="${AGENTS_FYI_PG_SOCKET:-/var/run/postgresql}"
+DATA_DIR="/tmp/agents-postgres"
+SOCKET_DIR="${AGENTS_PG_SOCKET:-/var/run/postgresql}"
 PORT=5432
 
 # The adapter, hosts, databases and credentials a `database.yml` declares, read by
-# `/usr/local/bin/agents-fyi-dbconfig` — a *file* rather than a heredoc here, because which
+# `/usr/local/bin/agents-dbconfig` — a *file* rather than a heredoc here, because which
 # roles a database needs and with what password is a rule, and a rule inside a shell heredoc
 # is a rule no test can run (`test/dbconfig_test.rb` drives that file directly, one fixture
 # per shape an application actually has). The fallback below is for a context where the
 # reader is not installed: a plain-text scan that answers the two questions this script
 # cannot do without — which adapter, and which usernames.
-DBCONFIG="/usr/local/bin/agents-fyi-dbconfig"
+DBCONFIG="/usr/local/bin/agents-dbconfig"
 read_config() {
     if [ -x "$DBCONFIG" ]; then
         ruby "$DBCONFIG" "$DATABASE_CONFIG" 2>/dev/null || true
@@ -64,7 +64,7 @@ start_postgres() {
         pg_bin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -n1 || true)"
     fi
     if [ -z "$pg_bin" ] || [ ! -x "$pg_bin/initdb" ]; then
-        echo "agents-fyi-services: database.yml wants PostgreSQL and this image has no server to start" >&2
+        echo "agents-services: database.yml wants PostgreSQL and this image has no server to start" >&2
         return 1
     fi
 
@@ -72,7 +72,7 @@ start_postgres() {
     if [ ! -s "$DATA_DIR/PG_VERSION" ]; then
         rm -rf "$DATA_DIR"
         if ! "$pg_bin/initdb" -D "$DATA_DIR" -U app --auth=trust --encoding=UTF8 --locale=C >/dev/null; then
-            echo "agents-fyi-services: initdb failed; the suite would run against no database" >&2
+            echo "agents-services: initdb failed; the suite would run against no database" >&2
             return 1
         fi
     fi
@@ -83,7 +83,7 @@ start_postgres() {
         # reach. Postgres reads `localhost` as both.
         if ! "$pg_bin/pg_ctl" -D "$DATA_DIR" -l "$DATA_DIR/server.log" \
             -o "-c listen_addresses=localhost -p $PORT -k $SOCKET_DIR" -w start >/dev/null; then
-            echo "agents-fyi-services: pg_ctl could not start the server; see $DATA_DIR/server.log" >&2
+            echo "agents-services: pg_ctl could not start the server; see $DATA_DIR/server.log" >&2
             return 1
         fi
     fi
@@ -91,7 +91,7 @@ start_postgres() {
     # is the shape of every failure this script exists to make loud, and the sentence it
     # printed before this check existed was simply false.
     if ! "$pg_bin/pg_isready" -h 127.0.0.1 -p "$PORT" >/dev/null 2>&1; then
-        echo "agents-fyi-services: PostgreSQL accepted no connection on 127.0.0.1:$PORT after starting" >&2
+        echo "agents-services: PostgreSQL accepted no connection on 127.0.0.1:$PORT after starting" >&2
         return 1
     fi
 
@@ -123,13 +123,13 @@ start_postgres() {
             -c "ALTER ROLE :\"role\" WITH LOGIN PASSWORD :'pw'" >/dev/null 2>&1 || true
     done
 
-    echo "agents-fyi-services: PostgreSQL $("$pg_bin/postgres" --version | awk '{print $3}') on 127.0.0.1:$PORT and $SOCKET_DIR"
+    echo "agents-services: PostgreSQL $("$pg_bin/postgres" --version | awk '{print $3}') on 127.0.0.1:$PORT and $SOCKET_DIR"
     # What the file said, in the record: a suite that cannot reach its database is a failure
     # whose cause is usually in this line.
-    echo "agents-fyi-services: database.yml: adapter ${adapter:-unread}, host ${host:-default}, database ${database:-unset}, user(s) ${users:-none (libpq default)}"
+    echo "agents-services: database.yml: adapter ${adapter:-unread}, host ${host:-default}, database ${database:-unset}, user(s) ${users:-none (libpq default)}"
     case "$host" in
         ""|localhost|127.0.0.1|::1) ;;
-        *) echo "agents-fyi-services: note: database.yml names host $host, which is not this container — the suite will connect there, not to the server started here" ;;
+        *) echo "agents-services: note: database.yml names host $host, which is not this container — the suite will connect there, not to the server started here" ;;
     esac
 }
 
@@ -142,7 +142,7 @@ start_redis() {
             --bind 127.0.0.1 --port 6379 --dir /tmp >/dev/null 2>&1 || true
     fi
     version="$(redis-server --version 2>/dev/null | sed -n 's/.*v=\([0-9.]*\).*/\1/p')"
-    echo "agents-fyi-services: Redis ${version:-unknown} on 127.0.0.1:6379"
+    echo "agents-services: Redis ${version:-unknown} on 127.0.0.1:6379"
 }
 
 adapter=""
@@ -170,10 +170,10 @@ case "$adapter" in
         start_postgres || exit 1
         ;;
     "")
-        echo "agents-fyi-services: no database.yml adapter was read, so PostgreSQL was not started"
+        echo "agents-services: no database.yml adapter was read, so PostgreSQL was not started"
         ;;
     *)
-        echo "agents-fyi-services: database.yml names the $adapter adapter; this script starts PostgreSQL only"
+        echo "agents-services: database.yml names the $adapter adapter; this script starts PostgreSQL only"
         ;;
 esac
 

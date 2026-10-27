@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "fileutils"
 require "json"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **An accepted decision's effects, applied to somebody's tree.**
 #
@@ -43,7 +43,7 @@ class EffectsTest < Minitest::Test
         patch(path: "app/a.rb", find: "A = 1", replace: "A = 2").merge("phase" => "pre"),
         patch(path: "app/b.rb", find: "B = 1", replace: "B = 2").merge("phase" => "post")
       ])]
-      effects = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0")
+      effects = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0")
 
       before = effects.apply(decisions, phase: "pre")
 
@@ -63,7 +63,7 @@ class EffectsTest < Minitest::Test
 
   def test_an_unknown_phase_is_refused_rather_than_applied
     with_tree("app/a.rb" => "A = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [patch(path: "app/a.rb", find: "A = 1", replace: "A = 2")
           .merge("phase" => "during")])
       ])
@@ -76,7 +76,7 @@ class EffectsTest < Minitest::Test
 
   def test_a_patch_is_written_once_at_the_line_it_located
     with_tree("app/views/bids/index.html.erb" => "<% @bids.each do |bid| %>\n  <%= link_to 'Show', bid %>\n<% end %>\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [patch(path: "app/views/bids/index.html.erb",
           find: "  <%= link_to 'Show', bid %>\n", replace: "")])
       ])
@@ -101,7 +101,7 @@ class EffectsTest < Minitest::Test
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
       effect = patch(path: "app/models/item.rb", find: "ITEM = 1", replace: "ITEM = 2")
       effect["id"] = "e1"
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [effect])
       ])
 
@@ -115,7 +115,7 @@ class EffectsTest < Minitest::Test
   # as the decision would read `decision:d1:e1` as a question called `d1:e1`, and the service's
   # verification would find no answer to link.
   def test_the_origin_grammar_reads_the_old_form_and_the_effect_level_one
-    effects = AgentsFyi::Upgrader::Effects
+    effects = Agents::Upgrader::Effects
 
     assert_equal ["d1", "e1"], effects.evidence("decision:d1:e1")
     assert_equal ["d1", nil], effects.evidence("decision:d1")
@@ -127,7 +127,7 @@ class EffectsTest < Minitest::Test
   def test_a_config_effect_is_applied_before_a_patch_that_depends_on_it
     with_tree("config/application.rb" => "config.load_defaults 5.2\n",
       "app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [
           patch(path: "app/models/item.rb", find: "ITEM = 1", replace: "ITEM = 2"),
           { "kind" => "config", "payload" => { "path" => "config/application.rb",
@@ -148,7 +148,7 @@ class EffectsTest < Minitest::Test
   # given at 6.0 govern 6.0 and every later rung without being a note about one.
   def test_an_effect_applies_only_inside_the_window_its_condition_names
     with_tree("app/views/layouts/application.html.erb" => "<%= yield %>\n") do |dir|
-      effects = AgentsFyi::Upgrader::Effects
+      effects = Agents::Upgrader::Effects
       decision = decision(effects: [patch(path: "app/views/layouts/application.html.erb",
         find: "<%= yield %>", replace: "<%= yield %>\n<footer></footer>",
         applies_when: { "rung_gte" => "6.0.0" })])
@@ -167,7 +167,7 @@ class EffectsTest < Minitest::Test
   # effect the operator scoped to one rung to every rung after it.
   def test_an_unknown_condition_refuses_rather_than_applying
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [patch(path: "app/models/item.rb", find: "ITEM = 1", replace: "ITEM = 2",
           applies_when: { "after_the_release" => "6.0.0" })])
       ])
@@ -183,12 +183,12 @@ class EffectsTest < Minitest::Test
   # that would have edited a site it was not written for.
   def test_a_find_that_is_absent_or_occurs_twice_is_refused_with_which
     with_tree("app/models/item.rb" => "ITEM = 1\nITEM = 1\n") do |dir|
-      twice = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      twice = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [patch(path: "app/models/item.rb", find: "ITEM = 1", replace: "ITEM = 2")])
       ])
       assert_includes twice.refused.first.reason, "more than once"
 
-      absent = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      absent = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [patch(path: "app/models/item.rb", find: "ITEM = 9", replace: "x")])
       ])
       assert_includes absent.refused.first.reason, "does not contain"
@@ -201,7 +201,7 @@ class EffectsTest < Minitest::Test
   # authority rule is checked at the write as well as in the service.
   def test_a_decision_nobody_accepted_is_refused_rather_than_applied
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(accepted_by: "", effects: [patch(path: "app/models/item.rb", find: "ITEM = 1",
           replace: "ITEM = 2")])
       ])
@@ -216,7 +216,7 @@ class EffectsTest < Minitest::Test
   # to write outside the working copy.
   def test_a_path_outside_the_working_copy_is_refused
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [patch(path: "../outside.rb", find: "x", replace: "y")])
       ])
 
@@ -240,7 +240,7 @@ class EffectsTest < Minitest::Test
   # decision did it, because the run body sends the decision id.
   def test_a_skip_rule_fires_and_names_the_decision_that_asked_for_it
     with_tree("app/models/item.rb" => "before_filter :x\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "skip")])
       ])
 
@@ -258,7 +258,7 @@ class EffectsTest < Minitest::Test
   # own output whether the failure it names is the one that happened.
   def test_an_expect_rule_fires_with_the_failure_it_accepts
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "expect", failure: "undefined method `x'")])
       ])
 
@@ -278,7 +278,7 @@ class EffectsTest < Minitest::Test
       before_filter :other
     RUBY
     with_tree("app/controllers/items_controller.rb" => body) do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "rewrite", old: "before_filter", new: "before_action")])
       ])
 
@@ -298,7 +298,7 @@ class EffectsTest < Minitest::Test
   # line check still applies. An anchor that is absent or appears twice is refused with the count.
   def test_an_insert_rule_adds_a_line_after_its_anchor_and_refuses_an_ambiguous_one
     with_tree("config/application.rb" => "module Store\n  class Application\n  end\nend\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "insert", path: "config/application.rb",
           after: "class Application", text: "    config.load_defaults 6.0")])
       ])
@@ -309,7 +309,7 @@ class EffectsTest < Minitest::Test
       assert_includes File.read(File.join(dir, "config/application.rb")),
         "class Application\n    config.load_defaults 6.0"
 
-      ambiguous = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      ambiguous = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(id: "d2", effects: [rule(kind: "insert", path: "config/application.rb",
           after: "end", text: "    # twice")])
       ])
@@ -322,7 +322,7 @@ class EffectsTest < Minitest::Test
   # a rule cannot become a second, looser config writer. The line's own `=`/space and comment stay.
   def test_a_config_rule_uses_the_existing_config_edit
     with_tree("config/application.rb" => "  config.load_defaults 5.2 # keep this for now\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "config", key: "config.load_defaults",
           file: "config/application.rb", value: "6.0")])
       ])
@@ -339,7 +339,7 @@ class EffectsTest < Minitest::Test
   # edit is: the line is the only thing that says which site the value belongs to.
   def test_a_config_rule_refuses_a_setting_it_cannot_locate_once
     with_tree("config/application.rb" => "config.load_defaults 5.2\nconfig.load_defaults 5.2\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "config", key: "config.load_defaults",
           file: "config/application.rb", value: "6.0")])
       ])
@@ -353,7 +353,7 @@ class EffectsTest < Minitest::Test
   # the five rather than treating it as a tree edit.
   def test_a_rule_of_an_unknown_kind_is_refused_with_the_vocabulary
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [{ "kind" => "rule",
           "payload" => { "change_key" => "ruby|actionpack|x", "action" => "skip_change" } }])
       ])
@@ -368,7 +368,7 @@ class EffectsTest < Minitest::Test
   # window its author scoped it to.
   def test_a_rule_guard_this_build_does_not_read_refuses
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "rewrite", old: "ITEM", new: "THING",
           guard: { "file" => "app/models/item.rb" })])
       ])
@@ -382,7 +382,7 @@ class EffectsTest < Minitest::Test
   # rather than applied to whatever the walk happens to be doing.
   def test_a_rule_without_a_change_key_is_refused
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [{ "kind" => "rule", "payload" => { "kind" => "skip" } }])
       ])
 
@@ -394,7 +394,7 @@ class EffectsTest < Minitest::Test
   # kind's vocabulary rather than silently ignored.
   def test_a_rule_payload_key_the_kind_does_not_read_is_refused
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [rule(kind: "skip", subject: "before_filter")])
       ])
 
@@ -407,7 +407,7 @@ class EffectsTest < Minitest::Test
   # rung's effect instead of stopping a walk: the sentence names the field and the vocabulary.
   def test_a_payload_key_the_walker_does_not_read_is_refused
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [{ "kind" => "patch", "payload" => { "path" => "app/models/item.rb",
                                                                "fnd" => "ITEM = 1" } }])
       ])
@@ -419,7 +419,7 @@ class EffectsTest < Minitest::Test
 
   def test_an_effect_of_a_kind_the_schema_does_not_declare_is_refused
     with_tree("app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "6.0.0").apply([
         decision(effects: [{ "kind" => "sed", "payload" => {} }])
       ])
 
@@ -431,7 +431,7 @@ class EffectsTest < Minitest::Test
   # rewrite the declaration by name, and the result names the Gemfile line.
   def test_a_gem_effect_adds_updates_and_removes_a_declaration
     with_tree("Gemfile" => "source \"https://rubygems.org\"\ngem \"rails\", \"6.0.0\"\ngem \"puma\", \"~> 5.0\"\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [
           { "kind" => "gem", "payload" => { "name" => "sidekiq", "requirement" => "~> 7.0" } },
           { "kind" => "gem", "payload" => { "name" => "rails", "action" => "update",
@@ -455,7 +455,7 @@ class EffectsTest < Minitest::Test
   # boundary as a patch.
   def test_typed_effects_outside_the_working_copy_are_refused
     with_tree("Gemfile" => "gem \"rails\"\n", "app/models/item.rb" => "ITEM = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [
           { "kind" => "file", "payload" => { "path" => "../outside.rb", "content" => "x" } },
           { "kind" => "delete", "payload" => { "path" => "../outside.rb" } },
@@ -476,7 +476,7 @@ class EffectsTest < Minitest::Test
   def test_a_patch_rule_applies_the_exact_find_and_replace_it_carries
     with_tree("app/controllers/users_controller.rb" =>
       "  before_filter :authenticate_user!\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "4.2.11").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "4.2.11").apply([
         decision(effects: [
           { "kind" => "rule", "applies_when" => {}, "payload" => {
             "change_key" => "ruby|actionpack|before_filter", "kind" => "patch",
@@ -500,7 +500,7 @@ class EffectsTest < Minitest::Test
   # same nested shape; it must not become a second gem applier.
   def test_a_gem_rule_updates_the_gemfile_it_names
     with_tree("Gemfile" => "gem \"rails\", \"4.2.11\"\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "5.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "5.0.0").apply([
         decision(effects: [
           { "kind" => "rule", "applies_when" => {}, "payload" => {
             "change_key" => "ruby|rails|rails", "kind" => "gem",
@@ -519,7 +519,7 @@ class EffectsTest < Minitest::Test
 
   def test_a_file_effect_replaces_an_existing_file
     with_tree("app/services/user.rb" => "OLD = true\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [
           { "kind" => "file",
             "payload" => { "path" => "app/services/user.rb", "content" => "NEW = true\n" } }
@@ -536,7 +536,7 @@ class EffectsTest < Minitest::Test
   # `forbidden` class is enforced again here, at the only process that touches the tree.
   def test_a_denied_path_is_refused_whoever_accepted_it
     with_tree(".env" => "SECRET=1\n", "app/x.rb" => "x = 1\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [
           { "kind" => "patch", "payload" => { "path" => ".env", "find" => "SECRET=1",
                                               "replace" => "SECRET=2" } },
@@ -552,7 +552,7 @@ class EffectsTest < Minitest::Test
 
   def test_file_delete_and_chmod_effects_change_the_tree_without_a_find
     with_tree("bin/run" => "#!/bin/sh\nexit 0\n", "script.sh" => "#!/bin/sh\n") do |dir|
-      result = AgentsFyi::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
+      result = Agents::Upgrader::Effects.new(root: dir, rung: "7.0.0").apply([
         decision(effects: [
           { "kind" => "file", "payload" => { "path" => "config/initializers/new.rb",
                                              "content" => "NEW = true\n" } },

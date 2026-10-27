@@ -15,7 +15,7 @@
 #   scripts/upgrader-rubies.sh check             # exit non-zero if an era the matrix names is absent
 #
 # Per era it does four things: `rvm install <ruby>`, a gemset of its own
-# (`UPGRADER_RVM_GEMSET`, default `agents-fyi-upgrader` — a walk must not install its gems into
+# (`UPGRADER_RVM_GEMSET`, default `agents-upgrader` — a walk must not install its gems into
 # the gemset a developer uses for their own work), the era's **bundler** (a fact of the era, not
 # of the host: a Rails 4-era application's lockfile requires bundler < 2, and the era images pin
 # 1.17.3 for exactly that reason), and rvm's **wrappers**, which are the seam the walker uses —
@@ -33,13 +33,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MATRIX="$ROOT/lib/agents_fyi/upgrader/data/interpreters.json"
+MATRIX="$ROOT/lib/agents/upgrader/data/interpreters.json"
 
 # Where rvm lives and which gemset the walker's eras go in. Both are the walker's own variables
 # (`Machine::Host`), read here so that a deployment that moved either does not get a script that
 # installed the eras somewhere the walker will not look.
 RVM_ROOT="${UPGRADER_RVM_ROOT:-$HOME/.rvm}"
-GEMSET="${UPGRADER_RVM_GEMSET:-agents-fyi-upgrader}"
+GEMSET="${UPGRADER_RVM_GEMSET:-agents-upgrader}"
 
 usage() {
   sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
@@ -139,7 +139,7 @@ install() {
   done < <(selected "$@")
   echo
   echo "done: $count era(s) installed here. A walk on this host runs with:"
-  echo "  UPGRADER_RUNTIME=rvm bin/agents-fyi-upgrader step --repo PATH --to VERSION"
+  echo "  UPGRADER_RUNTIME=rvm bin/agents-upgrader step --repo PATH --to VERSION"
 }
 
 # The same question a walk asks, asked before the walk: every era the matrix names must be

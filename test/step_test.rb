@@ -5,7 +5,7 @@ require "fileutils"
 require "json"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The pipeline, driven without a network, a bundle or an application.
 #
@@ -15,8 +15,8 @@ require "agents_fyi/upgrader"
 # only what it added. Those are the parts whose failure reaches somebody's repository or
 # somebody's corpus, and they are the ones this file exists for.
 class StepTest < Minitest::Test
-  Command = AgentsFyi::Upgrader::Record::Command
-  Lockfile = AgentsFyi::Upgrader::Lockfile
+  Command = Agents::Upgrader::Record::Command
+  Lockfile = Agents::Upgrader::Lockfile
 
   LOCKFILE = <<~LOCK
     GEM
@@ -215,7 +215,7 @@ class StepTest < Minitest::Test
     def asked_routes = @asked_routes
 
     def upgrade(from:, to:)
-      raise AgentsFyi::Upgrader::Corpus::Refused, @refuse if @refuse
+      raise Agents::Upgrader::Corpus::Refused, @refuse if @refuse
 
       @payload
     end
@@ -266,7 +266,7 @@ class StepTest < Minitest::Test
     def detect(_root, declared: nil, stack: nil)
       return nil if @suite.nil?
 
-      AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
+      Agents::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
     end
 
     def no_suite_reason(_root, _stack = nil) = "no test directory, no spec directory and no Rakefile"
@@ -276,7 +276,7 @@ class StepTest < Minitest::Test
       # the wiring the selection tests exist for, and a double that dropped the argument
       # would let the pipeline stop passing it without a red test.
       @machines << machine
-      @result || AgentsFyi::Upgrader::Tests::Result.new(
+      @result || Agents::Upgrader::Tests::Result.new(
         command: "bundle exec rspec", ran: true, passed: true, exit_code: 0,
         seconds: 0.2, output_tail: "3 examples, 0 failures", timed_out: false
       )
@@ -383,7 +383,7 @@ class StepTest < Minitest::Test
     def record_run(payload)
       if @failures.positive?
         @failures -= 1
-        raise AgentsFyi::Upgrader::Corpus::Unreachable,
+        raise Agents::Upgrader::Corpus::Unreachable,
           "could not reach http://api.test: Errno::ECONNREFUSED"
       end
 
@@ -397,7 +397,7 @@ class StepTest < Minitest::Test
     def initialize(_root) = @applied = []
 
     def apply(_edits)
-      AgentsFyi::Upgrader::Applier::Result.new(applied: @applied, refused: [], files_written: 0)
+      Agents::Upgrader::Applier::Result.new(applied: @applied, refused: [], files_written: 0)
     end
   end
 
@@ -570,16 +570,16 @@ class StepTest < Minitest::Test
 
   # **A custom rvm root or gemset has to reach the machine, not only the setup script.** The
   # script installs into the directory the environment names; a step that read only its own
-  # defaults looked in `~/.rvm` at `agents-fyi-upgrader` and reported an uninstalled era.
+  # defaults looked in `~/.rvm` at `agents-upgrader` and reported an uninstalled era.
   def test_the_rvm_machine_reads_the_configured_root_and_gemset
     dir = track(app)
     rvm_root = File.join(dir, "rvm")
-    machine_step = AgentsFyi::Upgrader::Step.new(
+    machine_step = Agents::Upgrader::Step.new(
       repository: "acme/storefront", to: "6.0.0", api: "http://api.test", home: dir,
       runtime: "rvm", source: FakeSource.new(dir),
       env: { "UPGRADER_RVM_ROOT" => rvm_root, "UPGRADER_RVM_GEMSET" => "custom" }
     )
-    entry = AgentsFyi::Upgrader::Interpreters.named("3.3")
+    entry = Agents::Upgrader::Interpreters.named("3.3")
 
     machine = machine_step.send(:build_machine, entry)
 
@@ -593,7 +593,7 @@ class StepTest < Minitest::Test
     dir = track(Dir.mktmpdir)
     failing = Class.new(FakeSource) do
       def worktree(*, **)
-        raise AgentsFyi::Upgrader::Source::Failed,
+        raise Agents::Upgrader::Source::Failed,
           "clone https://github.com/acme/storefront failed (exit 128): Could not resolve host"
       end
     end.new(dir, home: dir)
@@ -601,7 +601,7 @@ class StepTest < Minitest::Test
     record = step(dir, source: failing).run
 
     refute_nil record
-    assert_equal AgentsFyi::Upgrader::Record::UNVERIFIED, record.verdict
+    assert_equal Agents::Upgrader::Record::UNVERIFIED, record.verdict
     assert_includes record.why, "Could not resolve host"
   end
 
@@ -621,7 +621,7 @@ class StepTest < Minitest::Test
            reuse: false, source: nil, out: nil, research: nil, env: {}, repair: nil,
            suite_env: nil, applier: nil, pause: nil, project: nil, to: "6.0.0", work: nil)
     @source = source || FakeSource.new(dir, home: dir)
-    AgentsFyi::Upgrader::Step.new(
+    Agents::Upgrader::Step.new(
       repository: "acme/storefront", to: to, api: "http://api.test", home: dir, work: work,
       out: out, record: record, ledger: ledger, source: @source,
       corpus: corpus || FakeCorpus.new(payload: plan), tests: tests || FakeTests.new,
@@ -925,7 +925,7 @@ class StepTest < Minitest::Test
 
     def run(pins)
       @pins = pins
-      AgentsFyi::Upgrader::Research::Result.new(researched: pins.map(&:first), skipped: [], reason: "")
+      Agents::Upgrader::Research::Result.new(researched: pins.map(&:first), skipped: [], reason: "")
     end
   end
 
@@ -1104,7 +1104,7 @@ class StepTest < Minitest::Test
 
   # **A decision the project already made is applied before the scan reads the tree.** It is machinery:
   # the same edit on every walk, in the `decisions` stage, named by the decision that made it — which is
-  # what the hand-made `agents-fyi/baseline` branch did, and the reason it could not be re-derived.
+  # what the hand-made `agents/baseline` branch did, and the reason it could not be re-derived.
   def test_a_declared_decision_is_applied_before_the_scan_and_recorded_with_its_origin
     dir = track(app)
     FileUtils.mkdir_p(File.join(dir, "app/views/layouts"))
@@ -1112,7 +1112,7 @@ class StepTest < Minitest::Test
       "<html>\n  <%= link_to 'Categories', categories_path %>\n  <%= yield %>\n</html>\n")
     commit(dir, "the layout the decision is about")
 
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "decisions" => [{
         "id" => "layout-category-link",
@@ -1142,7 +1142,7 @@ class StepTest < Minitest::Test
       "<% if @category %>"
     # The run body names the decisions it had in force, read off the edits' origins: the service links
     # a *passed* run to them, which is what verifies an answer.
-    assert_equal ["layout-category-link"], AgentsFyi::Upgrader::Step.run_payload(record)["decisions"]
+    assert_equal ["layout-category-link"], Agents::Upgrader::Step.run_payload(record)["decisions"]
   end
 
   # **A skip rule removes the change from the walk, and the decision id still reaches the run.** The
@@ -1158,7 +1158,7 @@ class StepTest < Minitest::Test
     manual = [{ "path" => "app/controllers/items_controller.rb", "line" => 1,
                 "subject" => "before_filter", "kind" => "renamed", "source" => "5.0",
                 "note" => "found here" }]
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "decisions" => [{
         "id" => "skip-before-filter",
@@ -1178,7 +1178,7 @@ class StepTest < Minitest::Test
     refute(record.applied.any? { |edit| edit.subject.to_s == "before_filter" },
       "a skipped change was applied")
     assert_equal ["skip-before-filter"], record.fired_rules.map { |rule| rule["decision_id"] }
-    assert_includes AgentsFyi::Upgrader::Step.run_payload(record)["decisions"], "skip-before-filter"
+    assert_includes Agents::Upgrader::Step.run_payload(record)["decisions"], "skip-before-filter"
     decisions_stage = record.stages.find { |stage| stage.stage == "decisions" }
     assert_includes decisions_stage.output_tail, "rule skip ruby|actionpack|before_filter"
   end
@@ -1188,7 +1188,7 @@ class StepTest < Minitest::Test
   # and the failure report is skipped. The run record is still written: it is the verification.
   def test_an_expect_rule_suppresses_the_report_for_the_failure_it_names
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "fixture", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "decisions" => [{
         "id" => "expect-suite-red",
@@ -1207,7 +1207,7 @@ class StepTest < Minitest::Test
 
     assert_equal "failed", record.verdict
     assert_equal ["expect-suite-red"], record.fired_rules.map { |rule| rule["decision_id"] }
-    assert_includes AgentsFyi::Upgrader::Step.run_payload(record)["decisions"], "expect-suite-red"
+    assert_includes Agents::Upgrader::Step.run_payload(record)["decisions"], "expect-suite-red"
     assert_empty corpus.calls_of(:precheck), "the expected failure was compared as if it were new"
     assert_empty corpus.calls_of(:create_report)
     refute_empty corpus.calls_of(:record_run), "the run itself was not recorded"
@@ -1464,7 +1464,7 @@ class StepTest < Minitest::Test
     # And the pin is not what installed it: resolving a new Rails is a later stage, and a
     # baseline taken after it would be a baseline of the wrong tree.
     refute_includes tests.calls_when_it_ran.first, "bundle update rails"
-    assert record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::BUNDLE }&.ok?,
+    assert record.stages.find { |stage| stage.stage == Agents::Upgrader::Record::BUNDLE }&.ok?,
       "the install is not recorded as a stage of the run"
   end
 
@@ -1538,12 +1538,12 @@ class StepTest < Minitest::Test
   # established.
   def test_a_clean_kept_tree_on_a_concern_commit_is_reset_to_its_marker
     dir = track(app)
-    base = AgentsFyi::Upgrader::Checkpoint.head(dir).first.to_s
+    base = Agents::Upgrader::Checkpoint.head(dir).first.to_s
     File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "6.0.0"\n))
-    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "6.0.0",
+    Agents::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "6.0.0",
       out: StringIO.new, concern: "pin Rails and move gems")
-    refute AgentsFyi::Upgrader::Checkpoint.dirty?(dir), "the tree is dirty, so this proves nothing"
-    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, base)
+    refute Agents::Upgrader::Checkpoint.dirty?(dir), "the tree is dirty, so this proves nothing"
+    Agents::Upgrader::Checkpoint.remember_base(dir, base)
 
     out = StringIO.new
     record = step(dir, reuse: true, out: out).run
@@ -1568,12 +1568,12 @@ class StepTest < Minitest::Test
     # What the earlier walk left: the rung committed, and the marker moved to it.
     File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "5.0.0"\n))
     File.write(File.join(dir, "Gemfile.lock"), LOCKFILE.sub("rails (4.2.11)", "rails (5.0.0)"))
-    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
-    top = AgentsFyi::Upgrader::Checkpoint.head(dir).first
-    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, top)
+    Agents::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+    top = Agents::Upgrader::Checkpoint.head(dir).first
+    Agents::Upgrader::Checkpoint.remember_base(dir, top)
 
-    ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby test")
-    ledger.record(repo: "acme/storefront", commit: AgentsFyi::Upgrader::Checkpoint.origin(dir),
+    ledger = Agents::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby test")
+    ledger.record(repo: "acme/storefront", commit: Agents::Upgrader::Checkpoint.origin(dir),
       from_version: "4.2.11", to_version: "5.0.0", verdict: "passed", baseline: 0)
 
     out = StringIO.new
@@ -1614,9 +1614,9 @@ class StepTest < Minitest::Test
     # What the earlier walk left: the rung committed, and the marker moved to it.
     File.write(File.join(dir, "Gemfile"), %(source "https://rubygems.org"\ngem "rails", "5.0.0"\n))
     File.write(File.join(dir, "Gemfile.lock"), lock.gsub("4.2.11", "5.0.0"))
-    AgentsFyi::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
-    top = AgentsFyi::Upgrader::Checkpoint.head(dir).first
-    AgentsFyi::Upgrader::Checkpoint.remember_base(dir, top)
+    Agents::Upgrader::Checkpoint.commit(dir, from: "4.2.11", to: "5.0.0", out: StringIO.new)
+    top = Agents::Upgrader::Checkpoint.head(dir).first
+    Agents::Upgrader::Checkpoint.remember_base(dir, top)
 
     record = step(dir, reuse: true, out: StringIO.new, project: declaration).run
 
@@ -1640,7 +1640,7 @@ class StepTest < Minitest::Test
   end
 
   def declaration
-    AgentsFyi::Upgrader::Project.new(
+    Agents::Upgrader::Project.new(
       { "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0" }
     )
   end
@@ -1650,13 +1650,13 @@ class StepTest < Minitest::Test
   # declaration still travels into the record, so a bundle that fails for a missing header has a
   # named cause rather than an unexplained one.
   def test_a_native_machine_records_the_system_packages_it_did_not_install
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "toolchain" => { "apt" => ["libidn11-dev"] }
     })
     record = step(track(app), project: project).run
 
-    stage = record.stages.find { |command| command.stage == AgentsFyi::Upgrader::Record::PACKAGES }
+    stage = record.stages.find { |command| command.stage == Agents::Upgrader::Record::PACKAGES }
     refute_nil stage, "the declaration never reached the record"
     refute stage.ran, "a native machine ran an apt install"
     assert_includes stage.output_tail, "not a container"
@@ -1775,7 +1775,7 @@ class StepTest < Minitest::Test
   # **The move records the tree's release, not the chapter's.** The service files the plan for a
   # 5.0 checkpoint under the 5.0 chapter, whose `from` is `4.2.0`; the application is on `4.2.11`.
   # A record that kept the chapter's from made the delivery look for
-  # `agents-fyi/upgrade-4.2.0`, find no such branch, and base the request on the default branch —
+  # `agents/upgrade-4.2.0`, find no such branch, and base the request on the default branch —
   # so the walk opened a stack's worth of pull requests that were all based on master.
   def test_a_checkpoint_records_the_lockfile_s_release_as_the_move_s_from
     dir = track(app)
@@ -1829,7 +1829,7 @@ class StepTest < Minitest::Test
   def test_a_move_the_ledger_has_settled_is_not_run_again
     dir = track(app)
     ledger_path = File.join(dir, "ledger.json")
-    ledger = AgentsFyi::Upgrader::Ledger.new(path: ledger_path, machine: "ruby test")
+    ledger = Agents::Upgrader::Ledger.new(path: ledger_path, machine: "ruby test")
     ledger.record(repo: "acme/storefront", commit: "9f2c1ab8", from_version: "4.2.11",
       to_version: "5.0.0", verdict: "passed", baseline: 0)
     runner = FakeRunner.new
@@ -1905,15 +1905,15 @@ class StepTest < Minitest::Test
     # one entry — `?? config/` — so the policy was handed a directory, found no conflict
     # in it, and this test passed while the case it exists for went unexercised.
     commit(dir, "the application's own config")
-    assert_empty AgentsFyi::Upgrader::Step.dirty_paths(dir), "the fixture is not clean"
+    assert_empty Agents::Upgrader::Step.dirty_paths(dir), "the fixture is not clean"
 
-    before = AgentsFyi::Upgrader::Step.dirty_paths(dir)
+    before = Agents::Upgrader::Step.dirty_paths(dir)
     # What `app:update` does: rewrites a file the application owns and creates one.
     added = File.join(dir, "config", "new_defaults.rb")
     File.write(owned, "load_defaults 7.0\n")
     File.write(added, "# new\n")
 
-    adopted, conflicts = AgentsFyi::Upgrader::Step.adopt_added_only(dir, before)
+    adopted, conflicts = Agents::Upgrader::Step.adopt_added_only(dir, before)
 
     assert_equal ["config/new_defaults.rb"], adopted
     assert_equal ["config/application.rb"], conflicts
@@ -1930,7 +1930,7 @@ class StepTest < Minitest::Test
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, "Rails.application.config.action_dispatch.cookies_serializer = :json\n")
 
-    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+    applied, refused, reconciled = Agents::Upgrader::Step.reconcile_app_update(
       root: dir, adopted: ["config/initializers/cookies_serializer.rb"], rung: "4.1.0"
     )
 
@@ -1950,7 +1950,7 @@ class StepTest < Minitest::Test
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, "Rails.application.config.action_dispatch.cookies_serializer = :hybrid\n")
 
-    applied, _refused, _reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+    applied, _refused, _reconciled = Agents::Upgrader::Step.reconcile_app_update(
       root: dir, adopted: [], rung: "4.2.0"
     )
 
@@ -1970,7 +1970,7 @@ class StepTest < Minitest::Test
     File.write(secrets, "production:\n  secret_key_base: <%= ENV[\"SECRET_KEY_BASE\"] %>\n")
     File.write(legacy, "Bidding::Application.config.secret_key_base = ENV[\"RAILS_SECRET_TOKEN\"]\n")
 
-    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+    applied, refused, reconciled = Agents::Upgrader::Step.reconcile_app_update(
       root: dir, adopted: ["config/secrets.yml"], rung: "4.1.0"
     )
 
@@ -1991,7 +1991,7 @@ class StepTest < Minitest::Test
     File.write(secrets, "production:\n  secret_key_base: <%= ENV[\"SECRET_KEY_BASE\"] %>\n")
     File.write(legacy, "Bidding::Application.config.secret_key_base = \"a literal key\"\n")
 
-    applied, refused, reconciled = AgentsFyi::Upgrader::Step.reconcile_app_update(
+    applied, refused, reconciled = Agents::Upgrader::Step.reconcile_app_update(
       root: dir, adopted: ["config/secrets.yml"], rung: "4.1.0"
     )
 
@@ -2096,7 +2096,7 @@ class StepTest < Minitest::Test
     assert_equal %w[factory_girl], corpus.upgrade_calls.map(&:first),
       "the framework section re-asked the window instead of reading the plan it already had"
 
-    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+    payload = Agents::Upgrader::Step.run_payload(record)
     assert_equal record.brief.asked, payload.dig("brief", "asked")
     assert_equal gem_section.key, payload.dig("brief", "sections").map { |s| s["key"] }.find { |k| k == gem_section.key }
   end
@@ -2135,7 +2135,7 @@ class StepTest < Minitest::Test
   # **The run body carries the review brief's internal sections.** The service stores them for the
   # site admin; the public run response stays frozen.
   def test_the_run_body_carries_the_gate_the_commits_and_the_update
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "checks" => [{ "id" => "lint", "kind" => "lint", "command" => "ruby -e 'exit 0'" }],
@@ -2144,7 +2144,7 @@ class StepTest < Minitest::Test
     }.to_json)
 
     record = step(track(app), project: project).run
-    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+    payload = Agents::Upgrader::Step.run_payload(record)
 
     assert_equal ["lint"], payload["checks"].map { |check| check["id"] }
     assert_includes payload["commits"].map { |commit| commit["concern"] }, "pin Rails and move gems"
@@ -2158,11 +2158,11 @@ class StepTest < Minitest::Test
   # first two million and the local record keeps the whole patch.
   def test_the_run_body_clips_a_patch_beyond_the_service_s_bound
     record = step(track(app), corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
-    record.instance_variable_set(:@patch, "x" * (AgentsFyi::Upgrader::Step::RUN_PATCH_LIMIT + 10))
+    record.instance_variable_set(:@patch, "x" * (Agents::Upgrader::Step::RUN_PATCH_LIMIT + 10))
 
-    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+    payload = Agents::Upgrader::Step.run_payload(record)
 
-    assert_equal AgentsFyi::Upgrader::Step::RUN_PATCH_LIMIT, payload["patch"].length,
+    assert_equal Agents::Upgrader::Step::RUN_PATCH_LIMIT, payload["patch"].length,
       "the run body carried a patch the service refuses"
   end
 
@@ -2180,13 +2180,13 @@ class StepTest < Minitest::Test
   # lighthouse's plan source was 101 characters, and the service refused the whole run.
   def test_a_long_decision_source_is_clipped_rather_than_refused
     source = "the guide's chapter and the paragraph it is on, again and again " * 3
-    decision = AgentsFyi::Upgrader::Record::Decision.new(
+    decision = Agents::Upgrader::Record::Decision.new(
       subject: "config/initializers/x.rb", kind: "manual", source: source, reason: "why")
-    record = AgentsFyi::Upgrader::Record.new(
+    record = Agents::Upgrader::Record.new(
       repository: "acme/storefront", from_version: "4.2.11", to_version: "5.0.0",
       verdict: "passed", why: "ok", decisions: [decision])
 
-    refusal = AgentsFyi::Upgrader::Step.run_payload(record)["refusals"].first
+    refusal = Agents::Upgrader::Step.run_payload(record)["refusals"].first
 
     assert_equal 100, refusal["source"].length,
       "the payload sent a source the service refuses"
@@ -2202,7 +2202,7 @@ class StepTest < Minitest::Test
 
     record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
 
-    stage = record.stages.find { |s| s.stage == AgentsFyi::Upgrader::Record::JAVASCRIPT }
+    stage = record.stages.find { |s| s.stage == Agents::Upgrader::Record::JAVASCRIPT }
     refute_nil stage, "the yarn.lock was not installed"
     assert_includes stage.command, "yarn install --frozen-lockfile"
     assert_equal 0, stage.exit_code
@@ -2217,7 +2217,7 @@ class StepTest < Minitest::Test
 
     record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
 
-    stage = record.stages.find { |s| s.stage == AgentsFyi::Upgrader::Record::ASSETS }
+    stage = record.stages.find { |s| s.stage == Agents::Upgrader::Record::ASSETS }
     refute_nil stage, "the asset manifest was not built"
     assert_includes stage.command, "assets:precompile"
     assert_equal 0, stage.exit_code
@@ -2232,9 +2232,9 @@ class StepTest < Minitest::Test
     FileUtils.mkdir_p(File.join(dir, "app", "assets"))
 
     record = step(dir, corpus: FakeCorpus.new(payload: plan(changes: [change]))).run
-    assets = record.stages.each_index.select { |i| record.stages[i].stage == AgentsFyi::Upgrader::Record::ASSETS }
-    pin = record.stages.index { |s| s.stage == AgentsFyi::Upgrader::Record::PIN }
-    suite = record.stages.index { |s| s.stage == AgentsFyi::Upgrader::Record::SUITE }
+    assets = record.stages.each_index.select { |i| record.stages[i].stage == Agents::Upgrader::Record::ASSETS }
+    pin = record.stages.index { |s| s.stage == Agents::Upgrader::Record::PIN }
+    suite = record.stages.index { |s| s.stage == Agents::Upgrader::Record::SUITE }
 
     assert_equal 2, assets.length, "the assets were not compiled after the pin"
     assert_operator assets.last, :>, pin, "the second compile is not after the pin"
@@ -2255,14 +2255,14 @@ class StepTest < Minitest::Test
     TEXT
 
     assert_equal %w[config/routes.rb config/application.rb],
-      AgentsFyi::Upgrader::Step.update_conflicts(output)
+      Agents::Upgrader::Step.update_conflicts(output)
   end
 
   def test_the_run_body_carries_the_evidence_and_the_refusals
     dir = track(app)
     planned = plan(changes: [change])
     record = step(dir, corpus: FakeCorpus.new(payload: planned)).run
-    payload = AgentsFyi::Upgrader::Step.run_payload(record)
+    payload = Agents::Upgrader::Step.run_payload(record)
 
     assert_equal "acme/storefront", payload["repo_url"]
     assert_equal "passed", payload["baseline_verdict"]
@@ -2294,21 +2294,21 @@ class StepTest < Minitest::Test
   # the operator rather than log only the generic sentence.
   class RefusingRunCorpus < FakeCorpus
     def record_run(_payload)
-      raise AgentsFyi::Upgrader::Corpus::Refused.new("Request validation failed.",
+      raise Agents::Upgrader::Corpus::Refused.new("Request validation failed.",
         { "error" => { "details" => [{ "field" => "patch", "message" => "is too long" }] },
           "next_step" => "send at most 2,000,000 characters" })
     end
   end
 
   def green
-    AgentsFyi::Upgrader::Tests::Result.new(
+    Agents::Upgrader::Tests::Result.new(
       command: "bundle exec rspec", ran: true, passed: true, exit_code: 0, seconds: 0.2,
       output_tail: "3 examples, 0 failures", timed_out: false
     )
   end
 
   def red
-    AgentsFyi::Upgrader::Tests::Result.new(
+    Agents::Upgrader::Tests::Result.new(
       command: "bundle exec rspec", ran: true, passed: false, exit_code: 1, seconds: 0.2,
       output_tail: "1 examples, 1 failure", timed_out: false
     )
@@ -2409,7 +2409,7 @@ class StepTest < Minitest::Test
 
     # The real applier: the write is half of what is being asserted, and the fake one is a stub
     # that never touches a file.
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     applied = record.stages.find { |stage| stage.stage == "apply" }
@@ -2443,7 +2443,7 @@ class StepTest < Minitest::Test
       kind: "moved", source: "5.0", replacement: "ApplicationRecord")])
     corpus = FakeCorpus.new(payload: payload, manual: [located])
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     definition = File.join(dir, "app/models/application_record.rb")
@@ -2472,7 +2472,7 @@ class StepTest < Minitest::Test
       kind: "moved", source: "5.0", replacement: "ApplicationRecord")])
     corpus = FakeCorpus.new(payload: payload, manual: [located])
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     assert_equal ours, File.read(File.join(dir, "app/models/application_record.rb"))
@@ -2505,7 +2505,7 @@ class StepTest < Minitest::Test
       source: "5.0", replacement: "the rails-controller-testing gem")])
     corpus = FakeCorpus.new(payload: payload, manual: [located])
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     gemfile = File.read(File.join(dir, "Gemfile"))
@@ -2529,7 +2529,7 @@ class StepTest < Minitest::Test
     dir = track(app)
     with_source(dir, "spec/controllers/posts_controller_spec.rb",
       "describe PostsController do\n  it { expect(assigns(:post)).to be_a(Post) }\nend\n")
-    project = AgentsFyi::Upgrader::Project.new(
+    project = Agents::Upgrader::Project.new(
       { "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
         "source_roots" => %w[app lib config] }
     )
@@ -2557,7 +2557,7 @@ class StepTest < Minitest::Test
       source: "5.0", replacement: "the rails-controller-testing gem")])
     corpus = FakeCorpus.new(payload: payload, manual: [located])
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     refute_includes File.read(File.join(dir, "Gemfile")), "rails-controller-testing"
     assert_equal ["assigns / assert_template"], record.decisions.map(&:subject)
@@ -2584,7 +2584,7 @@ class StepTest < Minitest::Test
       source: "5.0", replacement: "the rails-controller-testing gem")])
     corpus = FakeCorpus.new(payload: payload, manual: [located])
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert_empty record.decisions
     assert_empty record.applied, "the gem was already declared, so there was nothing to write"
@@ -2602,7 +2602,7 @@ class StepTest < Minitest::Test
       replacement: nil, note: "app:update writes Bootsnap into config/boot.rb")])
     corpus = FakeCorpus.new(payload: payload)
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     assert_includes File.read(File.join(dir, "Gemfile")), "gem 'bootsnap'"
@@ -2623,13 +2623,13 @@ class StepTest < Minitest::Test
     uses_pipeline = track(app)
     with_source(uses_pipeline, "config/application.rb", %(require "rails"\nrequire "sprockets/railtie"\n))
     record = step(uses_pipeline, corpus: FakeCorpus.new(payload: payload),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
     assert_includes File.read(File.join(uses_pipeline, "Gemfile")), "gem 'sprockets-rails'"
 
     plain = track(app)
     with_source(plain, "config/application.rb", %(require "rails"\n))
     record = step(plain, corpus: FakeCorpus.new(payload: payload),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
     refute_includes File.read(File.join(plain, "Gemfile")), "sprockets-rails"
     assert_equal ["sprockets-rails"], record.decisions.map(&:subject)
   end
@@ -2653,7 +2653,7 @@ class StepTest < Minitest::Test
       replacement: nil, note: "merged rather than overridden")])
 
     record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     decision = record.decisions.find { |candidate| candidate.subject == "default_scope" }
     refute_nil decision, "nothing edits a default scope, so it is still a decision"
@@ -2679,7 +2679,7 @@ class StepTest < Minitest::Test
       replacement: nil, note: "merged rather than overridden")])
 
     record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     decision = record.decisions.find { |candidate| candidate.subject == "default_scope" }
     assert_includes decision.reason, "this application: the callers that chain a condition"
@@ -2698,21 +2698,21 @@ class StepTest < Minitest::Test
 
     plain = track(app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\ngem "spring"\n)))
     with_source(plain, "app/models/item.rb", "class Item\nend\n")
-    record = step(plain, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    record = step(plain, corpus: FakeCorpus.new(payload: payload), applier: Agents::Upgrader::Applier).run
     assert_includes File.read(File.join(plain, "Gemfile")), %(gem "spring", ">= 3.0.0")
     assert_empty record.decisions, "the declaration is the change's whole fix"
 
     # A declaration that already asks for a version is left, and the change stays a decision.
     pinned = track(app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11"\ngem "spring", "~> 2.0"\n)))
     with_source(pinned, "app/models/item.rb", "class Item\nend\n")
-    record = step(pinned, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    record = step(pinned, corpus: FakeCorpus.new(payload: payload), applier: Agents::Upgrader::Applier).run
     assert_includes File.read(File.join(pinned, "Gemfile")), %(gem "spring", "~> 2.0")
     assert_equal ["Spring"], record.decisions.map(&:subject)
 
     # And an application that does not use Spring is not asked to install it.
     absent = track(app)
     with_source(absent, "app/models/item.rb", "class Item\nend\n")
-    record = step(absent, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    record = step(absent, corpus: FakeCorpus.new(payload: payload), applier: Agents::Upgrader::Applier).run
     refute_includes File.read(File.join(absent, "Gemfile")), "spring"
     assert_empty record.decisions, "a change about a gem the application does not have is not its work"
   end
@@ -2734,7 +2734,7 @@ class StepTest < Minitest::Test
       replacement: nil, note: "required by default now")])
 
     record = step(dir, corpus: FakeCorpus.new(payload: payload, manual: [located]),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
     assert_includes tail, "1 line(s) a rule knows and would not touch (belongs_to)"
@@ -2754,7 +2754,7 @@ class StepTest < Minitest::Test
     payload = plan(changes: [change(subject: "@rails npm packages", kind: "renamed", source: "6.0",
       replacement: nil, note: "the npm packages moved under the @rails scope")])
 
-    record = step(dir, corpus: FakeCorpus.new(payload: payload), applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: FakeCorpus.new(payload: payload), applier: Agents::Upgrader::Applier).run
 
     assert record.passed?, record.why
     assert_includes File.read(File.join(dir, "package.json")), "\"@rails/actioncable\""
@@ -2775,7 +2775,7 @@ class StepTest < Minitest::Test
     runner = FakeRunner.new
 
     step(dir, corpus: FakeCorpus.new(payload: plan), runner: runner,
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     update = runner.envs.find { |command, _env| command.include?("rails:update") }
     refute_nil update, "the update task ran, so this proves something"
@@ -2791,12 +2791,12 @@ class StepTest < Minitest::Test
     # **Every command is bounded**, and the knob moves the bound. Nothing bounded them before: the suite had
     # its own, the corpus client had one for HTTP, and a `bundle update` whose container could not reach
     # rubygems hung until somebody noticed.
-    assert_equal [AgentsFyi::Upgrader::Shell::DEFAULT_COMMAND_TIMEOUT] * runner.timeouts.size,
+    assert_equal [Agents::Upgrader::Shell::DEFAULT_COMMAND_TIMEOUT] * runner.timeouts.size,
       runner.timeouts.map(&:last), "each command carries the default bound"
 
     bound = FakeRunner.new
     step(dir, corpus: FakeCorpus.new(payload: plan), runner: bound,
-      applier: AgentsFyi::Upgrader::Applier, env: { "UPGRADER_COMMAND_TIMEOUT" => "42" }).run
+      applier: Agents::Upgrader::Applier, env: { "UPGRADER_COMMAND_TIMEOUT" => "42" }).run
     assert_equal [42] * bound.timeouts.size, bound.timeouts.map(&:last)
 
     # **The update task is given the answer, and nothing else is.** `app:update` stops on every file the
@@ -2805,7 +2805,7 @@ class StepTest < Minitest::Test
     # prompt was killed at its bound with `Overwrite config/boot.rb?` on screen.
     asked = runner.stdins.find { |command, _| command.include?("rails:update") }
     refute_nil asked, "the update task ran"
-    assert_equal "n\n" * AgentsFyi::Upgrader::Step::OVERWRITE_ANSWERS, asked.last
+    assert_equal "n\n" * Agents::Upgrader::Step::OVERWRITE_ANSWERS, asked.last
     install = runner.stdins.find { |command, _| command.include?("bundle install") }
     assert_equal File::NULL, install.last, "every other command reads nothing, and gets EOF if it tries"
   end
@@ -2905,7 +2905,7 @@ class StepTest < Minitest::Test
 
     outcome = record.repairs.find { |each| each.gate.to_s == "the boot" }
     refute_nil outcome, "the boot repair is not in the record's repairs: #{record.repairs.inspect}"
-    payload = AgentsFyi::Upgrader::Filing.repair_report_for(record: record, outcome: outcome)
+    payload = Agents::Upgrader::Filing.repair_report_for(record: record, outcome: outcome)
     refute_nil payload
     assert_includes payload["resolution"], "the boot was green after it"
   end
@@ -2946,7 +2946,7 @@ class StepTest < Minitest::Test
                 "automatic" => false }
     corpus = FakeCorpus.new(payload: plan, manual: [earlier], earliest: "3.2.0")
 
-    record = step(dir, corpus: corpus, applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: corpus, applier: Agents::Upgrader::Applier).run
 
     assert_equal [["3.2.0", "5.0.0"]], corpus.asked_scans,
       "the window starts at the ladder's bottom rather than at the application's version"
@@ -2958,8 +2958,8 @@ class StepTest < Minitest::Test
     plain = track(app)
     with_source(plain, "app/models/item.rb", "class Item < ActiveRecord::Base\nend\n")
     unreadable = FakeCorpus.new(payload: plan, earliest: "3.2.0",
-      ladder_error: AgentsFyi::Upgrader::Corpus::Refused.new("no ladder"))
-    step(plain, corpus: unreadable, applier: AgentsFyi::Upgrader::Applier).run
+      ladder_error: Agents::Upgrader::Corpus::Refused.new("no ladder"))
+    step(plain, corpus: unreadable, applier: Agents::Upgrader::Applier).run
     assert_equal [["4.2.11", "5.0.0"]], unreadable.asked_scans
   end
 
@@ -2979,7 +2979,7 @@ class StepTest < Minitest::Test
     with_source(already, "app/views/posts/index.html.erb", "#{migrated}\n")
     record = step(already, corpus: FakeCorpus.new(payload: payload,
       manual: [entry_for("app/views/posts/index.html.erb", 1, migrated)]),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     assert_empty record.decisions, "the line already reads the new way, so nothing is owed"
     tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
@@ -2989,7 +2989,7 @@ class StepTest < Minitest::Test
     with_source(owed, "app/views/posts/index.html.erb", "#{unreadable}\n")
     record = step(owed, corpus: FakeCorpus.new(payload: payload,
       manual: [entry_for("app/views/posts/index.html.erb", 1, unreadable)]),
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     assert_equal [":confirm option on link_to"], record.decisions.map(&:subject),
       "a value the rule cannot see the end of is still a person's to read"
@@ -3005,16 +3005,16 @@ class StepTest < Minitest::Test
     with_source(dir, "app/models/item.rb", "class Item\nend\n")
     # The JavaScript glob is the only one in the rule table, so it is the one to overflow — and
     # its `filter` means the files have to mention ActionCable to be candidates at all.
-    (AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT + 1).times do |index|
+    (Agents::Upgrader::Rewrites::SOURCE_LIMIT + 1).times do |index|
       with_source(dir, "app/assets/javascripts/file_#{index}.js", "// ActionCable\n")
     end
 
-    record = step(dir, corpus: FakeCorpus.new(payload: plan), applier: AgentsFyi::Upgrader::Applier).run
+    record = step(dir, corpus: FakeCorpus.new(payload: plan), applier: Agents::Upgrader::Applier).run
 
     tail = record.stages.find { |stage| stage.stage == "apply" }.output_tail
     assert_includes tail, "a rule's file glob was truncated"
-    assert_includes tail, "#{AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT + 1} file(s), first " \
-      "#{AgentsFyi::Upgrader::Rewrites::SOURCE_LIMIT} read"
+    assert_includes tail, "#{Agents::Upgrader::Rewrites::SOURCE_LIMIT + 1} file(s), first " \
+      "#{Agents::Upgrader::Rewrites::SOURCE_LIMIT} read"
   end
 
   def entry_for(path, line, text)
@@ -3062,7 +3062,7 @@ class StepTest < Minitest::Test
   # the suite never saw, and its check is the same question asked without writing.
   def test_a_declared_check_and_formatter_run_and_a_failed_check_fails_the_rung
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "source_roots" => ["app"],
@@ -3093,7 +3093,7 @@ class StepTest < Minitest::Test
   # first, the rung carries the result as `preexisting`, and no formatter stage runs.
   def test_a_style_check_the_base_commit_already_fails_is_not_this_rung_s_failure
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "style" => { "format" => "ruby -e 'exit 0'",
@@ -3120,7 +3120,7 @@ class StepTest < Minitest::Test
   # would be preparing a tree the suite had already judged.
   def test_a_prepare_check_runs_before_the_baseline
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "checks" => [{ "id" => "prepare", "kind" => "prepare",
@@ -3139,7 +3139,7 @@ class StepTest < Minitest::Test
   # walk measured, and the record says the application's CI owns the other answer.
   def test_an_external_check_is_carried_and_does_not_turn_a_green_rung_red
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "checks" => [{ "id" => "ci", "kind" => "external",
@@ -3160,7 +3160,7 @@ class StepTest < Minitest::Test
   # the pin commit beside the app:update commit, and the diff they apply is `base..head`.
   def test_the_step_commits_its_concerns_and_the_patch_is_the_whole_move
     dir = track(app)
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     }.to_json)
@@ -3173,7 +3173,7 @@ class StepTest < Minitest::Test
     assert_includes messages.join("\n"), "pin Rails and move gems"
     assert_includes record.patch, %(gem "rails", "5.0.0")
     head = record.commits.last["commit"]
-    assert_equal head, AgentsFyi::Upgrader::Checkpoint.head(dir).first,
+    assert_equal head, Agents::Upgrader::Checkpoint.head(dir).first,
       "the last concern commit is the tree's head"
   end
 
@@ -3186,7 +3186,7 @@ class StepTest < Minitest::Test
   def test_the_record_carries_the_accepted_decisions_whose_effects_applied
     dir = track(app)
     with_source(dir, "app/models/item.rb", "ITEM = 1\n")
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "decisions" => [{
@@ -3224,7 +3224,7 @@ class StepTest < Minitest::Test
     with_source(dir, "app/models/item.rb", "class Item\nend\n")
     with_source(dir, "spec/models/item_spec.rb", "describe Item do\nend\n")
     with_source(dir, "vendor/bundle/item.rb", "class Item\nend\n")
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "source_roots" => ["app", "lib"]
@@ -3244,14 +3244,14 @@ class StepTest < Minitest::Test
   def test_an_app_update_file_the_project_skips_is_removed_and_recorded
     dir = track(app)
     runner = MigratingRunner.new(dir, path: "config/storage.yml")
-    project = AgentsFyi::Upgrader::Project.parse({
+    project = Agents::Upgrader::Project.parse({
       "slug" => "storefront", "repo" => "acme/storefront", "from" => "4.2.11", "to" => "6.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" },
       "app_update" => { "skip" => ["config/storage.yml"] }
     }.to_json)
 
     record = step(dir, project: project, runner: runner,
-      applier: AgentsFyi::Upgrader::Applier).run
+      applier: Agents::Upgrader::Applier).run
 
     refute File.exist?(File.join(dir, "config/storage.yml")),
       "the policy skipped the file, so it is not in the tree"
@@ -3342,7 +3342,7 @@ class StepTest < Minitest::Test
 
     assert File.file?(File.join(dir, "config", "database.yml")),
       "the walk measured a tree it had not configured"
-    bootstrap = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::BOOTSTRAP }
+    bootstrap = record.stages.find { |stage| stage.stage == Agents::Upgrader::Record::BOOTSTRAP }
     refute_nil bootstrap, "the record does not say the tree was configured"
     assert_includes bootstrap.output_tail, "config/database.yml.example"
     install = runner.envs.find { |command, _env| command == "bundle install" }
@@ -3359,7 +3359,7 @@ class StepTest < Minitest::Test
   def test_a_require_option_repair_is_not_a_gem_the_pin_asks_to_move
     s = step(Dir.tmpdir)
     applied = lambda do |after|
-      AgentsFyi::Upgrader::Applier::Applied.new(
+      Agents::Upgrader::Applier::Applied.new(
         path: "Gemfile", line: 2, text: %(gem "capistrano"\n), after: after,
         subject: "capistrano", origin: "preflight", note: nil
       )
@@ -3431,7 +3431,7 @@ class StepTest < Minitest::Test
     record = step(dir, corpus: corpus, runner: runner).run
 
     assert_includes runner.calls, "ruby bin/rails app:update"
-    stage = record.stages.find { |each| each.stage == AgentsFyi::Upgrader::Record::RAILS_UPDATE }
+    stage = record.stages.find { |each| each.stage == Agents::Upgrader::Record::RAILS_UPDATE }
     refute_nil stage, "the update task never ran"
     assert_equal "ruby bin/rails app:update", stage.command
     assert_equal "bin/rails app:update", stage.display

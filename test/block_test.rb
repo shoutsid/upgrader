@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **A stop, as a question.** The extractor is pure, so these drive the shapes that matter: one
 # question for the earliest stop rather than one per symptom, a `checked` change omitted, a
@@ -10,7 +10,7 @@ require "agents_fyi/upgrader"
 class BlockTest < Minitest::Test
   def record(decisions: [], stages: [], checks: [], app_update: nil, baseline: nil,
     verdict: "failed")
-    AgentsFyi::Upgrader::Record.new(
+    Agents::Upgrader::Record.new(
       repository: "acme/storefront", from_version: "7.0.0", to_version: "7.1.0",
       verdict: verdict, why: "the suite failed", decisions: decisions, stages: stages,
       checks: checks, app_update: app_update, baseline: baseline
@@ -24,11 +24,11 @@ class BlockTest < Minitest::Test
       replacement: "render category: @category", source: "rails guide",
       change_key: nil, checked: false
     }
-    AgentsFyi::Upgrader::Record::Decision.new(**defaults.merge(attributes))
+    Agents::Upgrader::Record::Decision.new(**defaults.merge(attributes))
   end
 
   def command(stage:, exit_code: 1, output: "boom", ran: true)
-    AgentsFyi::Upgrader::Record::Command.new(
+    Agents::Upgrader::Record::Command.new(
       stage: stage, command: "bundle exec rspec", ran: ran, exit_code: exit_code,
       seconds: 1.0, output_tail: output
     )
@@ -40,7 +40,7 @@ class BlockTest < Minitest::Test
       decision(path: "app/views/other.html.erb", subject: "unused", checked: true)
     ])
 
-    blocks = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront", run_id: "run-1")
+    blocks = Agents::Upgrader::Block.from_record(record, project: "storefront", run_id: "run-1")
 
     assert_equal 1, blocks.length, "a checked change is a review row, not a question"
     block = blocks.first
@@ -61,7 +61,7 @@ class BlockTest < Minitest::Test
         reason: "no recorded release fits", kind: "blocked")
     ])
 
-    block = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront").first
+    block = Agents::Upgrader::Block.from_record(record, project: "storefront").first
 
     assert_equal "route", block["block_kind"]
     assert_equal "ruby|rack|rack", block["change_key"]
@@ -69,10 +69,10 @@ class BlockTest < Minitest::Test
   end
 
   def test_the_identity_is_the_subject_and_key_rather_than_the_line
-    first = AgentsFyi::Upgrader::Block.from_record(
+    first = Agents::Upgrader::Block.from_record(
       record(decisions: [decision(line: 12)]), project: "storefront"
     ).first
-    second = AgentsFyi::Upgrader::Block.from_record(
+    second = Agents::Upgrader::Block.from_record(
       record(decisions: [decision(line: 40)]), project: "storefront"
     ).first
 
@@ -82,10 +82,10 @@ class BlockTest < Minitest::Test
   end
 
   def test_a_failed_suite_is_a_suite_block_with_the_failing_tail_as_evidence
-    record = record(stages: [command(stage: AgentsFyi::Upgrader::Record::SUITE,
+    record = record(stages: [command(stage: Agents::Upgrader::Record::SUITE,
       output: "1 example, 1 failure")])
 
-    block = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront").first
+    block = Agents::Upgrader::Block.from_record(record, project: "storefront").first
 
     assert_equal "suite", block["block_kind"]
     assert_equal "1 example, 1 failure", block["evidence"]["failure"]
@@ -101,7 +101,7 @@ class BlockTest < Minitest::Test
   def test_an_app_update_conflict_is_recorded_but_is_not_a_question
     record = record(app_update: { "conflicts" => ["config/application.rb"] })
 
-    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront"),
+    assert_empty Agents::Upgrader::Block.from_record(record, project: "storefront"),
       "a conflict is a policy outcome, not a stop"
   end
 
@@ -109,10 +109,10 @@ class BlockTest < Minitest::Test
   # `Record::REQUIRED` no longer gates on it. If nothing else failed, there is nothing to ask.
   def test_an_app_update_failure_is_not_a_question_when_nothing_else_failed
     record = record(stages: [
-      command(stage: AgentsFyi::Upgrader::Record::RAILS_UPDATE, output: "active_storage:update failed")
+      command(stage: Agents::Upgrader::Record::RAILS_UPDATE, output: "active_storage:update failed")
     ])
 
-    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+    assert_empty Agents::Upgrader::Block.from_record(record, project: "storefront")
   end
 
   # **A red baseline is a fact about the environment, not about the move.** Ohana's missing
@@ -120,22 +120,22 @@ class BlockTest < Minitest::Test
   # dismissed and requeued it; the walk should retry instead.
   def test_a_red_baseline_is_not_a_question
     record = record(
-      baseline: command(stage: AgentsFyi::Upgrader::Record::BASELINE, exit_code: 1,
+      baseline: command(stage: Agents::Upgrader::Record::BASELINE, exit_code: 1,
         output: "Chrome could not be found"),
-      stages: [command(stage: AgentsFyi::Upgrader::Record::SUITE)]
+      stages: [command(stage: Agents::Upgrader::Record::SUITE)]
     )
 
-    assert_empty AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+    assert_empty Agents::Upgrader::Block.from_record(record, project: "storefront")
   end
 
   def test_a_blocking_check_is_a_check_question
-    check = AgentsFyi::Upgrader::Checks::Result.new(
+    check = Agents::Upgrader::Checks::Result.new(
       id: "lint", name: "RuboCop", kind: "lint", command: "bundle exec rubocop",
       required: true, external: false, status: "failed", ran: true, exit_code: 1,
       output_tail: "3 offenses"
     )
 
-    block = AgentsFyi::Upgrader::Block.from_record(record(checks: [check]),
+    block = Agents::Upgrader::Block.from_record(record(checks: [check]),
       project: "storefront").first
 
     assert_equal "check", block["block_kind"]
@@ -150,12 +150,12 @@ class BlockTest < Minitest::Test
     record = record(
       decisions: [decision(change_key: "ruby|rails|x")],
       stages: [
-        command(stage: AgentsFyi::Upgrader::Record::PIN, output: "version solving has failed"),
-        command(stage: AgentsFyi::Upgrader::Record::SUITE)
+        command(stage: Agents::Upgrader::Record::PIN, output: "version solving has failed"),
+        command(stage: Agents::Upgrader::Record::SUITE)
       ]
     )
 
-    blocks = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+    blocks = Agents::Upgrader::Block.from_record(record, project: "storefront")
 
     assert_equal ["pin"], blocks.map { |block| block["block_kind"] }
     assert_includes blocks.first["evidence"]["failure"], "version solving"
@@ -164,10 +164,10 @@ class BlockTest < Minitest::Test
   def test_a_suite_failure_drops_the_manual_change_it_did_not_reach
     record = record(
       decisions: [decision(change_key: "ruby|rails|x")],
-      stages: [command(stage: AgentsFyi::Upgrader::Record::SUITE)]
+      stages: [command(stage: Agents::Upgrader::Record::SUITE)]
     )
 
-    blocks = AgentsFyi::Upgrader::Block.from_record(record, project: "storefront")
+    blocks = Agents::Upgrader::Block.from_record(record, project: "storefront")
 
     assert_equal ["suite"], blocks.map { |block| block["block_kind"] }
   end

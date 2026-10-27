@@ -93,7 +93,7 @@ accept that trade uses `native` and walks no old application.
 
 The record keeps the tail of every command's output, and a failure report can quote the evidence
 the step recorded. An application that prints a secret in its test output will put that secret in
-the record and possibly in a report. The tool never writes `AGENTS_FYI_KEY`, `UPGRADER_GITHUB_TOKEN`
+the record and possibly in a report. The tool never writes `AGENTS_KEY`, `UPGRADER_GITHUB_TOKEN`
 or a suite environment value into a record, but it cannot redact what the application itself
 prints. Review a record before sharing it, and treat the record's directory as sensitive.
 
@@ -137,7 +137,7 @@ and says so. There is no deployment-wide customer credential to fall back to.
 
 `plan`, `preflight`, `step` and `serve` need the service. There is no offline ladder, no bundled
 copy of Rails' release order, and no default service. `preview` and `prune` work offline from what
-is already on the volume; `republish` needs GitHub but not the agents-fyi service.
+is already on the volume; `republish` needs GitHub but not the agents service.
 
 ## The image is Linux and the era matrix is finite
 

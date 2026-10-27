@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes you from a fresh checkout to a plan, a preflight and a step. It assumes a
-Rails application and an agents-fyi service to ask.
+Rails application and an agents service to ask.
 
 ## 1. Requirements
 
@@ -16,7 +16,7 @@ Rails application and an agents-fyi service to ask.
 ```bash
 git clone https://github.com/shoutsid/upgrader.git
 cd upgrader
-./bin/agents-fyi-upgrader --help
+./bin/agents-upgrader --help
 ```
 
 There is no `bundle install`. If the command runs, the tool is installed.
@@ -25,10 +25,10 @@ There is no `bundle install`. If the command runs, the tool is installed.
 
 **There is no default service.** A plan answered from a corpus the caller did not choose is
 the same class of mistake as a default upgrade target, so the client refuses to guess. Name
-the service with `--api` or `AGENTS_FYI_URL`:
+the service with `--api` or `AGENTS_URL`:
 
 ```bash
-export AGENTS_FYI_URL=https://agents.shoutsid.fyi
+export AGENTS_URL=https://agents.shoutsid.fyi
 ```
 
 `plan`, `preflight`, `step` and `serve` all need one. `preview`, `republish` and `prune` are
@@ -45,11 +45,11 @@ Anonymous reads work without an account:
 - the scan of source you send (`POST /api/rails/scan`) — the source is not stored;
 - a plan (`GET /api/rails/upgrade`) reads the ladder.
 
-Writes and the queue need an operator key. The client reads it from **`AGENTS_FYI_KEY`** and
+Writes and the queue need an operator key. The client reads it from **`AGENTS_KEY`** and
 sends it as `X-API-Key`:
 
 ```bash
-export AGENTS_FYI_KEY=your-operator-key
+export AGENTS_KEY=your-operator-key
 ```
 
 The key is an **operator** key, never an admin token. Filing a report is the whole of what a
@@ -64,13 +64,13 @@ still works.
 For a local checkout:
 
 ```bash
-./bin/agents-fyi-upgrader plan --repo /path/to/application --to 7.1.0
+./bin/agents-upgrader plan --repo /path/to/application --to 7.1.0
 ```
 
 For a remote repository:
 
 ```bash
-./bin/agents-fyi-upgrader plan \
+./bin/agents-upgrader plan \
   --repo https://github.com/owner/application.git \
   --ref main \
   --to 7.1.0
@@ -101,7 +101,7 @@ An old application often cannot be installed at all. `preflight` repairs the Gem
 that problem on a working copy:
 
 ```bash
-./bin/agents-fyi-upgrader preflight \
+./bin/agents-upgrader preflight \
   --repo https://github.com/owner/application.git \
   --record ./out
 ```
@@ -116,7 +116,7 @@ gem the application does not declare is a decision, not a silent change.
 ## 6. Run one step
 
 ```bash
-./bin/agents-fyi-upgrader step \
+./bin/agents-upgrader step \
   --repo https://github.com/owner/application.git \
   --to 7.1.0 \
   --record ./out
@@ -154,7 +154,7 @@ up to five minutes for the service's `/api/health`, then starts anyway, because 
 down is something a loop waits out. It then runs:
 
 ```bash
-agents-fyi-upgrader serve --to "$UPGRADER_TO" --api "$API_BASE_URL" ...
+agents-upgrader serve --to "$UPGRADER_TO" --api "$API_BASE_URL" ...
 ```
 
 The loop reads the service's queue, walks one step per repository per cycle, and keeps a
@@ -164,7 +164,7 @@ security posture.
 
 ## Where state lives
 
-`$UPGRADER_HOME` (default `~/.cache/agents-fyi-upgrader`) holds:
+`$UPGRADER_HOME` (default `~/.cache/agents-upgrader`) holds:
 
 - `ledger.json` — the durable record of settled `(repo, commit, from, to)` moves;
 - working copies and per-run bundles;

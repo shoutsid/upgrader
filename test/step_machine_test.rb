@@ -6,7 +6,7 @@ require "json"
 require "rbconfig"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The pipeline with a machine behind it: which interpreter a step executes on, what happens
 # when none can serve it, and that every command the application runs goes through the machine
@@ -17,8 +17,8 @@ require "agents_fyi/upgrader"
 # what the test says — so "2.1 cannot install it, 2.2 can" is a fact a test can assert rather
 # than six minutes of gem builds. The real images are exercised by the walk, not here.
 class StepMachineTest < Minitest::Test
-  Command = AgentsFyi::Upgrader::Record::Command
-  Step = AgentsFyi::Upgrader::Step
+  Command = Agents::Upgrader::Record::Command
+  Step = Agents::Upgrader::Step
 
   # The matrix's eras, in the order the selection tries them for this lockfile (no `ruby` line
   # and no `RUBY VERSION`, so the floor is the only filter and the walk starts at the oldest).
@@ -241,7 +241,7 @@ class StepMachineTest < Minitest::Test
       @machines = []
     end
 
-    def detect(_root, declared: nil, stack: nil) = AgentsFyi::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
+    def detect(_root, declared: nil, stack: nil) = Agents::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
     def no_suite_reason(_root, _stack = nil) = "no suite"
 
     def run(root, _suite, timeout:, env:, machine: nil, stack: nil)
@@ -250,7 +250,7 @@ class StepMachineTest < Minitest::Test
     end
 
     def green
-      AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
+      Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
         exit_code: 0, seconds: 0.1, output_tail: "3 examples", timed_out: false)
     end
 
@@ -466,7 +466,7 @@ class StepMachineTest < Minitest::Test
   # outside the working copy, so it runs as root and everything else does not.
   class RootMachine < FakeMachine
     def root_command(argv, chdir:, env: {}) = [["fake-root", era, *argv], {}]
-    def browser_cache = "/agents-fyi/home/browser/#{era}/webdrivers"
+    def browser_cache = "/agents/home/browser/#{era}/webdrivers"
   end
 
   # **A machine that carries the environment the way a container does.** `Machine::Container#command`
@@ -574,12 +574,12 @@ class StepMachineTest < Minitest::Test
            #   ./app/views/bids/edit.html.erb:#{line}:in `_app_views_bids_edit_html_erb'
 
     TEXT
-    AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
+    Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
       exit_code: 1, seconds: 0.1, output_tail: text, timed_out: false)
   end
 
   def green_suite
-    AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
+    Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
       exit_code: 0, seconds: 0.1, output_tail: "3 examples, 0 failures", timed_out: false)
   end
 
@@ -661,7 +661,7 @@ class StepMachineTest < Minitest::Test
   # names 3.2 must not start 2.1 because the rung's floor happens to allow it.
   def test_a_project_s_declared_eras_are_the_only_ones_started
     fleet = machines
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/old", "from" => "4.0.0", "to" => "4.1.0",
       "eras" => ["3.2"], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     })
@@ -675,7 +675,7 @@ class StepMachineTest < Minitest::Test
   # A named era that cannot meet the rung's floor is refused by name rather than silently
   # walked on an era the operator did not choose.
   def test_a_declared_era_that_cannot_meet_the_floor_is_refused_by_name
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/old", "from" => "4.2.0", "to" => "5.0.0",
       "eras" => ["2.1"], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     })
@@ -724,7 +724,7 @@ class StepMachineTest < Minitest::Test
   def test_the_pin_moves_rails_and_leaves_the_rest_of_the_bundle_where_it_was
     record = step(app, machines: machines).run
 
-    pin = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pin = record.stages.find { |stage| stage.stage == Agents::Upgrader::Record::PIN }
 
     assert pin, "the pin stage is not in the record"
     # The era is whatever the fleet settles on; what is asserted is the command's own shape.
@@ -882,7 +882,7 @@ class StepMachineTest < Minitest::Test
     end
 
     refute_empty resolvers, "the step ran no resolver: #{runner.calls.inspect}"
-    assert(resolvers.all? { |_call, bytes| bytes == AgentsFyi::Upgrader::Shell::RESOLVER_BYTES },
+    assert(resolvers.all? { |_call, bytes| bytes == Agents::Upgrader::Shell::RESOLVER_BYTES },
       "a resolver's output was bound to the payload size: #{resolvers.inspect}")
   end
 
@@ -1003,9 +1003,9 @@ class StepMachineTest < Minitest::Test
   # printed — measured at the 5.1 rung, whose suite exit 1 arrived as that sentence alone.
   def test_a_failed_suite_prints_its_own_output
     out = StringIO.new
-    green = AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
+    green = Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
       exit_code: 0, seconds: 0.1, output_tail: "201 examples, 0 failures", timed_out: false)
-    failed = AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
+    failed = Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
       exit_code: 1, seconds: 0.2, output_tail: "Failure/Error: assigns(:item)\n  undefined method `assigns'",
       timed_out: false)
     tests = FakeTests.new(results: [green, failed])
@@ -1042,12 +1042,12 @@ class StepMachineTest < Minitest::Test
     assert_equal "failed", record.verdict
     assert_includes record.why, "pin did not succeed"
     labels = record.stages.map(&:stage)
-    assert_includes labels, AgentsFyi::Upgrader::Record::PIN
-    refute_includes labels, AgentsFyi::Upgrader::Record::RAILS_UPDATE,
+    assert_includes labels, Agents::Upgrader::Record::PIN
+    refute_includes labels, Agents::Upgrader::Record::RAILS_UPDATE,
       "app:update ran against an unresolved bundle"
-    refute_includes labels, AgentsFyi::Upgrader::Record::BOOT,
+    refute_includes labels, Agents::Upgrader::Record::BOOT,
       "the boot ran against an unresolved bundle"
-    refute_includes labels, AgentsFyi::Upgrader::Record::SUITE,
+    refute_includes labels, Agents::Upgrader::Record::SUITE,
       "the suite ran against an unresolved bundle"
   end
 
@@ -1097,7 +1097,7 @@ class StepMachineTest < Minitest::Test
   def test_the_pin_unlocks_the_framework_s_own_gems_and_leaves_the_rest_locked
     record = step(app(lockfile: FRAMEWORK_LOCK), machines: machines).run
 
-    pin = record.stages.find { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pin = record.stages.find { |stage| stage.stage == Agents::Upgrader::Record::PIN }
     command = pin.command.split(" ", 3).last
 
     assert_includes command, "actionpack", command
@@ -1123,7 +1123,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(app(lockfile: FRAMEWORK_LOCK), machines: machines, runner: runner).run
 
-    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pins = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PIN }
 
     assert_equal 2, pins.length, "the pin should have been asked again with the gem bundler named"
     refute_includes pins.first.command, "i18n", pins.first.command
@@ -1183,7 +1183,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
 
-    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pins = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PIN }
 
     assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
     refute_includes pins.first.command, "rspec", pins.first.command
@@ -1234,7 +1234,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
 
-    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pins = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PIN }
 
     assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
     assert_includes pins.last.command, "sinatra",
@@ -1286,7 +1286,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(app(lockfile: lockfile), machines: machines, runner: runner).run
 
-    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pins = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PIN }
 
     assert_equal 2, pins.length, "the pin should have been asked again: #{pins.map(&:command)}"
     assert_includes pins.last.command, "rack ", pins.last.command
@@ -1344,7 +1344,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(dir, machines: machines, runner: runner, corpus: corpus, to: "4.2.0").run
 
-    pins = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PIN }
+    pins = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PIN }
     assert_operator pins.length, :>=, 2, "the pin should have been asked again: #{pins.map(&:command)}"
     refute_includes pins.first.command, "responders",
       "the first round names only the framework: #{pins.first.command}"
@@ -1365,7 +1365,7 @@ class StepMachineTest < Minitest::Test
   # every `:js` example died in `DevToolsActivePort`.
   def test_a_browser_application_gets_the_container_browser_without_an_edit_to_its_tree
     dir = app
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
       "toolchain" => { "chrome" => "pinned" }
     })
@@ -1374,7 +1374,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(dir, machines: machines, runner: runner, project: project).run
 
-    browser = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
+    browser = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::BROWSER }
     assert_equal 4, browser.length, "one command per browser fact: #{browser.map(&:command)}"
     # **The browser the image has is used, and one it has not is installed from the era's archive.**
     # A live release ships both pairs; an archived one ships none, and its frozen archive still
@@ -1390,24 +1390,24 @@ class StepMachineTest < Minitest::Test
     assert_includes flags.command, "--no-sandbox"
     # The declaration says `pinned`, so the two names the suite and the driver gem read are
     # pointed at the image's verified build, and the versions are read back into the record.
-    pin = browser.find { |stage| stage.command.include?("agents-fyi-browser") }
+    pin = browser.find { |stage| stage.command.include?("agents-browser") }
     refute_nil pin, "the pinned browser was never linked into the names the suite reads"
-    assert_includes pin.command, "ln -sf /usr/local/bin/agents-fyi-browser /usr/bin/chromium",
+    assert_includes pin.command, "ln -sf /usr/local/bin/agents-browser /usr/bin/chromium",
       "the link does not point the browser name at the image's launcher"
-    assert_includes pin.command, "[ -x /opt/agents-fyi-browser/chrome-linux64/chrome ]",
+    assert_includes pin.command, "[ -x /opt/agents-browser/chrome-linux64/chrome ]",
       "a machine without the pinned pair would be linked to nothing"
     assert_includes pin.command, "chromium --version"
     seed = browser.find { |stage| stage.command.include?("chromedriver.version") }
     refute_nil seed, "the driver the image installs was never offered to the gem"
-    assert_includes seed.command, "/agents-fyi/home/browser/2.1/webdrivers"
+    assert_includes seed.command, "/agents/home/browser/2.1/webdrivers"
     assert_includes seed.command, "chromedriver --version"
 
     # The cache is where the gem reads it, the era is part of its name, and the application's
     # own tree holds nothing.
     assert_includes runner.calls.join("\n"),
-      "-e WD_INSTALL_DIR=/agents-fyi/home/browser/2.1/webdrivers",
+      "-e WD_INSTALL_DIR=/agents/home/browser/2.1/webdrivers",
       "no application command was told where the seeded driver is"
-    assert_empty Dir.glob(File.join(dir, "**", "*agents_fyi*")),
+    assert_empty Dir.glob(File.join(dir, "**", "*agents*")),
       "the browser answer was written into the application's checkout"
   end
 
@@ -1415,30 +1415,30 @@ class StepMachineTest < Minitest::Test
   # declaration's `distro` keeps Debian's package and drops the pin, because the browser a suite can
   # drive is a fact about that suite — a machine-wide choice would measure every project on one.
   def test_a_project_that_declares_the_distribution_browser_is_not_pinned
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/new", "from" => "7.1.6", "to" => "7.2.4",
       "toolchain" => { "chrome" => "distro" }
     })
 
     record = step(app, machines: root_machines, runner: FakeRunner.new, project: project).run
 
-    browser = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
+    browser = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::BROWSER }
     assert_equal 3, browser.length, "a distro project paid for a pin it refused: #{browser.map(&:command)}"
-    refute(browser.any? { |stage| stage.command.include?("agents-fyi-browser") },
+    refute(browser.any? { |stage| stage.command.include?("agents-browser") },
       "the distribution's browser was replaced for a project that asked for it")
   end
 
   # The browser stage is about the application's test stack, not about every walk: a project that
   # declares a header and nothing else must not pay for a browser it never asked for.
   def test_a_project_without_a_browser_gets_no_browser_stage
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
       "toolchain" => { "apt" => ["libidn11-dev"] }
     })
 
     record = step(app, machines: root_machines, runner: FakeRunner.new, project: project).run
 
-    assert_empty record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::BROWSER }
+    assert_empty record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::BROWSER }
   end
 
   # **The application's own build declares its system packages, and the walk installs them before
@@ -1446,7 +1446,7 @@ class StepMachineTest < Minitest::Test
   # the era image had no `idn.h`, and `bundle install` died in `idn-ruby` — a rung reported
   # unverified for a header the repository had asked for all along.
   def test_the_declared_system_packages_are_installed_before_the_bundle
-    project = AgentsFyi::Upgrader::Project.new({
+    project = Agents::Upgrader::Project.new({
       "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
       "toolchain" => { "apt" => %w[libidn11-dev cmake] }
     })
@@ -1454,7 +1454,7 @@ class StepMachineTest < Minitest::Test
 
     record = step(app, machines: root_machines, runner: runner, project: project).run
 
-    packages = record.stages.select { |stage| stage.stage == AgentsFyi::Upgrader::Record::PACKAGES }
+    packages = record.stages.select { |stage| stage.stage == Agents::Upgrader::Record::PACKAGES }
     assert_equal 1, packages.length, "the packages stage ran once per started era: #{packages.length}"
     install = packages.first
     assert install.ok?, install.output_tail
@@ -1525,7 +1525,7 @@ class StepMachineTest < Minitest::Test
   # see.
   def test_services_start_before_the_baseline_and_a_failure_to_start_is_the_verdict
     dir = app
-    runner = FakeRunner.new(answers: { "agents-fyi-services" => [1, "no PostgreSQL server"] })
+    runner = FakeRunner.new(answers: { "agents-services" => [1, "no PostgreSQL server"] })
     record = step(dir, machines: machines, runner: runner).run
 
     assert_equal "failed", record.verdict
@@ -1631,7 +1631,7 @@ class StepMachineTest < Minitest::Test
     FileUtils.mkdir_p(File.join(dir, "bin"))
     File.write(File.join(dir, "bin", "rails"), "#!/usr/bin/env ruby\n")
     File.chmod(0o755, File.join(dir, "bin", "rails"))
-    red = AgentsFyi::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true,
+    red = Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true,
       passed: false, exit_code: 1, seconds: 0.1, output_tail: "2 examples, 1 failure", timed_out: false)
     # Green first, red second: a red *baseline* would make the verdict `unverified`, which is
     # the other test's subject.
@@ -1655,7 +1655,7 @@ class StepMachineTest < Minitest::Test
   # the move stays settled; with the floor's era, it does not and the move is walked again.
   def test_a_settled_move_on_an_era_the_rung_would_not_get_is_re_opened
     dir = app
-    ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
+    ledger = Agents::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
     ledger.record(repo: "acme/old", commit: "abc12345", from_version: "4.0.0.rc1",
       to_version: "4.1.0", verdict: "passed",
       machine: "ruby 2.2 (era-2.2@sha256:#{"f" * 64})", era: "2.2")
@@ -1669,7 +1669,7 @@ class StepMachineTest < Minitest::Test
 
   def test_a_settled_move_is_re_opened_when_the_machine_changes
     dir = app
-    ledger = AgentsFyi::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
+    ledger = Agents::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
     ledger.record(repo: "acme/old", commit: "abc12345", from_version: "4.0.0.rc1",
       to_version: "4.1.0", verdict: "passed",
       machine: "ruby 2.1 (era-2.1@sha256:#{"f" * 64})", era: "2.1")

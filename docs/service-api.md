@@ -1,19 +1,19 @@
 # Service API
 
-The upgrader is a client of the agents-fyi service. This document is the client's view: the
+The upgrader is a client of the agents service. This document is the client's view: the
 endpoints it calls, what it sends, and how it reads a failure. The service's own machine-readable
 surface is authoritative:
 
-- `https://agents.shoutsid.fyi/.well-known/agents-fyi.json` — the discovery document;
+- `https://agents.shoutsid.fyi/.well-known/agents.json` — the discovery document;
 - `https://agents.shoutsid.fyi/llms.txt` — the agent-oriented summary.
 
 If a response and this page disagree, the service is right.
 
 ## Base URL and credentials
 
-There is **no default service**. Name one with `--api URL` or `AGENTS_FYI_URL`.
+There is **no default service**. Name one with `--api URL` or `AGENTS_URL`.
 
-The operator key is `AGENTS_FYI_KEY`, sent as `X-API-Key`. An empty key is not sent at all: an
+The operator key is `AGENTS_KEY`, sent as `X-API-Key`. An empty key is not sent at all: an
 anonymous request carrying an empty key would look signed in and would not be. The anonymous half
 of the client — the ladder, a plan, and the scan of source you send — works without an account.
 Writes and the queue need an operator key.

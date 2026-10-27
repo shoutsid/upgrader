@@ -1,0 +1,54 @@
+{
+  "note": "The interpreters a step may execute on, read by Interpreters and by scripts/upgrader-images.sh. `ruby` is the interpreter's own version *inside the image*, and it is compared against a step's `requires_ruby` floor \u2014 so it must be the image's version rather than the era a person names. Each `base` is pinned by the manifest digest that was pulled on 2026-10-17 and its runtime version was read back with `docker run --rm <base> ruby -v`; the digest is what makes the pin real, and the version string is what makes the floor arithmetic honest. `image` is the reference the walker runs and the deployment may override by digest (UPGRADER_INTERPRETER_IMAGES). `bundler` is the version installed into the image, chosen per era because Bundler 2.x cannot run on 2.1/2.2 at all and 1.x cannot read the lockfiles of the releases the later eras exist for. There is deliberately no `os` column: which Debian release a base is, and whether its packages have moved to archive.debian.org, is a fact the image carries in /etc/os-release, and the two eras this file used to be wrong about (2.5 is buster, 2.7 is bullseye) are why the Dockerfile reads it instead of being told. **One base is deliberately not the newest of its line, and the reason is a release's own code: the 2.2 era is `ruby:2.2.9`, not `2.2.10`.** Rails 5.0.0's `railties/lib/rails/ruby_version_check.rb:1` is `if RUBY_VERSION < '2.2.2'` \u2014 a *string* comparison \u2014 so `'2.2.10' < '2.2.2'` is true and the release the 5.0 rung moves to aborts on the newest 2.2 patch (`Rails 5 requires Ruby 2.2.2 or newer. You're running ruby 2.2.10p489`). Any 2.2.x with a single-digit patch satisfies the string comparison, and 2.2.9 is the newest that does.",
+  "interpreters": [
+    {
+      "name": "2.1",
+      "ruby": "2.1.10",
+      "base": "ruby:2.1@sha256:568664cfb53cd74147590cc86e356c4e352e00e28a0011ea1443e8664ca5bad5",
+      "image": "agents-upgrader-ruby-2.1:dev",
+      "bundler": "1.17.3"
+    },
+    {
+      "name": "2.2",
+      "ruby": "2.2.9",
+      "base": "ruby:2.2.9@sha256:aede69da0e5d89020cddfde853d0b0aad30ec855411a0b9666c714c18f9d6cb9",
+      "image": "agents-upgrader-ruby-2.2:dev",
+      "bundler": "1.17.3"
+    },
+    {
+      "name": "2.5",
+      "ruby": "2.5.9",
+      "base": "ruby:2.5@sha256:ecc3e4f5da13d881a415c9692bb52d2b85b090f38f4ad99ae94f932b3598444b",
+      "image": "agents-upgrader-ruby-2.5:dev",
+      "bundler": "2.3.26"
+    },
+    {
+      "name": "2.7",
+      "ruby": "2.7.8",
+      "base": "ruby:2.7@sha256:2347de892e419c7160fc21dec721d5952736909f8c3fbb7f84cb4a07aaf9ce7d",
+      "image": "agents-upgrader-ruby-2.7:dev",
+      "bundler": "2.4.22"
+    },
+    {
+      "name": "3.1",
+      "ruby": "3.1.7",
+      "base": "ruby:3.1@sha256:91627f55e8969006aab67d15c92fb930500ff73948803da1330b8a853fecebb5",
+      "image": "agents-upgrader-ruby-3.1:dev",
+      "bundler": "2.5.9"
+    },
+    {
+      "name": "3.2",
+      "ruby": "3.2.11",
+      "base": "ruby:3.2@sha256:d3bcbd845d26ae1efafcc987f641aa9ac796267b9b857e0f196a2b05070c8330",
+      "image": "agents-upgrader-ruby-3.2:dev",
+      "bundler": "2.4.22"
+    },
+    {
+      "name": "3.3",
+      "ruby": "3.3.12",
+      "base": "ruby:3.3@sha256:0a5633bcfe247d312edbc1e1c4a048ae3f5a99bea482af2d484b036c09cbd5a4",
+      "image": "agents-upgrader-ruby-3.3:dev",
+      "bundler": "2.6.9"
+    }
+  ]
+}

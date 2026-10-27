@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "fileutils"
 require "socket"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The services a host-run application talks to, in one container for the whole walk.
 #
@@ -14,9 +14,9 @@ require "agents_fyi/upgrader"
 # sibling that outlives the step, which is the whole reason this class exists: a container per
 # step, and per interpreter candidate, was the slowest thing a walk did.
 class ServicesTest < Minitest::Test
-  Machine = AgentsFyi::Upgrader::Machine
-  Interpreters = AgentsFyi::Upgrader::Interpreters
-  Command = AgentsFyi::Upgrader::Record::Command
+  Machine = Agents::Upgrader::Machine
+  Interpreters = Agents::Upgrader::Interpreters
+  Command = Agents::Upgrader::Record::Command
 
   class FakeShell
     attr_reader :calls
@@ -68,14 +68,14 @@ class ServicesTest < Minitest::Test
     dir
   end
 
-  def entry(name: "2.1", ruby: "2.1.10", image: "agentsfyi-upgrader-ruby-2.1:dev")
+  def entry(name: "2.1", ruby: "2.1.10", image: "agents-upgrader-ruby-2.1:dev")
     Interpreters::Entry.new(name: name, ruby: ruby, image: image, base: "base",
       bundler: "1.17.3", rvm: "")
   end
 
   def services(runner: nil, inspector: nil, **kwargs)
     Machine::Services.new(home: @home, runner: runner || FakeShell.new,
-      inspector: inspector || FakeInspector.new, volume: "", name: "agentsfyi-services-test",
+      inspector: inspector || FakeInspector.new, volume: "", name: "agents-svc-test",
       **kwargs)
   end
 
@@ -117,12 +117,12 @@ class ServicesTest < Minitest::Test
     assert started.ensure!(entry, stage: "interpreter", stages: stages)
 
     argv = shell.calls.first[:argv].join(" ")
-    assert_includes argv, "agentsfyi-upgrader-ruby-2.1:dev"
+    assert_includes argv, "agents-upgrader-ruby-2.1:dev"
     assert_includes argv, "-p 127.0.0.1:55432:5432"
     assert_includes argv, "-p 127.0.0.1:56379:6379"
-    assert_includes argv, "source=#{@home},target=/agents-fyi"
-    assert_includes argv, "--label org.agentsfyi.upgrader.pid=#{Process.pid}"
-    assert_includes argv, "agents-fyi-start sleep infinity"
+    assert_includes argv, "source=#{@home},target=/agents"
+    assert_includes argv, "--label org.agents.upgrader.pid=#{Process.pid}"
+    assert_includes argv, "agents-start sleep infinity"
     assert_equal "c0ffee", started.container_id
     assert_equal 1, stages.length
     assert stages.first.ok?
@@ -153,10 +153,10 @@ class ServicesTest < Minitest::Test
     started.ensure!(entry, stage: "interpreter", stages: [])
     work = File.join(@home, "work", "abc", "run-1")
 
-    argv = started.command(["agents-fyi-services"], chdir: work)
+    argv = started.command(["agents-services"], chdir: work)
 
     assert_equal ["docker", "exec", "--interactive", "--user", "#{Process.uid}:#{Process.gid}",
-      "--workdir", "/agents-fyi/work/abc/run-1", "c0ffee", "agents-fyi-services"], argv
+      "--workdir", "/agents/work/abc/run-1", "c0ffee", "agents-services"], argv
   end
 
   # A path outside the walker's home is refused rather than translated into a directory nobody
@@ -165,7 +165,7 @@ class ServicesTest < Minitest::Test
     started = services
     started.ensure!(entry, stage: "interpreter", stages: [])
 
-    assert_raises(Machine::Unavailable) { started.command(["agents-fyi-services"], chdir: "/tmp") }
+    assert_raises(Machine::Unavailable) { started.command(["agents-services"], chdir: "/tmp") }
   end
 
   # What the application's commands read to find the services. `PGHOST` is set even when the

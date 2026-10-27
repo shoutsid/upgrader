@@ -3,14 +3,14 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **A fresh clone is configured from the repository's own examples, and only where the repository
 # says so.** Each of these is one of the two questions the rule asks: does git ignore the target,
 # and does the repository ship a tracked example beside it. A copy made anywhere else is a file
 # the walker invented, which is why the refusals are as load-bearing as the seed.
 class BootstrapTest < Minitest::Test
-  Bootstrap = AgentsFyi::Upgrader::Bootstrap
+  Bootstrap = Agents::Upgrader::Bootstrap
 
   def setup
     @dirs = []

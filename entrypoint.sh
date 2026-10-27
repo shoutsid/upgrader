@@ -15,7 +15,7 @@
 set -eu
 
 : "${API_BASE_URL:=http://service:8001}"
-: "${UPGRADER_HOME:=/home/upgrader/.cache/agents-fyi-upgrader}"
+: "${UPGRADER_HOME:=/home/upgrader/.cache/agents-upgrader}"
 # The Rails release each move ends at, and the reason it has no default.
 #
 # The ladder lives in the service and nowhere else, so a this-tool default would be a second
@@ -51,7 +51,7 @@ set -eu
 : "${UPGRADER_WALK:=}"
 : "${UPGRADER_RUNGS:=}"
 # **Publishing is the delivery half and it is off unless asked for.** With it, every passed
-# rung becomes a branch (`agents-fyi/upgrade-<release>`) and a pull request chained to the
+# rung becomes a branch (`agents/upgrade-<release>`) and a pull request chained to the
 # rung before it. The loop asks the service for the repository's connected GitHub App
 # credential; a repository with no installation publishes nothing and says so. There is no
 # deployment-wide customer credential to fall back to, and a token is never written down (a
@@ -181,7 +181,7 @@ if [ -n "${UPGRADER_CYCLES}" ]; then
     set -- "$@" --cycles "${UPGRADER_CYCLES}"
 fi
 
-exec /app/bin/agents-fyi-upgrader serve \
+exec /app/bin/agents-upgrader serve \
     --to "${UPGRADER_TO}" \
     --api "${API_BASE_URL}" \
     --home "${UPGRADER_HOME}" \

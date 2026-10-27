@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The spelling Zeitwerk cannot guess, driven against real files.
 #
@@ -13,8 +13,8 @@ require "agents_fyi/upgrader"
 # — and taking `lib` off `config.autoload_paths` does not repair it. Zeitwerk's own answer for an
 # acronym is an inflector, and measured, it takes the rung's suite to 201 examples, 0 failures.
 class ZeitwerkTest < Minitest::Test
-  Zeitwerk = AgentsFyi::Upgrader::Zeitwerk
-  Rewrites = AgentsFyi::Upgrader::Rewrites
+  Zeitwerk = Agents::Upgrader::Zeitwerk
+  Rewrites = Agents::Upgrader::Rewrites
 
   def tree(files)
     dir = Dir.mktmpdir

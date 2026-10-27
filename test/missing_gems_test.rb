@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The boot failure a move can cause without touching the application: a dependency that used to
 # provide a gem stops, and the application's own Require was the only declaration there ever was.
@@ -64,8 +64,8 @@ class MissingGemsTest < Minitest::Test
   BOOT = <<~TEXT
     bin/rails aborted!
     LoadError: cannot load such file -- attr_encrypted (LoadError)
-    /agents-fyi/tree/app/models/user.rb:7:in `<top (required)>'
-    /agents-fyi/tree/config/routes.rb:126:in `block in <top (required)>'
+    /agents/tree/app/models/user.rb:7:in `<top (required)>'
+    /agents/tree/config/routes.rb:126:in `block in <top (required)>'
     Tasks: TOP => environment
     (See full trace by running task with --trace)
   TEXT
@@ -87,7 +87,7 @@ class MissingGemsTest < Minitest::Test
   # The whole point of going through the applier is that the line it writes is the line it read.
   def test_the_declaration_written_by_the_applier_is_a_gem_line_the_bundle_can_install
     in_tree do |root|
-      result = AgentsFyi::Upgrader::Applier.new(root).apply([repair(root)])
+      result = Agents::Upgrader::Applier.new(root).apply([repair(root)])
 
       assert_empty result.refused, "the applier refused the declaration"
       assert_equal 1, result.applied.length
@@ -135,7 +135,7 @@ class MissingGemsTest < Minitest::Test
   def test_a_require_that_names_no_gem_in_the_base_lockfile_is_left_alone
     in_tree do |root|
       output = "LoadError: cannot load such file -- racc (LoadError)"
-      assert_nil AgentsFyi::Upgrader::MissingGems.for(output: output, root: root, lock: base_lock(root))
+      assert_nil Agents::Upgrader::MissingGems.for(output: output, root: root, lock: base_lock(root))
     end
   end
 
@@ -158,7 +158,7 @@ class MissingGemsTest < Minitest::Test
       BUNDLED WITH
          2.5.22
     LOCK
-      edit = AgentsFyi::Upgrader::MissingGems.for(
+      edit = Agents::Upgrader::MissingGems.for(
         output: "LoadError: cannot load such file -- active_support/core_ext/object (LoadError)",
         root: root, lock: base_lock(root)
       )
@@ -177,7 +177,7 @@ class MissingGemsTest < Minitest::Test
   private
 
   def repair(root)
-    AgentsFyi::Upgrader::MissingGems.for(output: BOOT, root: root, lock: base_lock(root))
+    Agents::Upgrader::MissingGems.for(output: BOOT, root: root, lock: base_lock(root))
   end
 
   def in_tree(gemfile: GEMFILE, before: BEFORE, after: AFTER)
@@ -192,6 +192,6 @@ class MissingGemsTest < Minitest::Test
   # The parse the step holds from before the pin, read out of the same tree so a test that wants a
   # different base writes one.
   def base_lock(root)
-    AgentsFyi::Upgrader::Lockfile.new(path: File.join(root, "Gemfile.lock.before"), root: root)
+    Agents::Upgrader::Lockfile.new(path: File.join(root, "Gemfile.lock.before"), root: root)
   end
 end

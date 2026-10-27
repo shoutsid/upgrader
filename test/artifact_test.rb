@@ -24,7 +24,7 @@ class ArtifactTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
   DOCKERFILE_PATH = File.join(ROOT, "Dockerfile")
   ENTRYPOINT_PATH = File.join(ROOT, "entrypoint.sh")
-  CLI_PATH = File.join(ROOT, "lib", "agents_fyi", "upgrader", "cli.rb")
+  CLI_PATH = File.join(ROOT, "lib", "agents", "upgrader", "cli.rb")
 
   def dockerfile
     @dockerfile ||= File.read(DOCKERFILE_PATH, encoding: "utf-8")
@@ -40,7 +40,7 @@ class ArtifactTest < Minitest::Test
 
   # Every flag the entrypoint hands the CLI's `serve` mode, in the order it appears.
   def entrypoint_flags
-    invocation = entrypoint[/^exec \/app\/bin\/agents-fyi-upgrader serve.*\z/m]
+    invocation = entrypoint[/^exec \/app\/bin\/agents-upgrader serve.*\z/m]
     refute_nil invocation, "the entrypoint does not exec the CLI's serve mode"
     invocation.scan(/--[a-z][a-z-]*/).uniq
   end
@@ -131,7 +131,7 @@ class ArtifactTest < Minitest::Test
     assert_match(/attempt=0.*-ge 60/m, entrypoint)
     assert_includes entrypoint, "starting anyway"
 
-    assert_includes entrypoint, "exec /app/bin/agents-fyi-upgrader serve"
+    assert_includes entrypoint, "exec /app/bin/agents-upgrader serve"
     assert_includes entrypoint, "--heartbeat"
     assert_includes entrypoint, "--home"
     refute_includes entrypoint, "step --repo",
@@ -192,9 +192,9 @@ class ArtifactTest < Minitest::Test
   # three places is a name that drifts, and the step's constant is that name rather than a
   # second copy of the string.
   def test_the_runtime_name_is_declared_once_and_the_step_reads_it
-    machine = File.read(File.join(ROOT, "lib", "agents_fyi", "upgrader", "machine.rb"),
+    machine = File.read(File.join(ROOT, "lib", "agents", "upgrader", "machine.rb"),
       encoding: "utf-8")
-    step = File.read(File.join(ROOT, "lib", "agents_fyi", "upgrader", "step.rb"),
+    step = File.read(File.join(ROOT, "lib", "agents", "upgrader", "step.rb"),
       encoding: "utf-8")
 
     assert_includes machine, 'RUNTIME_ENV = "UPGRADER_RUNTIME"',
@@ -210,7 +210,7 @@ class ArtifactTest < Minitest::Test
     # re-derives every step on every restart.
     created = uncommented(dockerfile).match(/mkdir -p (.*?)&&/m)
     refute_nil created, "the image creates no directories for its volumes"
-    %w[agents-fyi-upgrader .gem].each do |fragment|
+    %w[agents-upgrader .gem].each do |fragment|
       assert_includes created[1], fragment, "the image does not create the #{fragment} directory"
     end
   end

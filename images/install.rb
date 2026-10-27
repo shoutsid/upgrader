@@ -22,11 +22,11 @@
 # A flag this file does not understand is refused rather than guessed at, so what a caller sees is
 # the real binary's own failure and never a wrong success.
 #
-# `test/install_test.rb` drives this file as a program with `AGENTS_FYI_INSTALL_REAL` pointed at a
+# `test/install_test.rb` drives this file as a program with `AGENTS_INSTALL_REAL` pointed at a
 # double, because on a host where the real thing works the fallback is unreachable otherwise.
 require "fileutils"
 
-REAL = ENV["AGENTS_FYI_INSTALL_REAL"] || "/usr/bin/install.coreutils"
+REAL = ENV["AGENTS_INSTALL_REAL"] || "/usr/bin/install.coreutils"
 
 # The real `install`, quoted output and all: the failure this file exists for is one of the few the
 # tool needs to *not* show, because the fallback below is what answers it.

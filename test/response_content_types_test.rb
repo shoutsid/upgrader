@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The ohana-api 6.1.7.10 failure, as a fixture.** `expect(response.content_type).to
 # eq("application/json")` failed on a correct response because 6.1 returns the header whole —
@@ -11,7 +11,7 @@ require "agents_fyi/upgrader"
 # stripped to. The repair moves the reader to `response.media_type`, and the tests below are a tree
 # and a failure: no Rails, no suite, no database.
 class ResponseContentTypesTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
 
   SPEC = "spec/api/get_location_spec.rb"
 
@@ -30,7 +30,7 @@ class ResponseContentTypesTest < Minitest::Test
       "    end"
     )
 
-    edit = AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root, failures: [failure]).first
+    edit = Agents::Upgrader::ResponseContentTypes.for(root: @root, failures: [failure]).first
 
     refute_nil edit
     assert_equal SPEC, edit["path"]
@@ -47,7 +47,7 @@ class ResponseContentTypesTest < Minitest::Test
       "    expect([response.content_type, response.content_type]).to eq([\"application/json\"] * 2)"
     )
 
-    edit = AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root,
+    edit = Agents::Upgrader::ResponseContentTypes.for(root: @root,
       failures: [failure(line: 1)]).first
 
     assert_equal "    expect([response.media_type, response.media_type]).to eq([\"application/json\"] * 2)",
@@ -61,7 +61,7 @@ class ResponseContentTypesTest < Minitest::Test
 
     raised = failure(message: "undefined method `content_type' for nil", error: "NoMethodError")
 
-    assert_empty AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root, failures: [raised])
+    assert_empty Agents::Upgrader::ResponseContentTypes.for(root: @root, failures: [raised])
   end
 
   # The line has to be the assertion. A failure reported against a line that only mentions the
@@ -69,7 +69,7 @@ class ResponseContentTypesTest < Minitest::Test
   def test_a_line_that_is_not_an_expectation_is_not_rewritten
     spec("      response.content_type")
 
-    assert_empty AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root, failures: [failure])
+    assert_empty Agents::Upgrader::ResponseContentTypes.for(root: @root, failures: [failure])
   end
 
   # A controller is the application, not the suite: reading the response's type there is code the
@@ -83,14 +83,14 @@ class ResponseContentTypesTest < Minitest::Test
 
     denied = failure(file: "./app/controllers/api/locations_controller.rb")
 
-    assert_empty AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root, failures: [denied])
+    assert_empty Agents::Upgrader::ResponseContentTypes.for(root: @root, failures: [denied])
   end
 
   # A missing file is a refusal, not a crash: the suite can name a spec the step's tree does not have.
   def test_a_file_the_tree_does_not_have_produces_no_edit
     gone = failure(file: "./spec/api/gone_spec.rb")
 
-    assert_empty AgentsFyi::Upgrader::ResponseContentTypes.for(root: @root, failures: [gone])
+    assert_empty Agents::Upgrader::ResponseContentTypes.for(root: @root, failures: [gone])
   end
 
   private

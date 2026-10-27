@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The application's gate, not one command.
 #
@@ -10,8 +10,8 @@ require "agents_fyi/upgrader"
 # An external check is a fourth answer here and deliberately not a green one — this walk did not run
 # the application's CI, and a local suite passing is not evidence that it did.
 class ChecksTest < Minitest::Test
-  Checks = AgentsFyi::Upgrader::Checks
-  Check = AgentsFyi::Upgrader::Project::Check
+  Checks = Agents::Upgrader::Checks
+  Check = Agents::Upgrader::Project::Check
 
   def check(id: "lint", command:, required: true)
     Check.new(id: id, name: nil, kind: "lint", command: command, required: required,
@@ -51,7 +51,7 @@ class ChecksTest < Minitest::Test
   def test_a_command_that_did_not_run_is_not_a_failure
     Dir.mktmpdir do |root|
       result = Checks.run(root: root,
-        checks: [check(command: "definitely-not-a-command-agents-fyi")]).first
+        checks: [check(command: "definitely-not-a-command-agents")]).first
 
       assert_equal "not_run", result.status
       refute result.blocking_failure?

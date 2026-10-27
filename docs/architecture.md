@@ -1,6 +1,6 @@
 # Architecture
 
-The upgrader is a client, not a service. It reads an application, asks the agents-fyi service
+The upgrader is a client, not a service. It reads an application, asks the agents service
 what a Rails release changed, applies the changes the service calls mechanical, and measures the
 result with the application's own suite. It has no database, no ladder of its own and no admin
 credential. The worst it can do to the corpus is what any operator with the same key can do, and

@@ -7,14 +7,14 @@ require "rbconfig"
 # The file rather than the library, so this suite runs on its own as well as inside
 # `test/all_test.rb` — the runner's own tests should not depend on the library's
 # require list being in the order they need.
-require "agents_fyi/upgrader/tests"
+require "agents/upgrader/tests"
 
 # Detecting a suite, and running one. What is asserted here is the distinction the
 # whole record rests on: a suite that failed, a suite that never ran, and a suite that
 # had to be killed are three different facts, and only the first one is a finding about
 # a release.
 class TestsTest < Minitest::Test
-  Tests = AgentsFyi::Upgrader::Tests
+  Tests = Agents::Upgrader::Tests
 
   # The interpreter running this test, by absolute path. A suite under test must not
   # depend on `ruby` being on `PATH`: on a machine that installed Ruby through a
@@ -210,7 +210,7 @@ class TestsTest < Minitest::Test
   # is dropped as it flows, so a suite that prints a gigabyte of dots still records the error
   # that came before them.
   def test_an_excerpt_keeps_the_first_bytes_when_the_output_starts_with_them
-    excerpt = AgentsFyi::Upgrader::Shell::Excerpt.new(bytes: 100)
+    excerpt = Agents::Upgrader::Shell::Excerpt.new(bytes: 100)
     excerpt << "MESSAGE-AT-THE-START\n" << ("x" * 10_000)
 
     text = excerpt.to_s

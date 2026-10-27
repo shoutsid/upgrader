@@ -5,9 +5,9 @@ repository, the service or the machine. The sentence beside it usually names the
 
 ## The tool refuses to start
 
-### `plan` needs the service: pass --api URL or set AGENTS_FYI_URL
+### `plan` needs the service: pass --api URL or set AGENTS_URL
 
-There is no default service. Set `AGENTS_FYI_URL` or pass `--api`. A self-hosted service is named
+There is no default service. Set `AGENTS_URL` or pass `--api`. A self-hosted service is named
 the same way; the public deployment is a convenience, not a default.
 
 ### `the project declaration is not usable: …`
@@ -28,7 +28,7 @@ move. Those are required.
 ### `no project named "…" in …`
 
 The slug has no file in the directories the message lists. Put it in
-`lib/agents_fyi/upgrader/data/projects/<slug>.json`, or in `UPGRADER_PROJECTS_DIR`. A written
+`lib/agents/upgrader/data/projects/<slug>.json`, or in `UPGRADER_PROJECTS_DIR`. A written
 declaration shadows a built-in of the same slug; a malformed written one is refused by name
 rather than falling back silently.
 
@@ -61,7 +61,7 @@ window with no rung or an application pinned to a release the ladder does not st
 The native interpreter does not meet the rung's floor. Run the step in an era container:
 
 ```bash
-UPGRADER_RUNTIME=docker ./bin/agents-fyi-upgrader step --repo … --to …
+UPGRADER_RUNTIME=docker ./bin/agents-upgrader step --repo … --to …
 ```
 
 The era images must exist on the daemon. See [Deployment](deployment.md#docker-era-containers).
@@ -166,7 +166,7 @@ daemon can mount. If discovery cannot answer, set `UPGRADER_DOCKER_VOLUME` to th
 A process that is killed runs no `ensure`. Run:
 
 ```bash
-./bin/agents-fyi-upgrader prune --home …
+./bin/agents-upgrader prune --home …
 ```
 
 `prune` also reclaims a per-run bundle no live run is using. The next step runs the same pass
@@ -220,7 +220,7 @@ The heartbeat's age is the health signal, not the process being up. Check:
 
 ### `401` / `403`
 
-The operator key is missing, wrong, or lacks the scope. Set `AGENTS_FYI_KEY`; do not use
+The operator key is missing, wrong, or lacks the scope. Set `AGENTS_KEY`; do not use
 `ADMIN_TOKEN`. Anonymous reads (the ladder, the scan, a plan) work without a key, so a plan can
 succeed while a queue read or a run write fails.
 
@@ -318,7 +318,7 @@ longer; the loop's job is not to wait for ever.
 
 - Re-run with `--record ./out` and read the JSON: `stages` has every command and exit code.
 - `preview --from ./out/<record>.json` renders the review brief without a checkout or a token.
-- The service's discovery document (`/.well-known/agents-fyi.json`) is the authority on routes
+- The service's discovery document (`/.well-known/agents.json`) is the authority on routes
   and credentials.
 - For a bug in this client, open an issue with the version, the command, the operating system and
   the redacted record. Do not paste a key, a token or an application's private source.

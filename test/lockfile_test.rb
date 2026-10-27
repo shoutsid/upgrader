@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # Reading an application's own file, because everything downstream is a statement
 # about the version this returns.
@@ -129,7 +129,7 @@ gem "dotenv", path: "vendor/gems/dotenv-2.0.1"
       File.write(File.join(dir, "Gemfile.lock"), text)
       File.write(File.join(dir, "Gemfile"), gemfile) if gemfile
       File.write(File.join(dir, ".ruby-version"), dot_ruby) if dot_ruby
-      yield AgentsFyi::Upgrader::Lockfile.read(dir)
+      yield Agents::Upgrader::Lockfile.read(dir)
     end
   end
 
@@ -226,8 +226,8 @@ gem "dotenv", path: "vendor/gems/dotenv-2.0.1"
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "Gemfile.lock"), VENDORED)
 
-      assert_raises(AgentsFyi::Upgrader::Lockfile::Unreadable) do
-        AgentsFyi::Upgrader::Lockfile.read(dir)
+      assert_raises(Agents::Upgrader::Lockfile::Unreadable) do
+        Agents::Upgrader::Lockfile.read(dir)
       end
     end
   end
@@ -243,8 +243,8 @@ gem "dotenv", path: "vendor/gems/dotenv-2.0.1"
 
   def test_a_directory_with_no_lockfile_says_so_rather_than_returning_nothing
     Dir.mktmpdir do |dir|
-      error = assert_raises(AgentsFyi::Upgrader::Lockfile::Missing) do
-        AgentsFyi::Upgrader::Lockfile.read(dir)
+      error = assert_raises(Agents::Upgrader::Lockfile::Missing) do
+        Agents::Upgrader::Lockfile.read(dir)
       end
 
       assert_includes error.message, "no Gemfile.lock"

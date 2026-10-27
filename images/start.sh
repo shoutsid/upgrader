@@ -12,17 +12,17 @@
 # entry is created here, once, by the only process in the container that runs as root — every
 # application-level command is exec'd with `--user` and never sees it.
 #
-# `--no-create-home` on purpose: the home is the volume mounted at `/agents-fyi/home`, owned
+# `--no-create-home` on purpose: the home is the volume mounted at `/agents/home`, owned
 # by this uid on the host, and a `useradd` that created it would replace a mounted directory
 # with an empty one.
 set -eu
 
-if [ -n "${AGENTS_FYI_UID:-}" ]; then
-    if ! getent passwd "$AGENTS_FYI_UID" >/dev/null 2>&1; then
-        gid="${AGENTS_FYI_GID:-$AGENTS_FYI_UID}"
+if [ -n "${AGENTS_UID:-}" ]; then
+    if ! getent passwd "$AGENTS_UID" >/dev/null 2>&1; then
+        gid="${AGENTS_GID:-$AGENTS_UID}"
         groupadd --gid "$gid" walker 2>/dev/null || true
-        useradd --uid "$AGENTS_FYI_UID" --gid "$gid" --shell /bin/sh \
-            --home-dir "${HOME:-/agents-fyi/home}" --no-create-home walker 2>/dev/null || true
+        useradd --uid "$AGENTS_UID" --gid "$gid" --shell /bin/sh \
+            --home-dir "${HOME:-/agents/home}" --no-create-home walker 2>/dev/null || true
     fi
 
     # **The PostgreSQL socket directory, prepared here and not in the image.** `/run` is a
@@ -33,7 +33,7 @@ if [ -n "${AGENTS_FYI_UID:-}" ]; then
     # listening on. The directory the Debian package installs is owned by `postgres`; the
     # server here runs as the walker's uid, so it is handed over.
     mkdir -p /var/run/postgresql
-    chown "$AGENTS_FYI_UID:${AGENTS_FYI_GID:-$AGENTS_FYI_UID}" /var/run/postgresql 2>/dev/null || true
+    chown "$AGENTS_UID:${AGENTS_GID:-$AGENTS_UID}" /var/run/postgresql 2>/dev/null || true
     chmod 2775 /var/run/postgresql 2>/dev/null || true
 
     # **The gem home, handed over for the same reason and found the same way.** Rails 4.0.0.rc1
@@ -46,8 +46,8 @@ if [ -n "${AGENTS_FYI_UID:-}" ]; then
     # never mentions a permission. The check is against the walker's own uid so a container
     # that is already handed over pays nothing.
     if [ -d /usr/local/bundle ]; then
-        if [ "$(stat -c %u /usr/local/bundle 2>/dev/null || echo)" != "$AGENTS_FYI_UID" ]; then
-            chown -R "$AGENTS_FYI_UID:${AGENTS_FYI_GID:-$AGENTS_FYI_UID}" /usr/local/bundle 2>/dev/null || true
+        if [ "$(stat -c %u /usr/local/bundle 2>/dev/null || echo)" != "$AGENTS_UID" ]; then
+            chown -R "$AGENTS_UID:${AGENTS_GID:-$AGENTS_UID}" /usr/local/bundle 2>/dev/null || true
         fi
     fi
 fi

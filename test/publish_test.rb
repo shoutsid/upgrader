@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "open3"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # Delivery: one branch per passed rung, and a pull request chained to the rung before it.
 #
@@ -14,9 +14,9 @@ require "agents_fyi/upgrader"
 # sends (a chained base, a body built from the record, a token that never appears in
 # anything it returns), and none of that needs GitHub to answer.
 class PublishTest < Minitest::Test
-  Publish = AgentsFyi::Upgrader::Publish
-  Record = AgentsFyi::Upgrader::Record
-  Command = AgentsFyi::Upgrader::Record::Command
+  Publish = Agents::Upgrader::Publish
+  Record = Agents::Upgrader::Record
+  Command = Agents::Upgrader::Record::Command
 
   # A bare origin and a clone with one commit, made with an explicit initial branch so the
   # base this class computes is a fixed answer rather than whatever `git init` defaults to.
@@ -72,8 +72,8 @@ class PublishTest < Minitest::Test
       name: "Rails 4.1", verdict: verdict,
       why: verdict == "passed" ? "the suite was green before this step and green after it" :
         "the suite was green before this step and failed after it (exit 1)",
-      interpreter: "ruby 2.1.10", image: "agentsfyi-upgrader-ruby-2.1:dev",
-      machine: "ruby 2.1.10 (agentsfyi-upgrader-ruby-2.1:dev@sha256:#{"a" * 64})",
+      interpreter: "ruby 2.1.10", image: "agents-upgrader-ruby-2.1:dev",
+      machine: "ruby 2.1.10 (agents-upgrader-ruby-2.1:dev@sha256:#{"a" * 64})",
       era: "2.1", decisions: decisions, refused: refused, applied: applied, brief: brief,
       checks: checks, commits: commits, app_update: app_update,
       accepted_decisions: accepted_decisions, toolchain: toolchain, repairs: repairs,
@@ -221,12 +221,12 @@ class PublishTest < Minitest::Test
     assert result.pushed, result.reason
     refute result.published?, "there is no pull request to open off github.com"
     assert_includes result.reason, "not a github.com repository"
-    assert_equal "agents-fyi/upgrade-4.1.0", result.branch
+    assert_equal "agents/upgrade-4.1.0", result.branch
     assert_equal "main", result.base
 
-    listing, _status = capture("git", "-C", bare, "rev-parse", "refs/heads/agents-fyi/upgrade-4.1.0")
+    listing, _status = capture("git", "-C", bare, "rev-parse", "refs/heads/agents/upgrade-4.1.0")
     assert_equal result.commit, listing.strip, "the branch is not the commit this step made"
-    shown, _status = capture("git", "-C", bare, "show", "agents-fyi/upgrade-4.1.0:Gemfile")
+    shown, _status = capture("git", "-C", bare, "show", "agents/upgrade-4.1.0:Gemfile")
     assert_includes shown, %(gem "rails", "4.1.0")
   end
 
@@ -250,7 +250,7 @@ class PublishTest < Minitest::Test
 
     assert retried.pushed, retried.reason
     assert_equal first.commit, retried.commit
-    branch, = capture("git", "-C", bare, "rev-parse", "refs/heads/agents-fyi/upgrade-4.1.0")
+    branch, = capture("git", "-C", bare, "rev-parse", "refs/heads/agents/upgrade-4.1.0")
     assert_equal first.commit, branch.strip, "the branch is not the rung's recorded commit"
     now, = capture("git", "-C", clone, "rev-parse", "HEAD")
     assert_equal head.strip, now.strip, "a delivery retry made a commit"
@@ -270,8 +270,8 @@ class PublishTest < Minitest::Test
       to_version: "4.2.0", record: passed_record(repository: bare, from: "4.1.0", to: "4.2.0"),
       token: "").call
 
-    assert_equal "agents-fyi/upgrade-4.1.0", second.base
-    assert_equal "agents-fyi/upgrade-4.2.0", second.branch
+    assert_equal "agents/upgrade-4.1.0", second.base
+    assert_equal "agents/upgrade-4.2.0", second.branch
   end
 
   # **A patch checkpoint is a branch like any other, named for the exact release.** The chain is the
@@ -284,7 +284,7 @@ class PublishTest < Minitest::Test
       to_version: "4.1.3", record: passed_record(repository: bare, from: "4.1.2", to: "4.1.3"),
       token: "").call
     assert first.pushed, first.reason
-    assert_equal "agents-fyi/upgrade-4.1.3", first.branch
+    assert_equal "agents/upgrade-4.1.3", first.branch
 
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.1.4"\n))
     second = Publish.new(root: clone, repository: bare, from_version: "4.1.3",
@@ -292,8 +292,8 @@ class PublishTest < Minitest::Test
       token: "").call
 
     assert second.pushed, second.reason
-    assert_equal "agents-fyi/upgrade-4.1.4", second.branch, "the patch's branch is not its exact release"
-    assert_equal "agents-fyi/upgrade-4.1.3", second.base, "the patch was not chained on its predecessor"
+    assert_equal "agents/upgrade-4.1.4", second.branch, "the patch's branch is not its exact release"
+    assert_equal "agents/upgrade-4.1.3", second.base, "the patch was not chained on its predecessor"
   end
 
   # **The second request is the stack, not only the next branch.** GitHub's stacks API needs an
@@ -304,7 +304,7 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.1.0")
     api = FakeApi.new(url: "#{repository}/pull/8", previous: { "number" => 7, "state" => "open" })
 
     result = Publish.new(root: clone, repository: repository, from_version: "4.1.0",
@@ -344,7 +344,7 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.2.0")
     api = FakeApi.new(url: "#{repository}/pull/9", previous: { "number" => 8 },
       stacks: { 8 => { "number" => 42,
         "url" => "https://api.github.com/repos/acme/storefront/stacks/42" } })
@@ -368,12 +368,12 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "8.1.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-8.0.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-8.0.0")
     api = FakeApi.new(url: "#{repository}/pull/14",
       previous: { "number" => 13, "state" => "open",
-                  "base" => { "ref" => "agents-fyi/upgrade-7.2.0" } },
-      chain: { "agents-fyi/upgrade-7.2.0" => { "number" => 12, "state" => "open",
-        "base" => { "ref" => "agents-fyi/upgrade-7.1.0" } } },
+                  "base" => { "ref" => "agents/upgrade-7.2.0" } },
+      chain: { "agents/upgrade-7.2.0" => { "number" => 12, "state" => "open",
+        "base" => { "ref" => "agents/upgrade-7.1.0" } } },
       stacks: { 12 => { "number" => 11,
         "url" => "https://api.github.com/repos/acme/storefront/stacks/11" } })
 
@@ -396,14 +396,14 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.2.0")
     api = FakeApi.new(url: "#{repository}/pull/9",
       previous: { "number" => 8, "state" => "open",
-                  "base" => { "ref" => "agents-fyi/upgrade-4.1.0" } },
+                  "base" => { "ref" => "agents/upgrade-4.1.0" } },
       chain: {
-        "agents-fyi/upgrade-4.1.0" => { "number" => 7, "state" => "open",
-          "base" => { "ref" => "agents-fyi/upgrade-4.0.0" } },
-        "agents-fyi/upgrade-4.0.0" => { "number" => 6, "state" => "open",
+        "agents/upgrade-4.1.0" => { "number" => 7, "state" => "open",
+          "base" => { "ref" => "agents/upgrade-4.0.0" } },
+        "agents/upgrade-4.0.0" => { "number" => 6, "state" => "open",
           "base" => { "ref" => "main" } }
       })
 
@@ -424,7 +424,7 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.3.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.2.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.2.0")
     api = FlakyStackApi.new(failures: 1, url: "#{repository}/pull/9",
       previous: { "number" => 8, "state" => "open" },
       stacks: { 8 => { "number" => 42,
@@ -445,7 +445,7 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.1.0")
     api = FakeApi.new(url: "#{repository}/pull/8", previous: { "number" => 7 },
       stacks: { 8 => { "number" => 42,
         "url" => "https://api.github.com/repos/acme/storefront/stacks/42" } })
@@ -466,14 +466,14 @@ class PublishTest < Minitest::Test
     _bare, clone = origin_and_clone
     write(clone, "Gemfile", %(source "https://rubygems.org"\ngem "rails", "4.2.0"\n))
     repository = "https://github.com/acme/storefront"
-    git = FakeGit.new(heads: "abc\trefs/heads/agents-fyi/upgrade-4.1.0")
+    git = FakeGit.new(heads: "abc\trefs/heads/agents/upgrade-4.1.0")
     api = FakeApi.new(url: "#{repository}/pull/8")
 
     result = Publish.new(root: clone, repository: repository, from_version: "4.1.0",
       to_version: "4.2.0", record: passed_record(repository: repository, from: "4.1.0", to: "4.2.0"),
-      token: "ghp_secret", git: git, api: api, base_ref: "agents-fyi/baseline", chain: false).call
+      token: "ghp_secret", git: git, api: api, base_ref: "agents/baseline", chain: false).call
 
-    assert_equal "agents-fyi/baseline", result.base
+    assert_equal "agents/baseline", result.base
     assert_empty api.calls.select { |call| call.first == :pull_request_for },
       "a non-chained request still looked for a lower layer"
     assert_empty result.stack.to_s
@@ -522,7 +522,7 @@ class PublishTest < Minitest::Test
   end
 
   # **A push that failed is retried, because the failure a walk actually meets is the network.**
-  # Measured on the deployment: `agents-fyi/upgrade-4.1.0` pushed and opened its pull request, and the
+  # Measured on the deployment: `agents/upgrade-4.1.0` pushed and opened its pull request, and the
   # next rung's push answered `fatal: unable to access … Could not resolve host: github.com` — the rung
   # *passed*, its branch was never created, and the hole is permanent because a passed move is settled
   # and never revisited. The second attempt is the whole fix.
@@ -544,7 +544,7 @@ class PublishTest < Minitest::Test
     assert result.pushed, "a push that failed once lost the rung's branch: #{result.reason}"
     assert_equal 2, git.calls.count { |call| call.first == "push" },
       "the push was not attempted a second time"
-    assert_equal [AgentsFyi::Upgrader::Publish::PUSH_BACKOFF_SECONDS], waits
+    assert_equal [Agents::Upgrader::Publish::PUSH_BACKOFF_SECONDS], waits
   end
 
   # **The request is the network too.** Measured on the clean re-run: `api.github.com` answered
@@ -570,7 +570,7 @@ class PublishTest < Minitest::Test
   # And what a caller reads when it never succeeds is one sentence, not a resolver's backtrace.
   def test_a_pull_request_that_keeps_failing_is_a_sentence_rather_than_a_raise
     _bare, clone = origin_and_clone
-    api = FlakyApi.new(failures: AgentsFyi::Upgrader::Publish::PUSH_ATTEMPTS)
+    api = FlakyApi.new(failures: Agents::Upgrader::Publish::PUSH_ATTEMPTS)
 
     result = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
       from_version: "4.0.0.rc1", to_version: "4.1.0",
@@ -615,13 +615,13 @@ class PublishTest < Minitest::Test
   # report links are built from the deployment's public base, not the walker's internal one.
   def test_the_request_body_carries_the_decisions_in_force_and_links_the_reports
     _bare, clone = origin_and_clone
-    applied = AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/index.html.erb",
+    applied = Agents::Upgrader::Applier::Applied.new(path: "app/views/bids/index.html.erb",
       line: 16, text: "<td><%= link_to 'Show', bid %></td>", after: "",
       subject: "bids", origin: "decision:6b1f0a52-0000-4000-8000-000000000001", note: "the list's link")
-    brief = AgentsFyi::Upgrader::Brief::Result.new(
-      sections: [AgentsFyi::Upgrader::Brief::Section.new(key: "framework", title: "Rails 6.0",
+    brief = Agents::Upgrader::Brief::Result.new(
+      sections: [Agents::Upgrader::Brief::Section.new(key: "framework", title: "Rails 6.0",
         question: "what the corpus recorded", state: "answers",
-        items: [AgentsFyi::Upgrader::Brief::Item.new(id: "r1", title: "a known failure",
+        items: [Agents::Upgrader::Brief::Item.new(id: "r1", title: "a known failure",
           match: "signature")], total: 1)],
       asked: 1, truncated: false, unavailable: 0
     )
@@ -663,7 +663,7 @@ class PublishTest < Minitest::Test
     decision = Record::Decision.new(path: "app/models/user.rb", line: 12,
       subject: "attr_accessible", reason: "move the list to the controller",
       kind: "removed", replacement: "params.require(:user).permit(:name)", source: "4.0, Mass assignment")
-    refusal = AgentsFyi::Upgrader::Applier::Refused.new(path: "app/models/user.rb", line: 3,
+    refusal = Agents::Upgrader::Applier::Refused.new(path: "app/models/user.rb", line: 3,
       text: "  attr_accessible :name", found: "  attr_accessible :name, :email",
       reason: "app/models/user.rb:3 is not the line the scan read, so it was not written",
       subject: "attr_accessible")
@@ -691,11 +691,11 @@ class PublishTest < Minitest::Test
   def test_the_body_summarises_applied_edits_instead_of_listing_every_one
     _bare, clone = origin_and_clone
     applied = [
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/x.rb", line: 1,
+      Agents::Upgrader::Applier::Applied.new(path: "app/models/x.rb", line: 1,
         text: "old", after: "new", origin: "decision:d1"),
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/y.rb", line: 2,
+      Agents::Upgrader::Applier::Applied.new(path: "app/models/y.rb", line: 2,
         text: "old", after: "new", origin: "companion"),
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/models/z.rb", line: 3,
+      Agents::Upgrader::Applier::Applied.new(path: "app/models/z.rb", line: 3,
         text: "old", after: "new", origin: "companion")
     ]
     api = FakeApi.new
@@ -718,9 +718,9 @@ class PublishTest < Minitest::Test
   def test_the_body_names_a_written_file_instead_of_pasting_its_contents
     _bare, clone = origin_and_clone
     applied = [
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "vendor/gems/x/lib/x.rb", line: 1,
+      Agents::Upgrader::Applier::Applied.new(path: "vendor/gems/x/lib/x.rb", line: 1,
         text: "", after: "module X\n  VALUE = `ls`\nend\n", origin: "decision:d1"),
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "Gemfile", line: 4,
+      Agents::Upgrader::Applier::Applied.new(path: "Gemfile", line: 4,
         text: %(gem "x", "1.0"), after: %(gem "x", "2.0"), origin: "decision:d1")
     ]
     api = FakeApi.new
@@ -793,16 +793,16 @@ class PublishTest < Minitest::Test
   # application's environment shows up; the full record in the body must not carry either.
   def test_the_body_omits_check_and_repair_output_from_the_collapsed_record
     _bare, clone = origin_and_clone
-    check = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+    check = Agents::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
       command: "bundle exec rubocop", required: true, external: false, status: "passed",
       ran: true, exit_code: 0, seconds: 1.0, output_tail: "SECRET_TOKEN=check-secret")
-    attempt = AgentsFyi::Upgrader::Repair::Attempt.new(number: 1, command: "opencode", ran: true,
+    attempt = Agents::Upgrader::Repair::Attempt.new(number: 1, command: "opencode", ran: true,
       timed_out: false, exit_code: 0, seconds: 1.0, output_tail: "SECRET_TOKEN=repair-secret",
       changed: ["app/models/item.rb"])
-    repair = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "FAILURE_SECRET=failure-secret",
+    repair = Agents::Upgrader::Repair::Outcome.new(failure: "FAILURE_SECRET=failure-secret",
       suite: "bundle exec rspec", attempts: [attempt], files: ["app/models/item.rb"],
       diff: "SECRET DIFF", before_the_move: false)
-    counted = AgentsFyi::Upgrader::Repair::Outcome.new(failure: "another failure",
+    counted = Agents::Upgrader::Repair::Outcome.new(failure: "another failure",
       suite: "bundle exec rspec", attempts: 1, files: ["app/models/item.rb"],
       diff: "ANOTHER SECRET DIFF", before_the_move: false)
     record = passed_record(repository: "https://github.com/acme/storefront",
@@ -863,19 +863,19 @@ class PublishTest < Minitest::Test
   # walk — and the full record is there, collapsed, for the reader who wants the evidence.
   def test_the_body_renders_the_checks_the_commits_the_decisions_and_the_update
     _bare, clone = origin_and_clone
-    external = AgentsFyi::Upgrader::Checks::Result.new(id: "ci", name: "GitHub Actions",
+    external = Agents::Upgrader::Checks::Result.new(id: "ci", name: "GitHub Actions",
       kind: "external", required: true, external: true, status: "external", ran: false,
       reason: "the application's CI test job")
-    lint = AgentsFyi::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
+    lint = Agents::Upgrader::Checks::Result.new(id: "lint", kind: "lint",
       command: "bundle exec rubocop", required: true, external: false, status: "passed",
       ran: true, exit_code: 0, seconds: 1.0)
     record = passed_record(repository: "https://github.com/acme/storefront",
       from: "5.2.0", to: "6.0.0", checks: [lint, external],
       commits: [
         { "concern" => "pin Rails and move gems", "commit" => "b" * 40,
-          "message" => "agents-fyi upgrader: the 5.2.0 -> 6.0.0 step — pin Rails and move gems" },
+          "message" => "agents upgrader: the 5.2.0 -> 6.0.0 step — pin Rails and move gems" },
         { "concern" => "run app:update", "commit" => "c" * 40,
-          "message" => "agents-fyi upgrader: the 5.2.0 -> 6.0.0 step — run app:update" }
+          "message" => "agents upgrader: the 5.2.0 -> 6.0.0 step — run app:update" }
       ],
       app_update: { "adopt" => "added_only", "adopted" => ["config/initializers/new.rb"],
                     "conflicts" => ["config/application.rb"],
@@ -937,7 +937,7 @@ class PublishTest < Minitest::Test
 
   def test_a_transient_remote_failure_does_not_move_the_base_to_master
     _bare, clone = origin_and_clone
-    git = FlakyHeadsGit.new(heads: "refs/heads/agents-fyi/upgrade-4.0.0\n")
+    git = FlakyHeadsGit.new(heads: "refs/heads/agents/upgrade-4.0.0\n")
     api = FakeApi.new
 
     Publish.new(root: clone, repository: "https://github.com/acme/storefront",
@@ -947,7 +947,7 @@ class PublishTest < Minitest::Test
       token: "ghp_secret", git: git, api: api, pause: ->(_seconds) {}).call
 
     call = api.calls.find { |entry| entry.first == :pull_request }
-    assert_equal "agents-fyi/upgrade-4.0.0", call[4],
+    assert_equal "agents/upgrade-4.0.0", call[4],
       "the base fell back to the default branch on a failed ls-remote"
   end
 
@@ -960,7 +960,7 @@ class PublishTest < Minitest::Test
       if argv.include?("--heads")
         @calls << argv
         candidate = argv.last
-        return [candidate == "agents-fyi/baseline" ? "refs/heads/agents-fyi/baseline\n" : "",
+        return [candidate == "agents/baseline" ? "refs/heads/agents/baseline\n" : "",
           instance_double_success]
       end
 
@@ -977,10 +977,10 @@ class PublishTest < Minitest::Test
       record: passed_record(repository: "https://github.com/acme/storefront", from: "4.0.0",
         to: "4.1.0"),
       token: "ghp_secret", git: BaseRefGit.new, api: api,
-      base_ref: "agents-fyi/baseline").call
+      base_ref: "agents/baseline").call
 
     call = api.calls.find { |entry| entry.first == :pull_request }
-    assert_equal "agents-fyi/baseline", call[4],
+    assert_equal "agents/baseline", call[4],
       "the first rung fell back to the repository default instead of the walk's starting ref"
   end
 
@@ -1005,17 +1005,17 @@ class PublishTest < Minitest::Test
 
   def test_a_later_rung_chains_to_the_previous_rung_not_the_starting_ref
     _bare, clone = origin_and_clone
-    git = ChainGit.new(branches: %w[agents-fyi/upgrade-4.1.0 agents-fyi/baseline])
+    git = ChainGit.new(branches: %w[agents/upgrade-4.1.0 agents/baseline])
     api = FakeApi.new
 
     Publish.new(root: clone, repository: "https://github.com/acme/storefront",
       from_version: "4.1.0", to_version: "4.2.0",
       record: passed_record(repository: "https://github.com/acme/storefront", from: "4.1.0",
         to: "4.2.0"),
-      token: "ghp_secret", git: git, api: api, base_ref: "agents-fyi/baseline").call
+      token: "ghp_secret", git: git, api: api, base_ref: "agents/baseline").call
 
     call = api.calls.find { |entry| entry.first == :pull_request }
-    assert_equal "agents-fyi/upgrade-4.1.0", call[4],
+    assert_equal "agents/upgrade-4.1.0", call[4],
       "a later rung was based on the starting ref instead of the previous rung"
   end
 
@@ -1038,7 +1038,7 @@ class PublishTest < Minitest::Test
   end
 
   def test_the_body_names_a_policy_accepted_decision_and_what_to_canary
-    applied = AgentsFyi::Upgrader::Applier::Applied.new(
+    applied = Agents::Upgrader::Applier::Applied.new(
       path: "app/controllers/users_controller.rb", line: 4, text: "before_filter :x",
       after: "before_action :x", subject: "before_filter", origin: "decision:q1"
     )
@@ -1065,7 +1065,7 @@ end
 # its injectable HTTP so the two calls are visible: a GET that finds the open request by head branch,
 # then a PATCH that replaces its title, body and base. Only a rung with no open request creates one.
 class PublishExistingPrTest < Minitest::Test
-  Publish = AgentsFyi::Upgrader::Publish
+  Publish = Agents::Upgrader::Publish
 
   Response = Struct.new(:code, :body, keyword_init: true)
 
@@ -1097,14 +1097,14 @@ class PublishExistingPrTest < Minitest::Test
     ])
     api = Publish::GitHub.new(token: "ghp_test", http: http)
 
-    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.1.0",
-      base: "main", title: "Upgrade Rails to 4.1.0 (agents-fyi)", body: "the rung")
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents/upgrade-4.1.0",
+      base: "main", title: "Upgrade Rails to 4.1.0 (agents)", body: "the rung")
 
     assert_equal "https://github.com/acme/storefront/pull/7", result["html_url"]
     assert_equal "main", result["base"]
     assert_equal %w[GET PATCH], http.requests.map(&:first)
     assert_includes http.requests.first[1], "/repos/acme/storefront/pulls"
-    assert_includes http.requests.first[1], "head=acme%3Aagents-fyi%2Fupgrade-4.1.0"
+    assert_includes http.requests.first[1], "head=acme%3Aagents%2Fupgrade-4.1.0"
     assert_equal "/repos/acme/storefront/pulls/7", http.requests.last[1]
     assert_includes http.requests.last[2], "the rung"
     # **A base that is not moving is not sent.** A stacked request refuses the field outright, so
@@ -1117,18 +1117,18 @@ class PublishExistingPrTest < Minitest::Test
   def test_a_stacked_request_keeps_its_base_when_the_patch_names_another
     http = ScriptedHttp.new([
       Response.new(code: "200", body: JSON.generate([{ "number" => 13,
-        "base" => { "ref" => "agents-fyi/upgrade-7.2.4" } }])),
+        "base" => { "ref" => "agents/upgrade-7.2.4" } }])),
       Response.new(code: "422", body: JSON.generate({ "message" => "Validation Failed",
         "errors" => [{ "message" => "Cannot change the base branch because the pull request is part of a stack." }] })),
       Response.new(code: "200", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/13",
-        "base" => { "ref" => "agents-fyi/upgrade-7.2.4" } }))
+        "base" => { "ref" => "agents/upgrade-7.2.4" } }))
     ])
     api = Publish::GitHub.new(token: "ghp_test", http: http)
 
-    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-8.0.5.1",
-      base: "develop", title: "Upgrade Rails to 8.0.5.1 (agents-fyi)", body: "the rung")
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents/upgrade-8.0.5.1",
+      base: "develop", title: "Upgrade Rails to 8.0.5.1 (agents)", body: "the rung")
 
-    assert_equal "agents-fyi/upgrade-7.2.4", result["base"],
+    assert_equal "agents/upgrade-7.2.4", result["base"],
       "the caller recorded a base the request does not sit on"
     patches = http.requests.select { |request| request.first == "PATCH" }
     assert_equal 2, patches.size, "the refused update was not retried without the base"
@@ -1140,15 +1140,15 @@ class PublishExistingPrTest < Minitest::Test
     http = ScriptedHttp.new([
       Response.new(code: "200", body: "[]"),
       Response.new(code: "201", body: JSON.generate({ "html_url" => "https://github.com/acme/storefront/pull/8",
-        "base" => { "ref" => "agents-fyi/upgrade-4.1.0" } }))
+        "base" => { "ref" => "agents/upgrade-4.1.0" } }))
     ])
     api = Publish::GitHub.new(token: "ghp_test", http: http)
 
-    result = api.pull_request(owner: "acme", name: "storefront", head: "agents-fyi/upgrade-4.2.0",
-      base: "agents-fyi/upgrade-4.1.0", title: "Upgrade Rails to 4.2.0 (agents-fyi)", body: "the rung")
+    result = api.pull_request(owner: "acme", name: "storefront", head: "agents/upgrade-4.2.0",
+      base: "agents/upgrade-4.1.0", title: "Upgrade Rails to 4.2.0 (agents)", body: "the rung")
 
     assert_equal "https://github.com/acme/storefront/pull/8", result["html_url"]
-    assert_equal "agents-fyi/upgrade-4.1.0", result["base"]
+    assert_equal "agents/upgrade-4.1.0", result["base"]
     assert_equal %w[GET POST], http.requests.map(&:first)
   end
 end

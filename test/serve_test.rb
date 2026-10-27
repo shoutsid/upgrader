@@ -9,7 +9,7 @@ require "stringio"
 require "time"
 require "timeout"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The loop, driven without a repository.
 #
@@ -24,10 +24,10 @@ require "agents_fyi/upgrader"
 # The step is a stand-in because the real one clones a repository and installs a Rails
 # bundle; nothing in this file claims to test a step, only what the loop does with one.
 class ServeTest < Minitest::Test
-  Serve = AgentsFyi::Upgrader::Serve
-  Ledger = AgentsFyi::Upgrader::Ledger
-  Source = AgentsFyi::Upgrader::Source
-  Corpus = AgentsFyi::Upgrader::Corpus
+  Serve = Agents::Upgrader::Serve
+  Ledger = Agents::Upgrader::Ledger
+  Source = Agents::Upgrader::Source
+  Corpus = Agents::Upgrader::Corpus
 
   # What the loop reads out of a step's record, and every field here is one it decides
   # from: the verdict and the release for its own line, and the worktree, repository and
@@ -37,7 +37,7 @@ class ServeTest < Minitest::Test
   # rather than the real thing.
   Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version, :commit,
     :run_id, keyword_init: true) do
-    def passed? = verdict == AgentsFyi::Upgrader::Record::PASSED
+    def passed? = verdict == Agents::Upgrader::Record::PASSED
   end
 
   # A step that never runs anything. It records every invocation — including whether the
@@ -149,10 +149,10 @@ class ServeTest < Minitest::Test
 
     def call
       if self.class.calls.size == 1
-        AgentsFyi::Upgrader::Publish::Result.new(pushed: false, branch: "agents-fyi/upgrade-5.0.0",
+        Agents::Upgrader::Publish::Result.new(pushed: false, branch: "agents/upgrade-5.0.0",
           commit: "c0ffee01", reason: "the branch could not be pushed: no route to host")
       else
-        AgentsFyi::Upgrader::Publish::Result.new(pushed: true, branch: "agents-fyi/upgrade-5.0.0",
+        Agents::Upgrader::Publish::Result.new(pushed: true, branch: "agents/upgrade-5.0.0",
           base: "main", commit: "c0ffee01",
           pull_request: "https://github.com/acme/storefront/pull/2", reason: "")
       end
@@ -166,8 +166,8 @@ class ServeTest < Minitest::Test
     def initialize(**); end
 
     def call
-      AgentsFyi::Upgrader::Publish::Result.new(pushed: false,
-        branch: "agents-fyi/upgrade-7.0.6", commit: "c0ffee01",
+      Agents::Upgrader::Publish::Result.new(pushed: false,
+        branch: "agents/upgrade-7.0.6", commit: "c0ffee01",
         reason: "the branch could not be pushed: no route to host")
     end
   end
@@ -216,7 +216,7 @@ class ServeTest < Minitest::Test
 
     def call
       self.class.published << @kwargs[:record]
-      AgentsFyi::Upgrader::Publish::Result.new(pushed: true, branch: "agents-fyi/upgrade-#{@kwargs[:to_version]}",
+      Agents::Upgrader::Publish::Result.new(pushed: true, branch: "agents/upgrade-#{@kwargs[:to_version]}",
         base: "main", commit: "9f2c1ab8", pull_request: "https://github.com/acme/storefront/pull/1",
         reason: "")
     end
@@ -275,7 +275,7 @@ class ServeTest < Minitest::Test
   def test_a_step_stopped_mid_command_is_not_settled
     out = StringIO.new
     ledger = Ledger.load(File.join(home, "ledger.json"))
-    stop = AgentsFyi::Upgrader::Control::Stopped.new("the walker is stopped: clearing the queue")
+    stop = Agents::Upgrader::Control::Stopped.new("the walker is stopped: clearing the queue")
 
     serve(cycles: 1, out: out, control: FakeControl.new(false), ledger: ledger).tap do |loop|
       loop.define_singleton_method(:walk) { raise stop }
@@ -286,14 +286,14 @@ class ServeTest < Minitest::Test
   end
 
   def test_a_stopped_loop_leaves_nothing_in_flight
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "https://example.test/app", from: "5.2.0", to: "6.0.0",
       stage: "pin", detail: "bundle update rails")
-    assert File.exist?(AgentsFyi::Upgrader::Progress.path(home)), "the fixture wrote no progress"
+    assert File.exist?(Agents::Upgrader::Progress.path(home)), "the fixture wrote no progress"
 
     serve(cycles: 1).run
 
-    refute File.exist?(AgentsFyi::Upgrader::Progress.path(home)),
+    refute File.exist?(Agents::Upgrader::Progress.path(home)),
       "the loop stopped and left a step looking in flight"
   end
 
@@ -369,14 +369,14 @@ class ServeTest < Minitest::Test
   # environment names from it. Measured on the lighthouse: all three were flags before, which is how
   # the engine came to know one application (see `docs/design-notes.md`).
   def test_a_project_supplies_the_repository_the_ref_the_target_and_the_step
-    project = AgentsFyi::Upgrader::Project.find("lighthouse")
+    project = Agents::Upgrader::Project.find("lighthouse")
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
 
     serve(corpus: FakeCorpus.new, to: nil, repos: [], project: project, cycles: 1).run
 
     call = FakeStep.calls.last
     assert_equal "https://github.com/shoutsid/biddingapp.git", call[:repository]
-    assert_equal "agents-fyi/baseline", call[:ref]
+    assert_equal "agents/baseline", call[:ref]
     assert_equal "8.1.0", call[:to]
     assert_same project, call[:project]
   end
@@ -384,14 +384,14 @@ class ServeTest < Minitest::Test
   # And the branch namespace is the project's: a fork or a second project publishes under its own
   # prefix rather than this tool's, which is why the pattern is declared rather than assumed.
   def test_a_project_s_publishing_pattern_reaches_the_publisher
-    project = AgentsFyi::Upgrader::Project.find("lighthouse")
+    project = Agents::Upgrader::Project.find("lighthouse")
     FakeStep.reset!(results: [Result.new(verdict: "passed", to_version: "8.1.0")])
 
     serve(corpus: FakeCorpus.new, to: nil, repos: [], project: project, cycles: 1, publish: true,
       walk: true, rungs: 1).run
 
-    assert_equal "agents-fyi/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
-    assert_equal "agents-fyi/baseline", FakePublish.calls.last[:base_ref],
+    assert_equal "agents/upgrade-<release>", FakePublish.calls.last[:branch_pattern]
+    assert_equal "agents/baseline", FakePublish.calls.last[:base_ref],
       "the declaration's starting ref did not reach the publisher"
     assert FakePublish.calls.last[:chain],
       "the declaration's chain setting did not reach the publisher"
@@ -409,7 +409,7 @@ class ServeTest < Minitest::Test
 
     assert_equal 0, walker.send(:delay_for, :worked, previous: 600),
       "a passed rung waited before starting the next one"
-    assert_equal AgentsFyi::Upgrader::Serve::BACKOFF_FLOOR,
+    assert_equal Agents::Upgrader::Serve::BACKOFF_FLOOR,
       walker.send(:delay_for, :blocked, previous: 0),
       "a rung that did not pass is retried after the whole interval"
     assert_equal 120, walker.send(:delay_for, :blocked, previous: 60),
@@ -913,8 +913,8 @@ class ServeTest < Minitest::Test
       out: out).run
 
     assert_equal %w[5.0.0 5.1.0], FakePublish.published.map(&:to_version)
-    assert_includes out.string, "agents-fyi/upgrade-5.0.0"
-    assert_includes out.string, "agents-fyi/upgrade-5.1.0"
+    assert_includes out.string, "agents/upgrade-5.0.0"
+    assert_includes out.string, "agents/upgrade-5.1.0"
   end
 
   # **A passed rung whose branch never arrived is retried as a delivery, not as a walk.** The first
@@ -996,7 +996,7 @@ class ServeTest < Minitest::Test
     dir = File.join(home, "records")
     FileUtils.mkdir_p(dir)
     File.write(File.join(dir,
-      "#{AgentsFyi::Upgrader::Record.stem("https://github.com/acme/storefront.git", "5.0.0", "5.1.0")}.json"),
+      "#{Agents::Upgrader::Record.stem("https://github.com/acme/storefront.git", "5.0.0", "5.1.0")}.json"),
       JSON.generate(
         "repository" => "https://github.com/acme/storefront.git", "worktree" => tree,
         "from_version" => "5.0.0", "to_version" => "5.1.0", "verdict" => "passed",
@@ -1043,7 +1043,7 @@ class ServeTest < Minitest::Test
     ENV["UPGRADER_PROJECTS_DIR"] = dir
     File.write(File.join(dir, "site-admin-project.json"), JSON.generate(
       "slug" => "site-admin-project", "repo" => "https://github.com/acme/storefront.git",
-      "base_ref" => "agents-fyi/baseline", "from" => "4.2.11", "to" => "5.0.0",
+      "base_ref" => "agents/baseline", "from" => "4.2.11", "to" => "5.0.0",
       "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
     ))
 
@@ -1052,7 +1052,7 @@ class ServeTest < Minitest::Test
     project = FakeStep.calls.first[:project]
     refute_nil project, "the queue target did not pick up its declaration"
     assert_equal "site-admin-project", project.slug
-    assert_equal "agents-fyi/baseline", FakeStep.calls.first[:ref],
+    assert_equal "agents/baseline", FakeStep.calls.first[:ref],
       "a queue row with no ref did not start where its declaration says"
     assert_equal "https://github.com/acme/storefront.git", FakeStep.calls.first[:repository],
       "the queue's spelling and the declaration's were handed to the step as two repositories"
@@ -1076,14 +1076,14 @@ class ServeTest < Minitest::Test
     script = File.join(track(Dir.mktmpdir), "serve.rb")
     File.write(script, <<~RUBY)
       $LOAD_PATH.unshift(#{lib.inspect})
-      require "agents_fyi/upgrader"
+      require "agents/upgrader"
 
       settled = Class.new do
         def initialize(**) = nil
         def run = nil
       end
 
-      exit AgentsFyi::Upgrader::Serve.new(
+      exit Agents::Upgrader::Serve.new(
         api: "http://127.0.0.1:1", home: #{home.inspect},
         heartbeat: #{File.join(home, "heartbeat").inspect}, to: "7.1.0",
         repos: ["acme/storefront"], interval: 600, out: $stdout, step_class: settled

@@ -5,7 +5,7 @@ require "fileutils"
 require "json"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The command, driven without a network, a git repository or a real service: the
 # three exit codes are a contract a caller reads, so they are asserted rather than
@@ -133,7 +133,7 @@ class CliTest < Minitest::Test
   def run_cli(argv, corpus: nil, inspector: nil)
     out = StringIO.new
     err = StringIO.new
-    code = AgentsFyi::Upgrader::CLI.new(argv, out: out, err: err, env: {}, corpus: corpus,
+    code = Agents::Upgrader::CLI.new(argv, out: out, err: err, env: {}, corpus: corpus,
       inspector: inspector || Open3).run
     [code, out.string, err.string]
   end
@@ -208,13 +208,13 @@ class CliTest < Minitest::Test
   def test_prune_reaps_the_containers_a_killed_run_left_running
     gone = Process.spawn("true")
     Process.wait(gone)
-    listing = "eee555\tagentsfyi-step-20261017193851-#{gone}-2-1\t\n"
+    listing = "eee555\tagents-step-20261017193851-#{gone}-2-1\t\n"
     inspector = StubInspector.new(listing: listing)
 
     Dir.mktmpdir do |home|
       code, out, err = run_cli(["prune", "--home", home], inspector: inspector)
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
       assert_includes inspector.calls, "docker rm --force eee555"
       assert_includes out, "reaped 1 step container"
     end
@@ -233,7 +233,7 @@ class CliTest < Minitest::Test
 
       code, out, err = run_cli(["prune", "--home", home], inspector: StubInspector.new)
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
       refute File.exist?(bundle)
       assert_includes out, "pruned 1 bundle"
     end
@@ -243,7 +243,7 @@ class CliTest < Minitest::Test
     Dir.mktmpdir do |home|
       code, out, _err = run_cli(["prune", "--home", home], inspector: StubInspector.new)
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code
+      assert_equal Agents::Upgrader::CLI::EXIT_OK, code
       assert_includes out, "nothing to prune"
     end
   end
@@ -259,7 +259,7 @@ class CliTest < Minitest::Test
       code, out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
         corpus: corpus)
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
       assert_equal 1, corpus.ladder_reads
       assert_equal [["4.2.11", "8.1.0"]], corpus.upgrades
       assert_includes out, "on Rails 4.2.11, read from `rails` in Gemfile.lock"
@@ -270,11 +270,11 @@ class CliTest < Minitest::Test
   # nothing to plan to and says so with the service's own sentence.
   def test_a_ladder_that_cannot_be_read_is_an_outage_rather_than_a_guess
     repository do |dir|
-      outage = AgentsFyi::Upgrader::Corpus::Unreachable.new("could not reach https://example.test: reset")
+      outage = Agents::Upgrader::Corpus::Unreachable.new("could not reach https://example.test: reset")
       code, _out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
         corpus: StubCorpus.new(error: outage))
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_equal Agents::Upgrader::CLI::EXIT_FAILED, code
       assert_includes err, "could not reach"
     end
   end
@@ -287,14 +287,14 @@ class CliTest < Minitest::Test
       code, _out, err = run_cli(["plan", "--repo", dir, "--api", "https://example.test"],
         corpus: StubCorpus.new(payload: PAYLOAD, top: nil))
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_equal Agents::Upgrader::CLI::EXIT_FAILED, code
       assert_includes err, "carried no `top`"
     end
   end
 
   def test_a_move_the_service_refuses_exits_two_carrying_its_own_sentence
     repository do |dir|
-      refusal = AgentsFyi::Upgrader::Corpus::Refused.new(
+      refusal = Agents::Upgrader::Corpus::Refused.new(
         "This reads forward upgrades: `5.1.0` is ahead of `4.2.11`."
       )
       code, _out, err = run_cli(
@@ -302,20 +302,20 @@ class CliTest < Minitest::Test
         corpus: StubCorpus.new(error: refusal)
       )
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, code
+      assert_equal Agents::Upgrader::CLI::EXIT_REFUSED, code
       assert_includes err, "reads forward upgrades"
     end
   end
 
   def test_a_service_that_cannot_be_reached_exits_one
     repository do |dir|
-      outage = AgentsFyi::Upgrader::Corpus::Unreachable.new("could not reach https://example.test: reset")
+      outage = Agents::Upgrader::Corpus::Unreachable.new("could not reach https://example.test: reset")
       code, _out, err = run_cli(
         ["plan", "--repo", dir, "--to", "5.0.0", "--api", "https://example.test"],
         corpus: StubCorpus.new(error: outage)
       )
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_equal Agents::Upgrader::CLI::EXIT_FAILED, code
       assert_includes err, "failed:"
     end
   end
@@ -324,7 +324,7 @@ class CliTest < Minitest::Test
     Dir.mktmpdir do |dir|
       code, _out, err = run_cli(["plan", "--repo", dir, "--to", "5.0.0", "--api", "https://example.test"])
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+      assert_equal Agents::Upgrader::CLI::EXIT_FAILED, code
       assert_includes err, "no Gemfile.lock"
     end
   end
@@ -334,7 +334,7 @@ class CliTest < Minitest::Test
       ["plan", "--repo", "/nonexistent/application", "--to", "5.0.0", "--api", "https://example.test"]
     )
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, code
+    assert_equal Agents::Upgrader::CLI::EXIT_FAILED, code
     assert_includes err, "no such directory"
   end
 
@@ -345,7 +345,7 @@ class CliTest < Minitest::Test
         corpus: StubCorpus.new(payload: PAYLOAD)
       )
 
-      assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+      assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
       assert_includes out, "on Rails 4.2.11, read from `rails` in Gemfile.lock"
       assert_includes out, "1 documented change(s): 1 a machine can apply, 0 need a decision"
       assert_includes out, "nothing was written to"
@@ -358,17 +358,17 @@ class CliTest < Minitest::Test
   def test_a_bare_help_flag_prints_the_usage_rather_than_naming_an_unknown_mode
     code, out, err = run_cli(["--help"])
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
+    assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
     assert_includes out, "Usage:"
-    assert_includes out, "agents-fyi-upgrader plan"
+    assert_includes out, "agents-upgrader plan"
     assert_empty err
   end
 
   def test_a_bare_version_flag_prints_the_client_version
     code, out, err = run_cli(["--version"])
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_OK, code, err
-    assert_equal "#{AgentsFyi::Upgrader::VERSION}\n", out
+    assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
+    assert_equal "#{Agents::Upgrader::VERSION}\n", out
     assert_empty err
   end
 
@@ -421,7 +421,7 @@ class CliTest < Minitest::Test
   # against the *text*, which is exactly how the two agreed while the parser did not; this is
   # the direction that catches a flag written and never read.
   def test_every_flag_the_usage_text_names_parses
-    flags = AgentsFyi::Upgrader::CLI::USAGE.scan(/--[a-z-]+/).uniq
+    flags = Agents::Upgrader::CLI::USAGE.scan(/--[a-z-]+/).uniq
     assert_operator flags.length, :>, 5, "the usage text names no flags"
 
     valued = %w[--repo --ref --to --api --project --record --from --base-ref --report-base
@@ -431,7 +431,7 @@ class CliTest < Minitest::Test
     flags.each do |flag|
       argv = ["serve", flag]
       argv << "1" if valued.include?(flag)
-      cli = AgentsFyi::Upgrader::CLI.new(argv, out: StringIO.new, err: StringIO.new, env: {})
+      cli = Agents::Upgrader::CLI.new(argv, out: StringIO.new, err: StringIO.new, env: {})
       options = cli.send(:parse)
 
       assert_nil options[:error], "#{flag} is in the usage text and not in the parser: " \
@@ -442,7 +442,7 @@ class CliTest < Minitest::Test
   # And the flag an operator reaches for when the ledger says no. The ledger is a memory
   # rather than a lock: `--force` sets a settled move aside, and the record says so.
   def test_force_is_the_operators_override_of_the_ledger
-    options = AgentsFyi::Upgrader::CLI.new(["step", "--repo", ".", "--force"],
+    options = Agents::Upgrader::CLI.new(["step", "--repo", ".", "--force"],
       out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
 
     assert_equal true, options[:force]
@@ -474,7 +474,7 @@ class CliTest < Minitest::Test
   def test_an_unknown_command_says_which_modes_exist
     code, _out, err = run_cli(["upgrade", "--repo", "."])
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, code
+    assert_equal Agents::Upgrader::CLI::EXIT_REFUSED, code
     assert_includes err, "unknown command `upgrade`"
     assert_includes err, "`step`"
   end
@@ -491,7 +491,7 @@ class CliTest < Minitest::Test
       define_method(:run) { nil }
     end
 
-    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
+    status = Agents::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
       "--api", "https://example.invalid"], out: StringIO.new,
       env: { "UPGRADER_COMMAND_TIMEOUT" => "120" }, step_class: fake).run
 
@@ -505,21 +505,21 @@ class CliTest < Minitest::Test
   # a project should not have to repeat them — and "walk this project from *this* ref" is said by
   # naming one flag beside it.
   def test_a_named_project_supplies_the_repository_the_ref_and_the_target
-    cli = AgentsFyi::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
-    cli.instance_variable_set(:@project, AgentsFyi::Upgrader::Project.find("lighthouse"))
+    cli = Agents::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
+    cli.instance_variable_set(:@project, Agents::Upgrader::Project.find("lighthouse"))
 
     options = { repo: nil, ref: nil, to: nil }
     cli.send(:apply_project, options)
 
     assert_equal "https://github.com/shoutsid/biddingapp.git", options[:repo],
       "a declaration's owner/name is the clone URL every command uses"
-    assert_equal "agents-fyi/baseline", options[:ref]
+    assert_equal "agents/baseline", options[:ref]
     assert_equal "8.1.0", options[:to]
   end
 
   def test_a_flag_beside_a_project_overrides_what_the_declaration_says
-    cli = AgentsFyi::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
-    cli.instance_variable_set(:@project, AgentsFyi::Upgrader::Project.find("lighthouse"))
+    cli = Agents::Upgrader::CLI.new(["serve"], out: StringIO.new, err: StringIO.new, env: {})
+    cli.instance_variable_set(:@project, Agents::Upgrader::Project.find("lighthouse"))
 
     options = { repo: "https://github.com/acme/other.git", ref: "main", to: "7.1.0" }
     cli.send(:apply_project, options)
@@ -533,10 +533,10 @@ class CliTest < Minitest::Test
   # half a project: the operator named a declaration and there is no application behind it.
   def test_an_unusable_declaration_is_refused_before_any_mode_runs
     err = StringIO.new
-    status = AgentsFyi::Upgrader::CLI.new(["prune", "--project", "no-such-project"],
+    status = Agents::Upgrader::CLI.new(["prune", "--project", "no-such-project"],
       out: StringIO.new, err: err, env: {}).run
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, status
+    assert_equal Agents::Upgrader::CLI::EXIT_REFUSED, status
     assert_includes err.string, "the project declaration is not usable"
     assert_includes err.string, "no-such-project"
   end
@@ -547,13 +547,13 @@ class CliTest < Minitest::Test
   # `DEFAULT_API`, so `test/engine_facts_test.rb` read one application's fact out of the engine.
   def test_a_mode_that_needs_the_service_refuses_when_none_is_named
     err = StringIO.new
-    status = AgentsFyi::Upgrader::CLI.new(["plan", "--repo", "https://example.invalid/app"],
+    status = Agents::Upgrader::CLI.new(["plan", "--repo", "https://example.invalid/app"],
       out: StringIO.new, err: err, env: {}).run
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_REFUSED, status
+    assert_equal Agents::Upgrader::CLI::EXIT_REFUSED, status
     assert_includes err.string, "needs the service"
     assert_includes err.string, "--api"
-    assert_includes err.string, "AGENTS_FYI_URL"
+    assert_includes err.string, "AGENTS_URL"
   end
 
   # **An unverified step is not a plan.** Nothing was established — no interpreter installed the bundle, say —
@@ -565,9 +565,9 @@ class CliTest < Minitest::Test
       define_method(:run) { UnverifiedRecord.new }
     end
 
-    status = AgentsFyi::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
+    status = Agents::Upgrader::CLI.new(["step", "--repo", "https://example.invalid/app", "--to", "5.0.0",
       "--api", "https://example.invalid"], out: StringIO.new, env: {}, step_class: fake).run
 
-    assert_equal AgentsFyi::Upgrader::CLI::EXIT_FAILED, status
+    assert_equal Agents::Upgrader::CLI::EXIT_FAILED, status
   end
 end

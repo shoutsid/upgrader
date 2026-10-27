@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The rendering, driven by payloads shaped like the service's own answers. What is
 # asserted here is what a reader has to be able to tell apart: how much of a step a
@@ -75,7 +75,7 @@ class PlanTest < Minitest::Test
   end
 
   def render(payload)
-    AgentsFyi::Upgrader::Plan.new(
+    Agents::Upgrader::Plan.new(
       payload: payload,
       repository: "acme/storefront",
       commit: "9f2c1ab8",

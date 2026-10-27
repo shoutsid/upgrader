@@ -2,7 +2,7 @@
 
 require "json"
 require "minitest/autorun"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # How a request is built and how a response is read. The transport is replaced rather
 # than mocked: what is under test is the mapping from a status and a body to a value or an
@@ -12,7 +12,7 @@ require "agents_fyi/upgrader"
 class CorpusTest < Minitest::Test
   FakeResponse = Struct.new(:code, :body)
 
-  class StubbedCorpus < AgentsFyi::Upgrader::Corpus
+  class StubbedCorpus < Agents::Upgrader::Corpus
     attr_reader :requests
 
     def initialize(*responses, base: "https://example.test", **kwargs)
@@ -47,7 +47,7 @@ class CorpusTest < Minitest::Test
     body = envelope("validation_error", "This reads forward upgrades: `5.1.0` is ahead of `4.2.11`.")
     corpus = StubbedCorpus.new(FakeResponse.new("422", body))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Refused) do
+    error = assert_raises(Agents::Upgrader::Corpus::Refused) do
       corpus.upgrade(from: "5.1.0", to: "4.2.11")
     end
 
@@ -59,7 +59,7 @@ class CorpusTest < Minitest::Test
   def test_a_refusal_with_nothing_to_quote_still_names_the_status
     corpus = StubbedCorpus.new(FakeResponse.new("422", ""))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Refused) do
+    error = assert_raises(Agents::Upgrader::Corpus::Refused) do
       corpus.upgrade(from: "4.2.11", to: "5.0.0")
     end
 
@@ -72,7 +72,7 @@ class CorpusTest < Minitest::Test
   def test_a_server_error_is_an_outage_rather_than_a_refusal
     corpus = StubbedCorpus.new(FakeResponse.new("500", "{}"))
 
-    assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) do
+    assert_raises(Agents::Upgrader::Corpus::Unreachable) do
       corpus.upgrade(from: "4.2.11", to: "5.0.0")
     end
   end
@@ -80,7 +80,7 @@ class CorpusTest < Minitest::Test
   def test_a_body_that_is_not_json_is_an_outage_rather_than_an_empty_plan
     corpus = StubbedCorpus.new(FakeResponse.new("200", "<html>a proxy said hello</html>"))
 
-    assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) do
+    assert_raises(Agents::Upgrader::Corpus::Unreachable) do
       corpus.upgrade(from: "4.2.11", to: "5.0.0")
     end
   end
@@ -116,7 +116,7 @@ class CorpusTest < Minitest::Test
     assert_equal "render update", params["q"]
     assert_equal "false", params["record"],
       "a walk's recall went into search_events, which measures callers rather than the tool"
-    assert_equal AgentsFyi::Upgrader::Corpus::DEFAULT_SEARCH_LIMIT.to_s, params["limit"]
+    assert_equal Agents::Upgrader::Corpus::DEFAULT_SEARCH_LIMIT.to_s, params["limit"]
   end
 
   def test_a_search_that_asks_to_be_recorded_says_so_rather_than_omitting_the_flag
@@ -154,7 +154,7 @@ class CorpusTest < Minitest::Test
   def test_a_created_response_with_a_body_that_is_not_json_is_still_an_outage
     corpus = StubbedCorpus.new(FakeResponse.new("201", "<html>a portal said hello</html>"))
 
-    assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) do
+    assert_raises(Agents::Upgrader::Corpus::Unreachable) do
       corpus.record_facts(library: "devise", facts: [{ "version" => "2.2.4" }])
     end
   end
@@ -195,7 +195,7 @@ class CorpusTest < Minitest::Test
   # The key is read from the environment rather than passed at every call site, because
   # four places construct this client and the fourth would have forgotten.
   def test_the_key_comes_from_the_environment_when_none_is_passed
-    with_env(AgentsFyi::Upgrader::Corpus::ENV_KEY, "from-the-environment") do
+    with_env(Agents::Upgrader::Corpus::ENV_KEY, "from-the-environment") do
       corpus = StubbedCorpus.new(FakeResponse.new("200", "{}"))
 
       corpus.record_run({ "verdict" => "passed" })
@@ -238,7 +238,7 @@ class CorpusTest < Minitest::Test
   def test_a_200_that_is_not_a_queue_is_an_outage
     corpus = StubbedCorpus.new(FakeResponse.new("200", JSON.generate({ "steps" => [] })))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) { corpus.targets }
+    error = assert_raises(Agents::Upgrader::Corpus::Unreachable) { corpus.targets }
 
     assert_includes error.message, "no list of `targets`"
   end
@@ -254,7 +254,7 @@ class CorpusTest < Minitest::Test
     )
     corpus = StubbedCorpus.new(FakeResponse.new("200", body))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Unreachable) { corpus.targets }
+    error = assert_raises(Agents::Upgrader::Corpus::Unreachable) { corpus.targets }
 
     assert_includes error.message, "an operator stopped it"
     assert_includes error.message, "POST /api/admin/collection/ruby/resume"
@@ -371,7 +371,7 @@ class CorpusTest < Minitest::Test
     body = envelope("conflict", "That target already exists.")
     corpus = StubbedCorpus.new(FakeResponse.new("409", body))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Refused) do
+    error = assert_raises(Agents::Upgrader::Corpus::Refused) do
       corpus.record_run({ "verdict" => "passed" })
     end
 
@@ -384,7 +384,7 @@ class CorpusTest < Minitest::Test
   def test_a_report_the_service_will_not_take_raises_with_its_sentence
     corpus = StubbedCorpus.new(FakeResponse.new("422", envelope("validation_error", "title: too short")))
 
-    error = assert_raises(AgentsFyi::Upgrader::Corpus::Refused) do
+    error = assert_raises(Agents::Upgrader::Corpus::Refused) do
       corpus.create_report({ "title" => "x" })
     end
 

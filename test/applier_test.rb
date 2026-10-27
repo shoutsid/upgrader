@@ -3,8 +3,8 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
-require "agents_fyi/upgrader/applier"
+require "agents/upgrader"
+require "agents/upgrader/applier"
 
 # The one place in this tool where a line of somebody's source is rewritten, so most
 # of what is asserted here is what it declines to write.
@@ -51,7 +51,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       write(dir, "app/models/user.rb", "class User\n  before_filter :check\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "app/models/user.rb", line: 2, text: "  before_filter :check", after: "  before_action :check")]
       )
 
@@ -70,7 +70,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       write(dir, "app/models/user.rb", "class User\n  before_action :check # changed since the scan\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "app/models/user.rb", line: 2, text: "  before_filter :check", after: "  before_action :check")]
       )
 
@@ -98,7 +98,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       write(dir, "app/models/user.rb", "class User\n  before_filter :check\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "app/models/user.rb", line: 2, text: "  before_filter :check", after: nil,
           automatic: false, subject: "attr_accessible")]
       )
@@ -116,7 +116,7 @@ class ApplierTest < Minitest::Test
       write(dir, "app/controllers/posts_controller.rb",
         "class PostsController\n  before_filter :a\n  before_filter :b\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [
           edit(path: "app/controllers/posts_controller.rb", line: 2, text: "  before_filter :a",
             after: "  before_action :a"),
@@ -138,7 +138,7 @@ class ApplierTest < Minitest::Test
       write(dir, "app/models/user.rb", "class User\n  before_filter :check\nend\n")
       write(dir, "app/models/post.rb", "class Post\n  before_filter :publish\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [
           edit(path: "app/models/user.rb", line: 2, text: "  before_filter :stale", after: "  before_action :x"),
           edit(path: "app/models/post.rb", line: 2, text: "  before_filter :publish",
@@ -156,7 +156,7 @@ class ApplierTest < Minitest::Test
 
   def test_an_absolute_path_is_refused
     with_tree do |dir|
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "/etc/hosts", line: 1, text: "anything", after: "anything else")]
       )
 
@@ -171,7 +171,7 @@ class ApplierTest < Minitest::Test
       inside = File.join(outer, "copy")
       FileUtils.mkdir_p(inside)
 
-      result = AgentsFyi::Upgrader::Applier.new(inside).apply(
+      result = Agents::Upgrader::Applier.new(inside).apply(
         [edit(path: "../escape.txt", line: 1, text: "before", after: "after")]
       )
 
@@ -194,7 +194,7 @@ class ApplierTest < Minitest::Test
       File.binwrite(target, "token: before\n")
       File.symlink(target, File.join(inside, "config_link.yml"))
 
-      result = AgentsFyi::Upgrader::Applier.new(inside).apply(
+      result = Agents::Upgrader::Applier.new(inside).apply(
         [edit(path: "config_link.yml", line: 1, text: "token: before", after: "token: after")]
       )
 
@@ -217,7 +217,7 @@ class ApplierTest < Minitest::Test
       File.binwrite(target, "before_filter :check\n")
       File.symlink(elsewhere, File.join(inside, "vendor"))
 
-      result = AgentsFyi::Upgrader::Applier.new(inside).apply(
+      result = Agents::Upgrader::Applier.new(inside).apply(
         [edit(path: "vendor/gem.rb", line: 1, text: "before_filter :check", after: "before_action :check")]
       )
 
@@ -235,7 +235,7 @@ class ApplierTest < Minitest::Test
       full = write(dir, "Gemfile", "source \"https://rubygems.org\"\n")
       File.chmod(0o444, full)
       begin
-        result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+        result = Agents::Upgrader::Applier.new(dir).apply(
           [edit(path: "Gemfile", line: 1, text: "source \"git://else.example\"", after: "source \"never\"")]
         )
 
@@ -254,7 +254,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       write(dir, "app/controllers/pages_controller.rb", "class PagesController\r\n  before_filter :show\r\nend")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "app/controllers/pages_controller.rb", line: 2, text: "  before_filter :show",
           after: "  before_action :show")]
       )
@@ -272,7 +272,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       write(dir, "app/models/person.rb", "class Person\n  before_filter :café_check\nend\n")
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "app/models/person.rb", line: 2, text: "  before_filter :café_check",
           after: "  before_action :café_check")]
       )
@@ -291,7 +291,7 @@ class ApplierTest < Minitest::Test
     with_tree do |dir|
       FileUtils.mkdir_p(File.join(dir, "config"))
 
-      result = AgentsFyi::Upgrader::Applier.new(dir).apply(
+      result = Agents::Upgrader::Applier.new(dir).apply(
         [edit(path: "config/new_file.rb", line: 1, text: "", after: "created")]
       )
 

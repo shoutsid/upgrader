@@ -3,14 +3,14 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The ohana-api 7.0.10 failure, as a fixture.** Every example that rendered a template died with
 # `NoMethodError: undefined method 'raise_on_missing_translations=' for ActionView::Base:Class`; the
 # application's environment files still carried the 5.x spelling. The repair moves the setting to
 # its 7.0 home, and the tests below are a tree and a failure — no Rails, no suite, no database.
 class TranslationSettingsTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
 
   def setup
     @root = Dir.mktmpdir
@@ -31,7 +31,7 @@ class TranslationSettingsTest < Minitest::Test
   end
 
   def test_every_environment_file_moves_to_the_i18n_namespace_and_keeps_its_value
-    edits = AgentsFyi::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter])
+    edits = Agents::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter])
 
     assert_equal %w[config/environments/development.rb config/environments/test.rb],
       edits.map { |edit| edit["path"] }.sort
@@ -46,7 +46,7 @@ class TranslationSettingsTest < Minitest::Test
 
   # The value is the application's; only the namespace is the release's.
   def test_the_line_number_and_text_are_the_line_the_application_wrote
-    edit = AgentsFyi::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter]).first
+    edit = Agents::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter]).first
 
     assert_equal 2, edit["line"]
     assert_equal "  config.action_view.raise_on_missing_translations = false", edit["text"]
@@ -57,7 +57,7 @@ class TranslationSettingsTest < Minitest::Test
   def test_a_failure_that_does_not_name_the_removed_setter_is_left_alone
     other = failure(error: "NoMethodError", message: "undefined method `foo' for nil")
 
-    assert_empty AgentsFyi::Upgrader::TranslationSettings.for(root: @root, failures: [other])
+    assert_empty Agents::Upgrader::TranslationSettings.for(root: @root, failures: [other])
   end
 
   # A setter of the same name on another class is not this removal.
@@ -65,7 +65,7 @@ class TranslationSettingsTest < Minitest::Test
     other = failure(error: "NoMethodError",
       message: "undefined method `raise_on_missing_translations=' for Something::Else:Class")
 
-    assert_empty AgentsFyi::Upgrader::TranslationSettings.for(root: @root, failures: [other])
+    assert_empty Agents::Upgrader::TranslationSettings.for(root: @root, failures: [other])
   end
 
   # A tree whose environment file already uses the new spelling is written nothing, so a retry
@@ -78,7 +78,7 @@ class TranslationSettingsTest < Minitest::Test
     RUBY
     write("config/environments/development.rb", "Rails.application.configure do\nend\n")
 
-    assert_empty AgentsFyi::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter])
+    assert_empty Agents::Upgrader::TranslationSettings.for(root: @root, failures: [removed_setter])
   end
 
   private

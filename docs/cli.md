@@ -1,7 +1,7 @@
 # CLI reference
 
 ```text
-agents-fyi-upgrader <mode> [options]
+agents-upgrader <mode> [options]
 ```
 
 A mode is required; no command is a usage refusal (exit `2`). A leading `--help` prints the same
@@ -25,7 +25,7 @@ passed rung as a branch and a pull request.
 ## Service selection
 
 **There is no default service.** `plan`, `preflight`, `step` and `serve` need one named with
-`--api URL` or `AGENTS_FYI_URL`. A mode that needs the service and has neither is a usage
+`--api URL` or `AGENTS_URL`. A mode that needs the service and has neither is a usage
 refusal (exit `2`), not a failed request: there is nowhere to send it.
 
 `preview`, `republish` and `prune` do not contact the service.
@@ -36,13 +36,13 @@ refusal (exit `2`), not a failed request: there is nowhere to send it.
 
 | Flag | Meaning |
 |---|---|
-| `--api URL` | the service to ask. Default: `$AGENTS_FYI_URL`. No built-in default. |
+| `--api URL` | the service to ask. Default: `$AGENTS_URL`. No built-in default. |
 | `--repo PATH\|URL` | the application: a local directory, or a git URL. A local directory is read where it is and never written to. |
 | `--ref REF` | the branch or tag to read. A URL is cloned at that ref; for a local path, `plan` reads its current `HEAD` while `step` and `preflight` use the ref for their worktree. |
 | `--to VERSION` | the Rails release the move ends at, for example `7.1.0`. Optional in `plan` and `step`; without it the target is the top of the service's ladder. `serve` uses an account project's own `to` first; `--to` is the deployment-wide fallback, and a row with no destination is skipped. |
 | `--project SLUG` | a declared application (see [Configuration](configuration.md#project-declarations)). Default: `$UPGRADER_PROJECT`. A declaration supplies the repository, base ref and target; an explicit flag still wins. |
 | `--record DIR` | where `step` writes its patch and JSON record, and `preflight` writes `preflight.json`. |
-| `--home DIR` | this client's own directory: working copies and the ledger. Default: `$UPGRADER_HOME`, then `~/.cache/agents-fyi-upgrader`. |
+| `--home DIR` | this client's own directory: working copies and the ledger. Default: `$UPGRADER_HOME`, then `~/.cache/agents-upgrader`. |
 | `--work DIR` | where `step` puts its working copy and per-run bundle. Default: `$UPGRADER_HOME`. |
 | `--suite-env FILE` | `KEY=VALUE` lines merged into every command that runs **the application** — its suite, database preparation, `app:update` and boot. Never into this tool's own environment. |
 | `--version` | print the client version and exit `0`. |
@@ -53,8 +53,8 @@ refusal (exit `2`), not a failed request: there is nowhere to send it.
 `plan` needs `--repo` (or a project declaration that supplies it). It writes nothing.
 
 ```bash
-agents-fyi-upgrader plan --repo . --to 7.1.0
-agents-fyi-upgrader plan --repo https://github.com/owner/app.git --ref main
+agents-upgrader plan --repo . --to 7.1.0
+agents-upgrader plan --repo https://github.com/owner/app.git --ref main
 ```
 
 ### `preflight`
@@ -64,7 +64,7 @@ application cannot install at all, not a rung's changes. A digest entry whose co
 the rung is therefore deferred, and the record says so.
 
 ```bash
-agents-fyi-upgrader preflight --repo . --record ./out
+agents-upgrader preflight --repo . --record ./out
 ```
 
 ### `step`
@@ -76,7 +76,7 @@ agents-fyi-upgrader preflight --repo . --record ./out
 | `--suite-env FILE` | as above. |
 
 ```bash
-agents-fyi-upgrader step --repo . --to 7.1.0 --record ./out
+agents-upgrader step --repo . --to 7.1.0 --record ./out
 ```
 
 ### `serve`
@@ -96,8 +96,8 @@ agents-fyi-upgrader step --repo . --to 7.1.0 --record ./out
 | `--suite-env FILE` | as above. |
 
 ```bash
-agents-fyi-upgrader serve --to 7.1.0 --interval 600
-agents-fyi-upgrader serve --walk --publish --to 8.1.0
+agents-upgrader serve --to 7.1.0 --interval 600
+agents-upgrader serve --walk --publish --to 8.1.0
 ```
 
 `serve` deliberately idles without a target unless `--walk` is set or the named project
@@ -119,7 +119,7 @@ back to.
 | `--report-base URL` | the public service the brief links reports to. Default: `$UPGRADER_PUBLIC_URL`; empty names reports rather than linking them. |
 
 ```bash
-agents-fyi-upgrader preview --from ./out/owner-application-7.0.0-7.1.0.json
+agents-upgrader preview --from ./out/owner-application-7.0.0-7.1.0.json
 ```
 
 ### `republish` and `prune`
@@ -127,8 +127,8 @@ agents-fyi-upgrader preview --from ./out/owner-application-7.0.0-7.1.0.json
 Both are local and take only `--home`:
 
 ```bash
-agents-fyi-upgrader republish --home ~/.cache/agents-fyi-upgrader
-agents-fyi-upgrader prune --home ~/.cache/agents-fyi-upgrader
+agents-upgrader republish --home ~/.cache/agents-upgrader
+agents-upgrader prune --home ~/.cache/agents-upgrader
 ```
 
 `republish` rewrites the title, body and base of a pull request that was **already delivered**,
@@ -183,8 +183,8 @@ The ones that change the command line's behaviour are:
 
 | Variable | Effect |
 |---|---|
-| `AGENTS_FYI_URL` | the service, when `--api` is not given |
-| `AGENTS_FYI_KEY` | the operator key, sent as `X-API-Key` |
+| `AGENTS_URL` | the service, when `--api` is not given |
+| `AGENTS_KEY` | the operator key, sent as `X-API-Key` |
 | `UPGRADER_PROJECT` | the project walked when `--project` is not given |
 | `UPGRADER_HOME` | the client's home, when `--home` is not given |
 | `UPGRADER_TO` | the target a deployment sets for `serve` |

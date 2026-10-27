@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "set"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The upgrader's own vocabulary, checked without the service.
 #
@@ -14,8 +14,8 @@ require "agents_fyi/upgrader"
 # prove alone — that its words are distinct, that its ledger settles only words it writes, and
 # that both lists have the shape the rest of the client assumes.
 class VocabularyTest < Minitest::Test
-  Record = AgentsFyi::Upgrader::Record
-  Ledger = AgentsFyi::Upgrader::Ledger
+  Record = Agents::Upgrader::Record
+  Ledger = Agents::Upgrader::Ledger
 
   def record_verdicts
     [Record::PASSED, Record::FAILED, Record::REFUSED, Record::UNVERIFIED]

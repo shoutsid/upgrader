@@ -10,7 +10,7 @@ The default image is for `plan`, `preview`, `prune` and a native `step` whose ap
 no compiler:
 
 ```bash
-docker build -t agents-fyi-upgrader:0.1.0 .
+docker build -t agents-upgrader:0.1.0 .
 ```
 
 A step that installs a real application's bundle needs a compiler, and a step that runs an era
@@ -20,7 +20,7 @@ container needs the Docker client. Both are build arguments rather than a second
 docker build \
   --build-arg WITH_BUILD_TOOLS=1 \
   --build-arg WITH_DOCKER_CLIENT=1 \
-  -t agents-fyi-upgrader:step .
+  -t agents-upgrader:step .
 ```
 
 The repair loop is a third argument and the only one that adds a model client and a Node runtime:
@@ -30,7 +30,7 @@ docker build \
   --build-arg WITH_BUILD_TOOLS=1 \
   --build-arg WITH_DOCKER_CLIENT=1 \
   --build-arg WITH_REPAIR_AGENT=1 \
-  -t agents-fyi-upgrader:step .
+  -t agents-upgrader:step .
 ```
 
 The defaults must stay off for the one-shot image. `plan` builds no native extension and starts
@@ -41,10 +41,10 @@ it runs, reports healthy and completes no step. The deployment's build sets what
 
 ```bash
 docker run --rm \
-  -e AGENTS_FYI_URL=https://agents.shoutsid.fyi \
+  -e AGENTS_URL=https://agents.shoutsid.fyi \
   -v "$PWD:/work" \
   -w /work \
-  agents-fyi-upgrader:0.1.0 \
+  agents-upgrader:0.1.0 \
   plan --repo . --to 7.1.0
 ```
 
@@ -55,11 +55,11 @@ The image's entrypoint is the CLI, so the arguments after the image name are the
 ```bash
 docker run --rm \
   -e API_BASE_URL=http://service:8001 \
-  -e AGENTS_FYI_KEY=… \
+  -e AGENTS_KEY=… \
   -e UPGRADER_TO=7.1.0 \
   -e UPGRADER_RUNTIME=docker \
   -e UPGRADER_PUBLIC_URL=https://agents.shoutsid.fyi \
-  -v upgrader_cache:/home/upgrader/.cache/agents-fyi-upgrader \
+  -v upgrader_cache:/home/upgrader/.cache/agents-upgrader \
   -v upgrader_gems:/home/upgrader/.gem \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
@@ -68,7 +68,7 @@ docker run --rm \
   --security-opt no-new-privileges:true \
   --memory 2g \
   --stop-timeout 60 \
-  agents-fyi-upgrader:step \
+  agents-upgrader:step \
   /app/entrypoint.sh
 ```
 
@@ -81,9 +81,9 @@ deployment's settings to `serve`. The variables it reads are in
 
 | Path | What it holds | May it be lost? |
 |---|---|---|
-| `/home/upgrader/.cache/agents-fyi-upgrader` | the ledger, working copies, per-run bundles, `state/`, `records/`, the repair agent's config | **No.** The ledger is state. Losing it re-derives every settled move while the container looks healthy. |
+| `/home/upgrader/.cache/agents-upgrader` | the ledger, working copies, per-run bundles, `state/`, `records/`, the repair agent's config | **No.** The ledger is state. Losing it re-derives every settled move while the container looks healthy. |
 | `/home/upgrader/.gem` | `GEM_HOME`; the gems an install downloaded | Yes, with a re-download. A `.gem` is an artifact the index published a hash for. |
-| `/home/upgrader/.cache/agents-fyi-upgrader/state` | the progress and delivery feed a site admin reads | It is a feed, not the ledger. Losing it loses history, not knowledge. |
+| `/home/upgrader/.cache/agents-upgrader/state` | the progress and delivery feed a site admin reads | It is a feed, not the ledger. Losing it loses history, not knowledge. |
 | the directory named by `UPGRADER_PROJECTS_DIR` | project declarations written by an operator | No; it is configuration, not state. |
 
 The **bundle** is deliberately not a volume of its own. A bundle is what gems are unpacked into
@@ -123,7 +123,7 @@ scripts/upgrader-images.sh build 2.2 2.5
 scripts/upgrader-images.sh prune
 ```
 
-`build` reads `lib/agents_fyi/upgrader/data/interpreters.json` and builds each era from the one
+`build` reads `lib/agents/upgrader/data/interpreters.json` and builds each era from the one
 `images/Dockerfile`; adding an era is a row in the matrix, not a new Dockerfile. The client needs
 the images on the same daemon it talks to. A rung whose floor no image meets is refused by name
 rather than attempted.
@@ -147,7 +147,7 @@ scripts/upgrader-rubies.sh check
 ```
 
 The script respects rvm's `autolibs` rather than running package installs behind your back. It
-uses `UPGRADER_RVM_GEMSET` (default `agents-fyi-upgrader`) so a walk never installs into the
+uses `UPGRADER_RVM_GEMSET` (default `agents-upgrader`) so a walk never installs into the
 developer's default gemset.
 
 ## Healthcheck
@@ -158,7 +158,7 @@ cycle:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "ruby", "-e", "p='/home/upgrader/.cache/agents-fyi-upgrader/heartbeat'; exit(0 if File.exist?(p) && (Time.now - File.mtime(p)) < 5400 else 1)"]
+  test: ["CMD", "ruby", "-e", "p='/home/upgrader/.cache/agents-upgrader/heartbeat'; exit(0 if File.exist?(p) && (Time.now - File.mtime(p)) < 5400 else 1)"]
   interval: 5m
   timeout: 15s
   start_period: 15m
@@ -183,20 +183,20 @@ services:
         WITH_BUILD_TOOLS: "1"
         WITH_DOCKER_CLIENT: "1"
         WITH_REPAIR_AGENT: "0"
-    image: agents-fyi-upgrader:step
+    image: agents-upgrader:step
     restart: unless-stopped
     entrypoint: ["/app/entrypoint.sh"]
     environment:
       API_BASE_URL: http://service:8001
-      AGENTS_FYI_KEY: ${AGENTS_FYI_KEY:?an operator key is required for the queue}
+      AGENTS_KEY: ${AGENTS_KEY:?an operator key is required for the queue}
       UPGRADER_TO: 7.1.0
       UPGRADER_RUNTIME: docker
       UPGRADER_PUBLIC_URL: https://agents.shoutsid.fyi
       UPGRADER_INTERVAL: "600"
       UPGRADER_STEP_TIMEOUT: "3600"
-      UPGRADER_RECORD: /home/upgrader/.cache/agents-fyi-upgrader/records
+      UPGRADER_RECORD: /home/upgrader/.cache/agents-upgrader/records
     volumes:
-      - upgrader_cache:/home/upgrader/.cache/agents-fyi-upgrader
+      - upgrader_cache:/home/upgrader/.cache/agents-upgrader
       - upgrader_gems:/home/upgrader/.gem
       - /var/run/docker.sock:/var/run/docker.sock
     group_add:

@@ -3,13 +3,13 @@
 require "minitest/autorun"
 require "tmpdir"
 require "json"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The feed of host facts the service cannot query.** What is pinned here is the shape the site admin
 # reads and the rule that a refusal is recorded as a reason: "no disk figure" and "plenty of disk"
 # must not look the same.
 class EnvironmentTest < Minitest::Test
-  Environment = AgentsFyi::Upgrader::Environment
+  Environment = Agents::Upgrader::Environment
 
   def test_the_reading_carries_the_matrix_the_images_and_the_disk
     Dir.mktmpdir do |home|

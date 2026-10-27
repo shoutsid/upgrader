@@ -3,9 +3,9 @@
 require "minitest/autorun"
 require "tmpdir"
 require "fileutils"
-require "agents_fyi/upgrader/suite_failures"
-require "agents_fyi/upgrader/template_repairs"
-require "agents_fyi/upgrader/routes"
+require "agents/upgrader/suite_failures"
+require "agents/upgrader/template_repairs"
+require "agents/upgrader/routes"
 
 # **The two repairs a suite's route failures earn.** The failures come from the 6.0 rung's real
 # output (three of its six blocks, copied whole) and the route rows are the application's own (read
@@ -54,7 +54,7 @@ class TemplateRepairsTest < Minitest::Test
   end
 
   # Not `failures`: Minitest::Test already owns that name for the assertions that failed.
-  def parsed = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
+  def parsed = Agents::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
 
   def routes
     [
@@ -110,14 +110,14 @@ class TemplateRepairsTest < Minitest::Test
   # the recording is the *first* round's output; this spelling only appears once the line above it
   # has been repaired.
   def test_a_bare_helper_is_recognised_by_the_name_error_ruby_reports
-    failure = AgentsFyi::Upgrader::SuiteFailures::Failure.new(
+    failure = Agents::Upgrader::SuiteFailures::Failure.new(
       name: "BidsController GET #edit responds with HTTP 200 status",
       error: "ActionView::Template::Error",
       message: "undefined local variable or method `bids_path' for #<#<Class:0x0>:0x0>",
       frames: [["./app/views/bids/edit.html.erb", 6]]
     )
 
-    edit = AgentsFyi::Upgrader::TemplateRepairs.for(root: @root, failures: [failure],
+    edit = Agents::Upgrader::TemplateRepairs.for(root: @root, failures: [failure],
       routes: routes).first
 
     refute_nil edit, "the bare helper was not recognised as an undefined route helper"
@@ -161,21 +161,21 @@ class TemplateRepairsTest < Minitest::Test
 
   def repair_for(file)
     parsed.find { |failure| failure.file == file }.then do |failure|
-      AgentsFyi::Upgrader::TemplateRepairs.for(root: @root, failures: [failure], routes: routes).first
+      Agents::Upgrader::TemplateRepairs.for(root: @root, failures: [failure], routes: routes).first
     end
   end
 
   def route_for(helper)
-    AgentsFyi::Upgrader::TemplateRepairs.route_for(helper, routes)
+    Agents::Upgrader::TemplateRepairs.route_for(helper, routes)
   end
 
   def rewrite(text, helper)
-    AgentsFyi::Upgrader::TemplateRepairs.rewrite_helper(root: @root, text: text, helper: helper,
+    Agents::Upgrader::TemplateRepairs.rewrite_helper(root: @root, text: text, helper: helper,
       routes: routes)
   end
 
   def row(name, controller, action, parts)
-    AgentsFyi::Upgrader::Routes::Row.new(name: name, controller: controller, action: action,
+    Agents::Upgrader::Routes::Row.new(name: name, controller: controller, action: action,
       parts: parts)
   end
 

@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "fileutils"
 require "json"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The interpreter matrix and the two decisions over it.
 #
@@ -14,7 +14,7 @@ require "agents_fyi/upgrader"
 # about each era's image. A matrix read wrongly is a step that runs on an interpreter nobody
 # chose, so each of these asserts the *reason* a candidate is or is not in the list.
 class InterpretersTest < Minitest::Test
-  Interpreters = AgentsFyi::Upgrader::Interpreters
+  Interpreters = Agents::Upgrader::Interpreters
 
   # A matrix row as the file carries one. The base is a well-formed pin because the shipped
   # matrix's pins are asserted below; this is a row a test can vary one field of.
@@ -307,9 +307,9 @@ class InterpretersTest < Minitest::Test
     # the two are asserted together because a mismatch is a container that starts a database
     # with no roles in it.
     services = File.read(File.join(root, "images", "services.sh"), encoding: "utf-8")
-    assert_includes services, "/usr/local/bin/agents-fyi-dbconfig",
+    assert_includes services, "/usr/local/bin/agents-dbconfig",
       "the services script does not call the reader"
-    assert_includes dockerfile, "COPY dbconfig.rb /usr/local/bin/agents-fyi-dbconfig",
+    assert_includes dockerfile, "COPY dbconfig.rb /usr/local/bin/agents-dbconfig",
       "the reader is never shipped into the image"
     assert_includes services, "listen_addresses=localhost",
       "the server does not listen on both loopback families, so `host: localhost` may not reach it"
@@ -328,7 +328,7 @@ class InterpretersTest < Minitest::Test
       "prune does not reclaim the build cache, which is where a rebuild's cost actually lands"
     assert_includes builder, "prune)", "prune is not reachable from the command line"
 
-    assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-fyi-services",
+    assert_includes dockerfile, "COPY services.sh /usr/local/bin/agents-services",
       "the image does not install the services script"
     assert_includes script, "initdb", "the services script starts no PostgreSQL"
     assert_includes script, "redis-server", "the services script starts no Redis"

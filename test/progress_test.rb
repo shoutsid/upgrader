@@ -4,7 +4,7 @@ require "minitest/autorun"
 require "fileutils"
 require "json"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # What the loop says about itself while it works, and the two properties a *reader* depends on.
 #
@@ -14,7 +14,7 @@ require "agents_fyi/upgrader"
 # an error on an operator's page, and a pre-computed duration would be a number that drifts.
 class ProgressTest < Minitest::Test
   def home
-    @home ||= Dir.mktmpdir("agents-fyi-progress")
+    @home ||= Dir.mktmpdir("agents-progress")
   end
 
   def teardown
@@ -22,18 +22,18 @@ class ProgressTest < Minitest::Test
   end
 
   def read
-    JSON.parse(File.read(AgentsFyi::Upgrader::Progress.path(home)))
+    JSON.parse(File.read(Agents::Upgrader::Progress.path(home)))
   end
 
   # The file is under `state/`, its own directory, because that is the directory the deployment
   # mounts into the site admin — the ledger and the working copies must not travel with it.
   def test_the_file_lives_under_the_state_directory
     assert_equal File.join(home, "state", "progress.json"),
-      AgentsFyi::Upgrader::Progress.path(home)
+      Agents::Upgrader::Progress.path(home)
   end
 
   def test_a_stage_carries_the_move_the_stage_and_what_it_was_asked_to_do
-    AgentsFyi::Upgrader::Progress.new(home: home).stage(
+    Agents::Upgrader::Progress.new(home: home).stage(
       repo: "https://github.com/acme/storefront", from: "4.0.0", to: "4.1.0",
       commit: "9f2c1ab8", era: "2.1", stage: "pin",
       detail: "bundle update rails --conservative", note: "resolving"
@@ -55,16 +55,16 @@ class ProgressTest < Minitest::Test
   # reader sees a whole body or the previous one — and the temporary name must not accumulate in a
   # directory an operator is watching.
   def test_the_write_leaves_nothing_beside_the_file
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     3.times { |i| progress.stage(repo: "r", from: "a", to: "b", stage: "s#{i}", detail: "d") }
 
-    assert_equal ["progress.json"], Dir.children(AgentsFyi::Upgrader::Progress.dir(home)).sort
+    assert_equal ["progress.json"], Dir.children(Agents::Upgrader::Progress.dir(home)).sort
   end
 
   # A loop between cycles is not a step, and saying so is the difference between "waiting" and
   # "stuck": the reader shows the note rather than the last stage that happened to finish.
   def test_a_cycle_says_the_loop_is_between_steps_and_names_no_move
-    AgentsFyi::Upgrader::Progress.new(home: home).cycle(note: "between cycles — sleeping 600s")
+    Agents::Upgrader::Progress.new(home: home).cycle(note: "between cycles — sleeping 600s")
 
     body = read
     assert_equal "cycle", body["stage"]
@@ -76,7 +76,7 @@ class ProgressTest < Minitest::Test
   # step that had run four stages from one that had just started, so every command now starts and
   # finishes an event carrying its own exit code and duration.
   def test_a_finished_command_closes_its_event_with_its_exit_code_and_duration
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "r", from: "4.2.11", to: "4.2.12", stage: "pin",
       detail: "bundle update rails", kind: "patch")
     progress.finish(stage: "pin", status: "failed", exit_code: 6, duration_ms: 1250)
@@ -94,7 +94,7 @@ class ProgressTest < Minitest::Test
 
   # A writer that names a status this reader does not know has not established a pass.
   def test_an_unknown_status_is_recorded_as_skipped_not_passed
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "r", from: "a", to: "b", stage: "pin", detail: "unknown")
     progress.finish(stage: "pin", status: "mystery")
 
@@ -105,7 +105,7 @@ class ProgressTest < Minitest::Test
   # readable, and a stage that starts again without its predecessor finishing is recorded as
   # `skipped` rather than as a pass nobody measured.
   def test_a_retry_is_a_new_attempt_and_an_unfinished_stage_is_not_a_pass
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "r", from: "a", to: "b", stage: "pin", detail: "attempt one")
     progress.stage(repo: "r", from: "a", to: "b", stage: "pin", detail: "attempt two")
 
@@ -117,18 +117,18 @@ class ProgressTest < Minitest::Test
 
   # A bounded timeline, because a pathological step must not grow the operator's file without limit.
   def test_the_timeline_is_bounded
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
-    (AgentsFyi::Upgrader::Progress::MAX_EVENTS + 5).times do |index|
+    progress = Agents::Upgrader::Progress.new(home: home)
+    (Agents::Upgrader::Progress::MAX_EVENTS + 5).times do |index|
       progress.stage(repo: "r", from: "a", to: "b", stage: "s#{index}", detail: "d")
     end
 
-    assert_equal AgentsFyi::Upgrader::Progress::MAX_EVENTS, read["events"].size
+    assert_equal Agents::Upgrader::Progress::MAX_EVENTS, read["events"].size
   end
 
   # **No output ever reaches this file.** It is a page a person reads, and a suite's output can
   # contain anything it printed; the run record carries the evidence.
   def test_the_timeline_carries_no_command_output
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "r", from: "a", to: "b", stage: "suite", detail: "bundle exec rspec")
     progress.finish(stage: "suite", status: "passed", exit_code: 0, duration_ms: 200)
 
@@ -139,11 +139,11 @@ class ProgressTest < Minitest::Test
   end
 
   def test_clearing_removes_the_view_rather_than_leaving_a_stale_one
-    progress = AgentsFyi::Upgrader::Progress.new(home: home)
+    progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "r", from: "a", to: "b", stage: "s", detail: "d")
     progress.clear
 
-    refute File.exist?(AgentsFyi::Upgrader::Progress.path(home)),
+    refute File.exist?(Agents::Upgrader::Progress.path(home)),
       "a cleared view still reads as work in flight"
     progress.clear # and clearing twice is not an error
   end

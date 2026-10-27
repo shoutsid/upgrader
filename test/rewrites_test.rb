@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The changes this walker makes that the service will not.
 #
@@ -12,8 +12,8 @@ require "agents_fyi/upgrader"
 # three things that keep a rule honest — it names the change it belongs to, it carries that change's
 # provenance, and it refuses to touch a line whose value it cannot see the end of.
 class RewritesTest < Minitest::Test
-  Rewrites = AgentsFyi::Upgrader::Rewrites
-  Applier = AgentsFyi::Upgrader::Applier
+  Rewrites = Agents::Upgrader::Rewrites
+  Applier = Agents::Upgrader::Applier
 
   def entry(subject:, text:, path: "app/views/x.html.erb", line: 3)
     {
@@ -1490,7 +1490,7 @@ class RewritesTest < Minitest::Test
 
   # The idempotence check against the service's frozen scan recording now lives in the
   # service's contract suite (`test/contracts/upgrader/rewrites_test.rb`), because only a
-  # checkout that holds `test/agents_fyi/fixtures/rails_scan_golden.json` can run it. The
+  # checkout that holds `test/agents/fixtures/rails_scan_golden.json` can run it. The
   # rule's own spelling coverage stays here, where the rule is.
   #
   # **A survey reports rather than edits**, and that is what makes it the honest place for a change whose

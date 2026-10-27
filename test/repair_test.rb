@@ -5,7 +5,7 @@ require "fileutils"
 require "json"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The one place a model changes somebody's application.
 #
@@ -16,7 +16,7 @@ require "agents_fyi/upgrader"
 # interpreter in a container, so a shell cannot run the thing the model reasons about), and
 # the evidence (the agent's words and the files it touched, per attempt).
 class RepairTest < Minitest::Test
-  Repair = AgentsFyi::Upgrader::Repair
+  Repair = Agents::Upgrader::Repair
 
   class FakeSuite
     def initialize(ok:, output: "")
@@ -69,8 +69,8 @@ class RepairTest < Minitest::Test
     {
       repository: "https://github.com/acme/storefront", from_version: "4.0.0.rc1",
       to_version: "4.1.0", suite_command: "bundle exec rspec",
-      interpreter: "ruby 2.1.10", image: "agentsfyi-upgrader-ruby-2.1:dev",
-      applied: [AgentsFyi::Upgrader::Preflight::Repair.new(path: "Gemfile", line: 3,
+      interpreter: "ruby 2.1.10", image: "agents-upgrader-ruby-2.1:dev",
+      applied: [Agents::Upgrader::Preflight::Repair.new(path: "Gemfile", line: 3,
         text: %(gem "rails", "4.0.0.rc1"), after: %(gem "rails", "4.1.0"), subject: "rails",
         note: "the pin")],
       refused: [], decisions: decisions, carried: carried, unapplied_rules: unapplied_rules,
@@ -281,7 +281,7 @@ class RepairTest < Minitest::Test
       prompt = argv.last
       [0, "done\n"]
     end
-    located = AgentsFyi::Upgrader::Record::Decision.new(
+    located = Agents::Upgrader::Record::Decision.new(
       path: "app/controllers/posts_controller.rb", line: 12, subject: "render :text",
       kind: "renamed", reason: "the response's content type is the application's to choose"
     )
@@ -337,10 +337,10 @@ class RepairTest < Minitest::Test
       prompt = argv.last
       [0, "done\n"]
     end
-    edit = AgentsFyi::Upgrader::Record::Decision.new(path: "app/models/user.rb", line: 12,
+    edit = Agents::Upgrader::Record::Decision.new(path: "app/models/user.rb", line: 12,
       subject: "attr_accessible", reason: "move the list to the controller", kind: "removed",
       replacement: "permit(:name)", source: "4.0")
-    refuter = AgentsFyi::Upgrader::Applier::Refused.new(path: "app/models/user.rb", line: 3,
+    refuter = Agents::Upgrader::Applier::Refused.new(path: "app/models/user.rb", line: 3,
       text: "  attr_accessible :name", found: "  attr_accessible :name, :email",
       reason: "the line is not the one the scan read", subject: "attr_accessible")
     complete = Repair.new(
@@ -424,12 +424,12 @@ class RepairTest < Minitest::Test
     agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
 
     repair(agent: agent, suites: [FakeSuite.new(ok: true)],
-      env: { "PATH" => "/usr/bin:/bin", "AGENTS_FYI_KEY" => "afy_canary",
+      env: { "PATH" => "/usr/bin:/bin", "AGENTS_KEY" => "afy_canary",
              "UPGRADER_SUITE_ENV" => "DATABASE_URL=postgres://secret" }).run
 
     env = agent.calls.first[:env]
     assert_equal "/usr/bin:/bin", env["PATH"]
-    refute env.key?("AGENTS_FYI_KEY")
+    refute env.key?("AGENTS_KEY")
     refute env.key?("UPGRADER_SUITE_ENV")
   end
 
@@ -470,11 +470,11 @@ class RepairTest < Minitest::Test
   # leaves `git diff` empty.
   def test_a_mechanical_repair_carries_the_failure_the_edits_and_the_suite_that_passed
     edits = [
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 5,
+      Agents::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 5,
         text: "<%= link_to 'Show', @bid %> |",
         after: "<%= link_to 'Show', category_item_bid_path(@category, @item, @bid) %> |",
         origin: "suite-repair"),
-      AgentsFyi::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 6,
+      Agents::Upgrader::Applier::Applied.new(path: "app/views/bids/edit.html.erb", line: 6,
         text: "<%= link_to 'Back', bids_path %>",
         after: "<%= link_to 'Back', category_item_bids_path(@category, @item) %>",
         origin: "suite-repair")

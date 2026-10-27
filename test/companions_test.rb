@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The edits a gem's own upgrade requires, driven against real files.
 #
@@ -12,9 +12,9 @@ require "agents_fyi/upgrader"
 # lighthouse at the 5.0 rung: the rspec-rails 3 move alone took the suite from 47 failures to 133,
 # the inference call to 3, and the three negated change matchers to 0.
 class CompanionsTest < Minitest::Test
-  Companions = AgentsFyi::Upgrader::Companions
-  Rewrites = AgentsFyi::Upgrader::Rewrites
-  Applier = AgentsFyi::Upgrader::Applier
+  Companions = Agents::Upgrader::Companions
+  Rewrites = Agents::Upgrader::Rewrites
+  Applier = Agents::Upgrader::Applier
 
   def tree(files)
     dir = Dir.mktmpdir

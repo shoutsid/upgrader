@@ -6,6 +6,13 @@ versioning for its command-line surface and record format.
 
 ## [Unreleased]
 
+### Changed
+
+- The project is **Agents**. The client is `agents-upgrader`, the namespace is
+  `Agents::Upgrader`, the environment variables use the `AGENTS_` prefix, the state directory is
+  `~/.cache/agents-upgrader`, and the image tags use `agents-upgrader`. The old names are not read
+  or accepted; this is a breaking rename, so the client is `0.2.0`.
+
 ### Added
 
 - A browser suite runs in the era container without an edit to the application: the machine

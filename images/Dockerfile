@@ -9,7 +9,7 @@
 #
 # It is parameterised rather than copied five times, because five copies of an apt list
 # drift the first time a package is added: the matrix
-# (`../lib/agents_fyi/upgrader/data/interpreters.json`) is the data, and
+# (`../lib/agents/upgrader/data/interpreters.json`) is the data, and
 # `scripts/upgrader-images.sh` turns each entry into one `docker build` of this file. The
 # default `BASE_IMAGE` is empty on purpose — a build that did not say which interpreter it
 # is building fails at the `FROM` line with Docker's own sentence rather than silently
@@ -126,7 +126,7 @@ RUN set -eux; \
         printf 'deb http://archive.debian.org/debian %s main\n' "$codename" > /etc/apt/sources.list; \
         printf 'deb http://archive.debian.org/debian-security %s main\n' "$security" >> /etc/apt/sources.list; \
         printf 'Acquire::Check-Valid-Until "false";\nAcquire::AllowInsecureRepositories "true";\nAPT::Get::AllowUnauthenticated "true";\n' \
-          > /etc/apt/apt.conf.d/99agents-fyi-archive; \
+          > /etc/apt/apt.conf.d/99agents-archive; \
         rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true; \
         ;; \
     esac; \
@@ -164,28 +164,28 @@ RUN set -eux; \
     # owns them on a live release, and a `dpkg` install over a symlink this image wrote is a build
     # that fails on the next run. The step decides which pair a project is measured on.
     if [ "$archived" = "0" ]; then \
-      mkdir -p /opt/agents-fyi-browser; \
+      mkdir -p /opt/agents-browser; \
       url="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64"; \
       curl -fsSL -o /tmp/chrome.zip "$url/chrome-linux64.zip"; \
       curl -fsSL -o /tmp/chromedriver.zip "$url/chromedriver-linux64.zip"; \
-      unzip -q /tmp/chrome.zip -d /opt/agents-fyi-browser; \
-      unzip -q /tmp/chromedriver.zip -d /opt/agents-fyi-browser; \
-      mv /opt/agents-fyi-browser/chromedriver-linux64/chromedriver /opt/agents-fyi-browser/chromedriver; \
-      rm -rf /opt/agents-fyi-browser/chromedriver-linux64; \
+      unzip -q /tmp/chrome.zip -d /opt/agents-browser; \
+      unzip -q /tmp/chromedriver.zip -d /opt/agents-browser; \
+      mv /opt/agents-browser/chromedriver-linux64/chromedriver /opt/agents-browser/chromedriver; \
+      rm -rf /opt/agents-browser/chromedriver-linux64; \
       rm -f /tmp/chrome.zip /tmp/chromedriver.zip; \
       # **The browser's directory keeps the archive's own name, and that is a correction rather than
-      # tidiness.** It was unpacked to `/opt/agents-fyi-browser/chrome`, and chromedriver's Linux
+      # tidiness.** It was unpacked to `/opt/agents-browser/chrome`, and chromedriver's Linux
       # finder globs `/opt/*/chrome` for the binary — so it found the *directory*, `execvp`'d it, and
       # answered `session not created: Chrome failed to start: exited normally` while
       # `/usr/bin/chromium` pointed at a launcher that ran the browser fine by hand. One level
-      # deeper (`/opt/agents-fyi-browser/chrome-linux64/chrome`) is not a match for that glob, which
+      # deeper (`/opt/agents-browser/chrome-linux64/chrome`) is not a match for that glob, which
       # is what keeps the driver's own search from outranking the path this image wrote.
       # The launcher, because Chrome for Testing is a binary and not a launcher: the sandbox flags
       # the distro's `chromium` would read from `/etc/chromium.d` have to be passed here.
-      printf '#!/bin/sh\nexec /opt/agents-fyi-browser/chrome-linux64/chrome --no-sandbox --disable-dev-shm-usage "$@"\n' \
-        > /usr/local/bin/agents-fyi-browser; \
-      chmod +x /usr/local/bin/agents-fyi-browser /opt/agents-fyi-browser/chromedriver; \
-      printf '%s\n' "$CHROME_VERSION" > /opt/agents-fyi-browser/VERSION; \
+      printf '#!/bin/sh\nexec /opt/agents-browser/chrome-linux64/chrome --no-sandbox --disable-dev-shm-usage "$@"\n' \
+        > /usr/local/bin/agents-browser; \
+      chmod +x /usr/local/bin/agents-browser /opt/agents-browser/chromedriver; \
+      printf '%s\n' "$CHROME_VERSION" > /opt/agents-browser/VERSION; \
     fi; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
@@ -206,8 +206,8 @@ RUN gem install bundler -v "$BUNDLER" --no-document
 # by name and the start script is what every container begins with. Both are shell, both are
 # argument-free by design (the values they need are environment variables the walker sets),
 # and both carry the failure that found each of their paragraphs.
-COPY services.sh /usr/local/bin/agents-fyi-services
-COPY start.sh /usr/local/bin/agents-fyi-start
+COPY services.sh /usr/local/bin/agents-services
+COPY start.sh /usr/local/bin/agents-start
 # **`install` cannot chmod a large file on Docker Desktop's bind mounts, and a gem's build is where
 # that lands.** Measured on the lighthouse's 6.0 rung: `make install` building `sassc` (which
 # `sass-rails 6` brings in) died on `setting permissions for '.gem.…/sassc/libsass.so': Operation not
@@ -216,22 +216,22 @@ COPY start.sh /usr/local/bin/agents-fyi-start
 # `RbConfig`, so the walker cannot configure it away — and the whole rung is reported `unverified`
 # when a gem's build fails. `install.rb` is the real binary whenever the real binary works, and the
 # same operation done with `cp` and `chmod` when it does not.
-COPY install.rb /usr/local/bin/agents-fyi-install
+COPY install.rb /usr/local/bin/agents-install
 RUN mv /usr/bin/install /usr/bin/install.coreutils \
-    && cp /usr/local/bin/agents-fyi-install /usr/bin/install \
+    && cp /usr/local/bin/agents-install /usr/bin/install \
     && chmod +x /usr/bin/install /usr/bin/install.coreutils
 # The `database.yml` reader is a file of its own rather than a heredoc inside `services.sh`,
 # and the reason is testability: which roles a database needs, and with what password, is a
 # rule — and a rule inside a shell heredoc is a rule no test can run. It is executed by the
 # *container's* Ruby, which is the era's, so it is written for Ruby 2.1 (`test/dbconfig_test.rb`
 # drives it on the host and the era images are the proof that 2.1 parses it).
-COPY dbconfig.rb /usr/local/bin/agents-fyi-dbconfig
-RUN chmod +x /usr/local/bin/agents-fyi-services /usr/local/bin/agents-fyi-start \
-    /usr/local/bin/agents-fyi-dbconfig
+COPY dbconfig.rb /usr/local/bin/agents-dbconfig
+RUN chmod +x /usr/local/bin/agents-services /usr/local/bin/agents-start \
+    /usr/local/bin/agents-dbconfig
 
 # The two directories the container's own environment points at, created here for the *named
 # volume* case — Docker seeds an empty volume from the image, so these arrive with it. A
 # bind mount shadows them, and the walker creates them on its side for exactly that reason
-# (`Machine::Container#start!`, and the first real application's "`/agents-fyi/home` is not a
+# (`Machine::Container#start!`, and the first real application's "`/agents/home` is not a
 # directory" is where that came from).
-RUN mkdir -p /agents-fyi/home /agents-fyi/tmp
+RUN mkdir -p /agents/home /agents/tmp

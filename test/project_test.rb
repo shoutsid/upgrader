@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "json"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The project declaration: everything the walk needs to know about *one* application, and nothing
 # about how it is walked.
@@ -14,11 +14,11 @@ require "agents_fyi/upgrader"
 # and a delivery destination that does not exist.
 class ProjectTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
-  PROJECT = AgentsFyi::Upgrader::Project
+  PROJECT = Agents::Upgrader::Project
 
   # The declaration the deployment walks, read from the file the image copies.
   def lighthouse
-    PROJECT.find("lighthouse", dir: File.join(ROOT, "lib", "agents_fyi", "upgrader", "data", "projects"))
+    PROJECT.find("lighthouse", dir: File.join(ROOT, "lib", "agents", "upgrader", "data", "projects"))
   end
 
   def test_the_lighthouse_is_declared_as_data_and_reads_back_completely
@@ -26,7 +26,7 @@ class ProjectTest < Minitest::Test
 
     assert_equal "lighthouse", project.slug
     assert_equal "shoutsid/biddingapp", project.repo
-    assert_equal "agents-fyi/baseline", project.base_ref
+    assert_equal "agents/baseline", project.base_ref
     assert_equal "4.0.0", project.from
     assert_equal "8.1.0", project.to
     assert_equal "rails", project.stack
@@ -71,13 +71,13 @@ class ProjectTest < Minitest::Test
   # queue carries the URL; and the join must not depend on which the caller happened to use.
   def test_a_github_url_gets_one_canonical_clone_spelling
     assert_equal "https://github.com/acme/app.git",
-      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app")
+      Agents::Upgrader::Repository.normalize("https://github.com/acme/app")
     assert_equal "https://github.com/acme/app.git",
-      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app/")
+      Agents::Upgrader::Repository.normalize("https://github.com/acme/app/")
     assert_equal "https://github.com/acme/app.git",
-      AgentsFyi::Upgrader::Repository.normalize("https://github.com/acme/app.git")
+      Agents::Upgrader::Repository.normalize("https://github.com/acme/app.git")
     assert_equal "https://gitlab.com/acme/app",
-      AgentsFyi::Upgrader::Repository.normalize("https://gitlab.com/acme/app")
+      Agents::Upgrader::Repository.normalize("https://gitlab.com/acme/app")
   end
 
   def test_a_repository_is_one_identity_and_a_declaration_finds_its_row
@@ -106,7 +106,7 @@ class ProjectTest < Minitest::Test
   end
 
   def test_the_delivery_branch_names_the_release
-    assert_equal "agents-fyi/upgrade-7.1.0", lighthouse.delivery.branch_for("7.1.0")
+    assert_equal "agents/upgrade-7.1.0", lighthouse.delivery.branch_for("7.1.0")
   end
 
   # **An accepted decision is part of the declaration, and its effects are what make it machinery.** The
@@ -209,7 +209,7 @@ class ProjectTest < Minitest::Test
     assert_equal "", PROJECT.parse(minimal.merge(
       "toolchain" => { "apt" => ["chromium"] }).to_json).toolchain.browser
 
-    error = assert_raises(AgentsFyi::Upgrader::Project::Invalid) do
+    error = assert_raises(Agents::Upgrader::Project::Invalid) do
       PROJECT.parse(minimal.merge(
         "toolchain" => { "apt" => ["chromium"], "chrome" => "120.0.6099.109" }).to_json)
     end

@@ -2,24 +2,24 @@
 
 require "minitest/autorun"
 require "json"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # A dry run of the review brief: a stored record is rendered as the pull request body it would
 # have produced, with no checkout, token or push. This is the replay seam the next walk is
 # reviewed through.
 class PreviewTest < Minitest::Test
-  Record = AgentsFyi::Upgrader::Record
-  Command = AgentsFyi::Upgrader::Record::Command
-  Checks = AgentsFyi::Upgrader::Checks
-  Preview = AgentsFyi::Upgrader::Preview
+  Record = Agents::Upgrader::Record
+  Command = Agents::Upgrader::Record::Command
+  Checks = Agents::Upgrader::Checks
+  Preview = Agents::Upgrader::Preview
 
   def record
     Record.new(
       repository: "https://github.com/acme/storefront", commit: "abc12345",
       from_version: "5.2.0", to_version: "6.0.0", verdict: "passed",
       why: "the suite was green before this step and green after it",
-      interpreter: "ruby 3.3.12", image: "agentsfyi-upgrader:dev",
-      machine: "ruby 3.3.12 (agentsfyi-upgrader:dev@sha256:#{"a" * 64})", era: "3.3",
+      interpreter: "ruby 3.3.12", image: "agents-upgrader:dev",
+      machine: "ruby 3.3.12 (agents-upgrader:dev@sha256:#{"a" * 64})", era: "3.3",
       stages: [
         Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 0,
           seconds: 20.0, output_tail: "10 examples, 0 failures"),
@@ -35,7 +35,7 @@ class PreviewTest < Minitest::Test
           reason: "the application's CI runs it")
       ],
       commits: [{ "concern" => "pin Rails and move gems", "commit" => "b" * 40,
-                  "message" => "agents-fyi upgrader: the 5.2.0 -> 6.0.0 step — pin Rails and move gems" }],
+                  "message" => "agents upgrader: the 5.2.0 -> 6.0.0 step — pin Rails and move gems" }],
       app_update: { "adopt" => "added_only", "adopted" => ["config/initializers/new.rb"],
                     "conflicts" => ["config/application.rb"], "skipped" => [],
                     "framework_defaults" => "off", "load_defaults" => "5.2" },
@@ -48,7 +48,7 @@ class PreviewTest < Minitest::Test
   end
 
   def test_a_stored_record_renders_the_review_brief_without_a_push
-    body = Preview.render(record, base_ref: "agents-fyi/upgrade-5.2.0",
+    body = Preview.render(record, base_ref: "agents/upgrade-5.2.0",
       report_base: "https://agents.example")
 
     assert_includes body, "## What moved"
@@ -60,7 +60,7 @@ class PreviewTest < Minitest::Test
     assert_includes body, "## app:update"
     assert_includes body, "config/initializers/new.rb"
     assert_includes body, "## Review and merge"
-    assert_includes body, "agents-fyi/upgrade-5.2.0"
+    assert_includes body, "agents/upgrade-5.2.0"
     assert_includes body, "<details>"
     assert_includes body, "Full run record"
   end

@@ -3,13 +3,13 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The ohana-api 7.0.10 failure, as a fixture.** `resource.errors.keys` raises on Rails 7.0
 # because ActiveModel::Errors no longer delegates `keys`; the reader that answers the same list is
 # `attribute_names`. The tests below are a tree and a failure — no Rails, no suite, no database.
 class ErrorsKeysTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
 
   CONTROLLER = "app/controllers/concerns/private_registration.rb"
 
@@ -32,7 +32,7 @@ class ErrorsKeysTest < Minitest::Test
   end
 
   def test_the_removed_reader_becomes_attribute_names_and_the_comparison_stays
-    edit = AgentsFyi::Upgrader::ErrorsKeys.for(root: @root, failures: [removed_reader]).first
+    edit = Agents::Upgrader::ErrorsKeys.for(root: @root, failures: [removed_reader]).first
 
     refute_nil edit
     assert_equal CONTROLLER, edit["path"]
@@ -49,7 +49,7 @@ class ErrorsKeysTest < Minitest::Test
     other = failure(error: "NoMethodError",
       message: "undefined method `keys' for #<Hash:0x00007f9d8c1b2c40>")
 
-    assert_empty AgentsFyi::Upgrader::ErrorsKeys.for(root: @root, failures: [other])
+    assert_empty Agents::Upgrader::ErrorsKeys.for(root: @root, failures: [other])
   end
 
   # The failure's line has to carry the call; a comment or a different expression has nothing to
@@ -57,7 +57,7 @@ class ErrorsKeysTest < Minitest::Test
   def test_a_line_without_the_call_produces_no_edit
     write(CONTROLLER, "resource.errors[:email]\n")
 
-    assert_empty AgentsFyi::Upgrader::ErrorsKeys.for(root: @root, failures: [removed_reader])
+    assert_empty Agents::Upgrader::ErrorsKeys.for(root: @root, failures: [removed_reader])
   end
 
   # A file the tree does not have is a refusal, not a crash.
@@ -65,7 +65,7 @@ class ErrorsKeysTest < Minitest::Test
     gone = removed_reader
     gone.frames = [["./app/controllers/concerns/gone.rb", 1]]
 
-    assert_empty AgentsFyi::Upgrader::ErrorsKeys.for(root: @root, failures: [gone])
+    assert_empty Agents::Upgrader::ErrorsKeys.for(root: @root, failures: [gone])
   end
 
   private

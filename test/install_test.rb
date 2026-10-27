@@ -29,7 +29,7 @@ class InstallTest < Minitest::Test
   end
 
   def run_shim(argv, real:)
-    out, status = Open3.capture2e({ "AGENTS_FYI_INSTALL_REAL" => real }, "ruby", SHIM, *argv)
+    out, status = Open3.capture2e({ "AGENTS_INSTALL_REAL" => real }, "ruby", SHIM, *argv)
     [out, status.exitstatus]
   end
 

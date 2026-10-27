@@ -3,14 +3,14 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The diaspora 7.1.6 failure, as a fixture.** `expect(response.body).to match("error=invalid_scope")`
 # failed with `expected "" to match "error=invalid_scope"` because Rails 7.1 stopped writing a body
 # with a redirect. The repair moves the assertion to `response.location`, and the tests below are a
 # tree and a failure — no Rails, no suite, no database.
 class RedirectBodiesTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
 
   SPEC = "spec/controllers/api/openid_connect/authorizations_controller_spec.rb"
 
@@ -29,7 +29,7 @@ class RedirectBodiesTest < Minitest::Test
     )
 
     # The failure names line 2, which is the assertion, not the request above it.
-    edit = AgentsFyi::Upgrader::RedirectBodies.for(root: @root, failures: [empty_body]).first
+    edit = Agents::Upgrader::RedirectBodies.for(root: @root, failures: [empty_body]).first
 
     refute_nil edit
     assert_equal SPEC, edit["path"]
@@ -51,7 +51,7 @@ class RedirectBodiesTest < Minitest::Test
 
     failure = empty_body(message: 'expected "Something Else" to include "Diaspora Test Client"')
 
-    assert_empty AgentsFyi::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
+    assert_empty Agents::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
   end
 
   # The line has to be the assertion. A failure reported against a line that only mentions the body
@@ -62,7 +62,7 @@ class RedirectBodiesTest < Minitest::Test
       '        expect(response.status).to eq(302)'
     )
 
-    assert_empty AgentsFyi::Upgrader::RedirectBodies.for(root: @root, failures: [empty_body])
+    assert_empty Agents::Upgrader::RedirectBodies.for(root: @root, failures: [empty_body])
   end
 
   # A controller is the application, not the suite: an assertion living there is not a test to move.
@@ -75,14 +75,14 @@ class RedirectBodiesTest < Minitest::Test
 
     failure = empty_body(file: "./app/controllers/sessions_controller.rb")
 
-    assert_empty AgentsFyi::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
+    assert_empty Agents::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
   end
 
   # A missing file is a refusal, not a crash: the suite can name a spec the step's tree does not have.
   def test_a_file_the_tree_does_not_have_produces_no_edit
     failure = empty_body(file: "./spec/controllers/gone_spec.rb")
 
-    assert_empty AgentsFyi::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
+    assert_empty Agents::Upgrader::RedirectBodies.for(root: @root, failures: [failure])
   end
 
   private

@@ -13,13 +13,13 @@ supplies one, because a deployment that has not decided where it is going must n
 somebody's application.
 
 The same reasoning gives the client **no default service**. A walker that quietly talked to the
-deployment its author ran would answer from a corpus its caller did not choose. `AGENTS_FYI_URL`
+deployment its author ran would answer from a corpus its caller did not choose. `AGENTS_URL`
 or `--api` names it, and a mode that needs one and has neither refuses.
 
 ## The engine is stack-agnostic, and the project is the adapter
 
 The first complete walk measured the engine knowing one application: it named `bin/rails`,
-`bundle exec rspec`, `agents-fyi-services`, `RAILS_SECRET_TOKEN`, the era image prefix and the
+`bundle exec rspec`, `agents-services`, `RAILS_SECRET_TOKEN`, the era image prefix and the
 GitHub target. None of those is a fact about walking Rails; all of them are facts about the
 application that was walked first. A second project measured by that engine would not crash — it
 would quietly be measured with the first project's knowledge, which is worse.

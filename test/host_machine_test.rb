@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The application on the host, through the era's own Ruby.
 #
@@ -12,9 +12,9 @@ require "agents_fyi/upgrader"
 # refuses by name when the host has not been set up for the era, because "no interpreter could
 # install the bundle" is the wrong sentence for a machine that is missing a setup step.
 class HostMachineTest < Minitest::Test
-  Machine = AgentsFyi::Upgrader::Machine
-  Interpreters = AgentsFyi::Upgrader::Interpreters
-  Command = AgentsFyi::Upgrader::Record::Command
+  Machine = Agents::Upgrader::Machine
+  Interpreters = Agents::Upgrader::Interpreters
+  Command = Agents::Upgrader::Record::Command
 
   class FakeShell
     attr_reader :calls
@@ -76,7 +76,7 @@ class HostMachineTest < Minitest::Test
   end
 
   # An rvm root with the era's wrapper, as `rvm install <version>` and a gemset leave it.
-  def rvm_root(ruby: "2.1.10", gemset: "agents-fyi-upgrader", tools: %w[ruby bundle rake])
+  def rvm_root(ruby: "2.1.10", gemset: "agents-upgrader", tools: %w[ruby bundle rake])
     root = temp_dir
     bin = File.join(root, "wrappers", "ruby-#{ruby}@#{gemset}")
     FileUtils.mkdir_p(bin)
@@ -88,10 +88,10 @@ class HostMachineTest < Minitest::Test
   end
 
   def machine(entry: entry(), root: nil, runner: nil, services: nil, home: nil,
-    services_command: "agents-fyi-services")
+    services_command: "agents-services")
     Machine::Host.new(entry: entry, home: home || temp_dir, out: nil,
       runner: runner || FakeShell.new, services: services || FakeServices.new,
-      rvm_root: root || rvm_root, gemset: "agents-fyi-upgrader",
+      rvm_root: root || rvm_root, gemset: "agents-upgrader",
       services_command: services_command)
   end
 
@@ -103,7 +103,7 @@ class HostMachineTest < Minitest::Test
     argv, env = machine(root: root).command(%w[bundle install], chdir: temp_dir, env: {})
 
     assert_equal %w[bundle install], argv
-    assert_equal File.join(root, "wrappers", "ruby-2.1.10@agents-fyi-upgrader"), env["PATH"].split(":").first
+    assert_equal File.join(root, "wrappers", "ruby-2.1.10@agents-upgrader"), env["PATH"].split(":").first
     assert_includes env["PATH"], ENV["PATH"].to_s
   end
 
@@ -136,17 +136,17 @@ class HostMachineTest < Minitest::Test
   # caller: this machine is told rather than recognising a name, because the name is one
   # application's (see `docs/design-notes.md`).
   def test_the_services_script_runs_in_the_services_container_with_the_application_s_directory
-    argv, _env = machine(services_command: "agents-fyi-services").command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
+    argv, _env = machine(services_command: "agents-services").command(["agents-services"], chdir: "/tmp/app", env: {})
 
-    assert_equal ["docker", "exec", "cid", "agents-fyi-services"], argv
+    assert_equal ["docker", "exec", "cid", "agents-services"], argv
   end
 
   # And a machine told nothing routes nothing: without the stack's word, a command runs where the
   # application is. That is what keeps the engine from carrying a second copy of the name.
   def test_a_machine_with_no_services_command_routes_nothing
-    argv, _env = machine(services_command: "").command(["agents-fyi-services"], chdir: "/tmp/app", env: {})
+    argv, _env = machine(services_command: "").command(["agents-services"], chdir: "/tmp/app", env: {})
 
-    assert_equal ["agents-fyi-services"], argv
+    assert_equal ["agents-services"], argv
   end
 
   # Starting verifies the interpreter, and both the services container and the version check are
@@ -162,7 +162,7 @@ class HostMachineTest < Minitest::Test
     assert_equal ["2.1"], services.ensured
     assert_equal 2, stages.length
     assert_equal "docker run services", stages.first.command
-    assert_includes stages.last.command, "ruby-2.1.10@agents-fyi-upgrader/ruby -v"
+    assert_includes stages.last.command, "ruby-2.1.10@agents-upgrader/ruby -v"
   end
 
   # A host that has not been set up is refused by name, with the command that sets it up: the
@@ -197,9 +197,9 @@ class HostMachineTest < Minitest::Test
   # or a system library that changed under the same versions is not noticed, which is the one
   # thing an image's content id would have caught.
   def test_the_stamp_names_the_interpreter_the_gemset_and_the_bundler
-    assert_equal "ruby 2.1.10 (rvm ruby-2.1.10@agents-fyi-upgrader, bundler 1.17.3)",
+    assert_equal "ruby 2.1.10 (rvm ruby-2.1.10@agents-upgrader, bundler 1.17.3)",
       machine.stamp
-    assert_equal "rvm ruby-2.1.10@agents-fyi-upgrader", machine.image
+    assert_equal "rvm ruby-2.1.10@agents-upgrader", machine.image
     assert_equal "2.1", machine.era
     assert_equal "2.1.10", machine.ruby_version
     assert machine.services?
@@ -208,7 +208,7 @@ class HostMachineTest < Minitest::Test
   # A matrix that names the interpreter differently is honoured: a deployment with a patched
   # build says so in the matrix rather than being told its interpreter cannot be found.
   def test_a_matrix_that_names_the_interpreter_differently_is_honoured
-    root = rvm_root(ruby: "2.1.10", gemset: "agents-fyi-upgrader")
+    root = rvm_root(ruby: "2.1.10", gemset: "agents-upgrader")
     named = entry(rvm: "ruby-2.1.10")
     host = machine(entry: named, root: root)
 

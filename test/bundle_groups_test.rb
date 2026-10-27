@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The bundle's groups, read from the application's own Gemfile and `database.yml`.**
 #
@@ -13,8 +13,8 @@ require "agents_fyi/upgrader"
 # rule is the same question one layer up: a declared formatter whose gem is in the development
 # group cannot run there either, and a gate that cannot run leaves every rung unverified.
 class BundleGroupsTest < Minitest::Test
-  Groups = AgentsFyi::Upgrader::BundleGroups
-  Rails = AgentsFyi::Upgrader::Stacks::Rails
+  Groups = Agents::Upgrader::BundleGroups
+  Rails = Agents::Upgrader::Stacks::Rails
 
   def setup
     @dirs = []
@@ -201,9 +201,9 @@ class BundleGroupsTest < Minitest::Test
   Machine = Struct.new(:era, :interpreter)
 
   def step_with(root, project: nil)
-    source = AgentsFyi::Upgrader::Source.new(root: root, commit: "0" * 40, description: root,
+    source = Agents::Upgrader::Source.new(root: root, commit: "0" * 40, description: root,
       home: root)
-    step = AgentsFyi::Upgrader::Step.new(repository: "acme/app", to: "6.1.0", home: root,
+    step = Agents::Upgrader::Step.new(repository: "acme/app", to: "6.1.0", home: root,
       runtime: "native", env: {})
     step.instance_variable_set(:@worktree, source)
     step.instance_variable_set(:@stack, Rails)
@@ -213,7 +213,7 @@ class BundleGroupsTest < Minitest::Test
 
   def test_the_environment_adds_the_optional_group_and_keeps_development_installed
     dir = tree("Gemfile" => GEMFILE, "config/database.yml" => DATABASE)
-    project = AgentsFyi::Upgrader::Project.new(
+    project = Agents::Upgrader::Project.new(
       { "slug" => "app", "repo" => "acme/app", "from" => "6.0.0", "to" => "6.1.0",
         "style" => { "format" => "bundle exec rubocop -A", "check" => "bundle exec rubocop" } }
     )

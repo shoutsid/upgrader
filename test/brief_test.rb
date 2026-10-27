@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The brief is what the corpus says before the walk decides anything.** Three reads and one
 # rule — a section's state is the meaning of an empty answer, not its size — and the cases here are
@@ -39,7 +39,7 @@ class BriefTest < Minitest::Test
   end
 
   def brief_for(corpus)
-    AgentsFyi::Upgrader::Brief.new(corpus: corpus)
+    Agents::Upgrader::Brief.new(corpus: corpus)
   end
 
   # **A link only when the reader's base is known.** The walker's own API base is often an internal
@@ -188,7 +188,7 @@ class BriefTest < Minitest::Test
       subjects: [{ "subject" => "config.serve_static_assets", "change_kind" => "config" }])
     section = result.sections.find { |s| s.key == "search:config.serve_static_assets" }
 
-    assert_equal ["config.serve_static_assets", AgentsFyi::Upgrader::Brief::SEARCH_LIMIT], corpus.search_calls.first
+    assert_equal ["config.serve_static_assets", Agents::Upgrader::Brief::SEARCH_LIMIT], corpus.search_calls.first
     assert_equal [true, false], section.items.map(&:identifying?)
     assert_equal 9, section.total, "the total is the corpus's, not the page's"
     assert_includes result.to_markdown, "**same failure**"
@@ -238,7 +238,7 @@ class BriefTest < Minitest::Test
   # stopped rung.
   def test_a_refused_question_becomes_a_section_and_the_brief_continues
     corpus = FakeCorpus.new(
-      raises: { "move:rails" => AgentsFyi::Upgrader::Corpus::Refused.new("this service reads forward upgrades") },
+      raises: { "move:rails" => Agents::Upgrader::Corpus::Refused.new("this service reads forward upgrades") },
       searches: { "x" => { "items" => [{ "id" => "r5", "title" => "found anyway", "match_type" => "signature" }], "total" => 1 } }
     )
 
@@ -256,12 +256,12 @@ class BriefTest < Minitest::Test
   # had nothing to say about the rest.
   def test_more_questions_than_the_brief_may_ask_is_reported_as_truncated
     corpus = FakeCorpus.new
-    subjects = (1..(AgentsFyi::Upgrader::Brief::MAX_QUESTIONS + 5)).map { |n| "subject-#{n}" }
+    subjects = (1..(Agents::Upgrader::Brief::MAX_QUESTIONS + 5)).map { |n| "subject-#{n}" }
 
     result = brief_for(corpus).call(from: "4.0.0", to: "4.1.0", subjects: subjects)
 
     assert result.truncated
-    assert_equal AgentsFyi::Upgrader::Brief::MAX_QUESTIONS, corpus.search_calls.length + 1,
+    assert_equal Agents::Upgrader::Brief::MAX_QUESTIONS, corpus.search_calls.length + 1,
       "the framework move is one question; the rest stop at the bound"
   end
 

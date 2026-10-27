@@ -3,14 +3,14 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The rung that made diaspora's suite red, as a fixture.** `StatusMessage < Post` declares
 # `has_one :poll`; Rails 7.0 derives the key from `Post`, so the query asks `polls.post_id` and the
 # table has `status_message_id`. The repair is answered from the failure and the schema, so these
 # tests are a tree, a dump and one failure — no database, no Rails.
 class AssociationsTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
 
   def setup
     @dir = Dir.mktmpdir
@@ -38,7 +38,7 @@ class AssociationsTest < Minitest::Test
       RUBY
     )
 
-    edits = AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
+    edits = Agents::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
 
     assert_equal 1, edits.length
     edit = edits.first
@@ -67,7 +67,7 @@ class AssociationsTest < Minitest::Test
       "app/models/status_message.rb" => "class StatusMessage < Post\n  has_one :poll\nend\n"
     )
 
-    edit = AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key]).first
+    edit = Agents::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key]).first
 
     assert_equal "  has_one :poll, foreign_key: :status_message_id, inverse_of: :status_message",
       edit["after"]
@@ -89,7 +89,7 @@ class AssociationsTest < Minitest::Test
       "app/models/status_message.rb" => "class StatusMessage < Post\n  has_one :poll\nend\n"
     )
 
-    assert_empty AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
+    assert_empty Agents::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
   end
 
   # A declaration that already names its key is not the repair's subject, and neither is a form
@@ -112,7 +112,7 @@ class AssociationsTest < Minitest::Test
       RUBY
     )
 
-    assert_empty AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
+    assert_empty Agents::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
   end
 
   # A failure that is not a missing column is not this family's business: a template error and a
@@ -126,7 +126,7 @@ class AssociationsTest < Minitest::Test
     other = Failure.new(name: "a page", error: "ActionView::Template::Error",
       message: "undefined method 'bids_path'", caused_by: nil, caused_by_message: nil, frames: [])
 
-    assert_empty AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [other])
+    assert_empty Agents::Upgrader::Associations.for(root: @dir, failures: [other])
   end
 
   # The other spelling of the schema, because a tree that keeps `db/structure.sql` is the same
@@ -144,7 +144,7 @@ class AssociationsTest < Minitest::Test
       "app/models/status_message.rb" => "class StatusMessage < Post\n  has_one :poll\nend\n"
     )
 
-    edits = AgentsFyi::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
+    edits = Agents::Upgrader::Associations.for(root: @dir, failures: [missing_poll_key])
 
     assert_equal 1, edits.length
     assert_equal "  has_one :poll, foreign_key: :status_message_id", edits.first["after"]

@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # Where a step's working copies and bundles live, and what happens to the ones whose run is
 # over. A gemset is per-run on purpose — a killed step must not leave a half-installed one for
@@ -11,7 +11,7 @@ require "agents_fyi/upgrader"
 # The walker's home is the bind mount every step's container is given, so what accumulates there
 # is paid at `docker run`: measured, twenty seconds to five minutes.
 class SourceTest < Minitest::Test
-  Source = AgentsFyi::Upgrader::Source
+  Source = Agents::Upgrader::Source
 
   # The machine a step runs on, as `bundle_env` needs it: an era names the image, and an image is one
   # ruby. A host machine has no era and is named by its interpreter instead.

@@ -2,7 +2,7 @@
 # Build the era interpreter images the upgrader executes steps on.
 #
 # One image per entry of the interpreter matrix
-# (`lib/agents_fyi/upgrader/data/interpreters.json`), built from the one Dockerfile in
+# (`lib/agents/upgrader/data/interpreters.json`), built from the one Dockerfile in
 # `images/`. The matrix is the source of truth: this script reads it, passes each entry's
 # facts as build arguments, and tags the result with the reference the walker runs. Nothing
 # here decides which eras exist — adding an era is a row in the matrix, and the next `build`
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MATRIX="$ROOT/lib/agents_fyi/upgrader/data/interpreters.json"
+MATRIX="$ROOT/lib/agents/upgrader/data/interpreters.json"
 DOCKERFILE="$ROOT/images/Dockerfile"
 CONTEXT="$ROOT/images"
 

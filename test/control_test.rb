@@ -4,14 +4,14 @@ require "minitest/autorun"
 require "fileutils"
 require "json"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The walker's half of the site admin's switch.** A file the service writes, read before every
 # command: the stop has to be a distinct exception so a step unwinds without recording a verdict,
 # and an absent or corrupt file has to read as running — a switch that nobody can see must not
 # silently halt a walk.
 class ControlTest < Minitest::Test
-  Control = AgentsFyi::Upgrader::Control
+  Control = Agents::Upgrader::Control
 
   def setup
     @saved = ENV["UPGRADER_PROJECTS_DIR"]

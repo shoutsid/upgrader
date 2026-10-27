@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The new framework defaults, stepped one at a time.
 #
@@ -12,7 +12,7 @@ require "agents_fyi/upgrader"
 # file's own shape: which lines are toggles, what Rails says above each of them, and the two edits
 # that touch the application's tree (uncommenting one, and the guide's last step).
 class DefaultsTest < Minitest::Test
-  Defaults = AgentsFyi::Upgrader::Defaults
+  Defaults = Agents::Upgrader::Defaults
 
   FILE = <<~RUBY
     # Be sure to restart your server when you modify this file.

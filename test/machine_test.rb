@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The machine a step's application-level commands run on.
 #
@@ -15,9 +15,9 @@ require "agents_fyi/upgrader"
 # daemon would be a test the unit suite cannot run, and the argv is the whole contract with
 # the daemon anyway.
 class MachineTest < Minitest::Test
-  Machine = AgentsFyi::Upgrader::Machine
-  Interpreters = AgentsFyi::Upgrader::Interpreters
-  Command = AgentsFyi::Upgrader::Record::Command
+  Machine = Agents::Upgrader::Machine
+  Interpreters = Agents::Upgrader::Interpreters
+  Command = Agents::Upgrader::Record::Command
 
   # The shell, answering by substring: the `docker run` gets a container id, `ruby -v` gets the
   # interpreter's own line, and anything else gets a zero exit with no output — which is what
@@ -63,7 +63,7 @@ class MachineTest < Minitest::Test
     end
   end
 
-  def entry(name: "2.2", ruby: "2.2.10", image: "agentsfyi-upgrader-ruby-2.2:dev")
+  def entry(name: "2.2", ruby: "2.2.10", image: "agents-upgrader-ruby-2.2:dev")
     Interpreters::Entry.new(name: name, ruby: ruby, image: image,
       base: "ruby:2.2@sha256:#{"a" * 64}", bundler: "1.17.3")
   end
@@ -104,7 +104,7 @@ class MachineTest < Minitest::Test
     argv, env = machine.command(%w[bundle install], chdir: "/home/walker/work/tree", env: {})
 
     # `--user` on every exec, and never on the container: the container's own process runs as
-    # root so it can name the walker's uid (`agents-fyi-start`), and every command that
+    # root so it can name the walker's uid (`agents-start`), and every command that
     # touches the application runs as the account that owns the mounted home.
     #
     # **`--interactive` is the other half, and a walk is what proved it**: without it `docker exec`
@@ -112,7 +112,7 @@ class MachineTest < Minitest::Test
     # nothing, asked again, and repeated the question until the command bound killed it — with the
     # answer pipe the walker had just started giving it sitting unread on the host side.
     assert_equal ["docker", "exec", "--interactive", "--user", "1000:1000", "--workdir",
-                  "/agents-fyi/work/tree", "abc123", "bundle", "install"], argv
+                  "/agents/work/tree", "abc123", "bundle", "install"], argv
     assert_empty env, "a container command's environment is the flags, not this process's"
   end
 
@@ -142,7 +142,7 @@ class MachineTest < Minitest::Test
     argv, _env = machine.command(["bundle", "install"], chdir: "/home/walker/work/tree",
       env: { "BUNDLE_PATH" => "/home/walker/bundles/x", "BUNDLE_WITHOUT" => "development" })
 
-    assert_includes argv, "BUNDLE_PATH=/agents-fyi/bundles/x"
+    assert_includes argv, "BUNDLE_PATH=/agents/bundles/x"
     assert_includes argv, "BUNDLE_WITHOUT=development"
     assert_equal "abc123", argv[argv.index("BUNDLE_WITHOUT=development") + 1]
   end
@@ -169,7 +169,7 @@ class MachineTest < Minitest::Test
 
   def test_the_stamp_names_the_interpreter_and_the_image_digest
     strip = container(inspector: FakeInspector.new(sha: "c" * 64))
-    assert_equal "ruby 2.2.10 (agentsfyi-upgrader-ruby-2.2:dev@sha256:#{"c" * 64})", strip.stamp
+    assert_equal "ruby 2.2.10 (agents-upgrader-ruby-2.2:dev@sha256:#{"c" * 64})", strip.stamp
   end
 
   # A rebuilt image is a new machine: the digest is what makes yesterday's verdict not stand
@@ -182,7 +182,7 @@ class MachineTest < Minitest::Test
 
   def test_an_image_the_daemon_cannot_describe_still_has_a_stamp
     machine = container(inspector: FakeInspector.new(sha: "not-a-digest"))
-    assert_equal "ruby 2.2.10 (agentsfyi-upgrader-ruby-2.2:dev)", machine.stamp
+    assert_equal "ruby 2.2.10 (agents-upgrader-ruby-2.2:dev)", machine.stamp
   end
 
   # Starting a container is two commands and both are recorded: the `docker run` that started
@@ -238,15 +238,15 @@ class MachineTest < Minitest::Test
     host = container(home: home, runner: FakeShell.new(answers: started))
     host.start!(stage: "interpreter", stages: [])
     run_argv = host.instance_variable_get(:@runner).calls.first[:argv].join(" ")
-    assert_includes run_argv, "--mount type=bind,source=#{home},target=/agents-fyi"
-    assert_includes run_argv, "AGENTS_FYI_UID=1000", "the start script is not told which uid to name"
-    assert_includes run_argv, "agents-fyi-start", "the container is not started through the naming script"
+    assert_includes run_argv, "--mount type=bind,source=#{home},target=/agents"
+    assert_includes run_argv, "AGENTS_UID=1000", "the start script is not told which uid to name"
+    assert_includes run_argv, "agents-start", "the container is not started through the naming script"
 
     wrapped = container(runner: FakeShell.new(answers: started), self_marker: __FILE__,
-      inspector: FakeInspector.new(volume: "agents-fyi_upgrader_cache"))
+      inspector: FakeInspector.new(volume: "agents_upgrader_cache"))
     wrapped.start!(stage: "interpreter", stages: [])
     assert_includes wrapped.instance_variable_get(:@runner).calls.first[:argv].join(" "),
-      "--mount type=volume,source=agents-fyi_upgrader_cache,target=/agents-fyi"
+      "--mount type=volume,source=agents_upgrader_cache,target=/agents"
   end
 
   def test_an_operator_can_name_the_volume_when_the_daemon_will_not_answer
@@ -255,7 +255,7 @@ class MachineTest < Minitest::Test
       inspector: FakeInspector.new(volume: ""), volume: "named-by-the-operator")
     pinned.start!(stage: "interpreter", stages: [])
     assert_includes pinned.instance_variable_get(:@runner).calls.first[:argv].join(" "),
-      "--mount type=volume,source=named-by-the-operator,target=/agents-fyi"
+      "--mount type=volume,source=named-by-the-operator,target=/agents"
   end
 
   def test_stopping_a_container_that_never_started_is_not_an_error
@@ -271,7 +271,7 @@ class MachineTest < Minitest::Test
     def hang.capture2e(*) = sleep
 
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    answer = AgentsFyi::Upgrader::Machine.docker(hang, "docker", "create", "alpine", seconds: 0.2)
+    answer = Agents::Upgrader::Machine.docker(hang, "docker", "create", "alpine", seconds: 0.2)
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
     assert_equal ["", nil], answer
@@ -281,7 +281,7 @@ class MachineTest < Minitest::Test
   # **No call site may reach the inspector directly**, or the bound is a helper that half the code
   # skips — which is exactly how the teardown fix left `docker run` unbounded and the next rung hung.
   def test_the_machine_reaches_the_daemon_only_through_the_bounded_helper
-    source = File.read(File.expand_path("../lib/agents_fyi/upgrader/machine.rb", __dir__))
+    source = File.read(File.expand_path("../lib/agents/upgrader/machine.rb", __dir__))
     offenders = source.lines.each_with_index.filter_map do |line, number|
       next unless line.match?(/inspector\.capture[23]/)
       next if line.include?("inspector.capture2e(*argv)")
@@ -308,7 +308,7 @@ class MachineTest < Minitest::Test
 
     removal = runner.calls.find { |call| call[:argv].first(2) == ["docker", "rm"] }
     refute_nil removal, "the container was not removed at all"
-    assert_equal AgentsFyi::Upgrader::Machine::TEARDOWN_SECONDS, removal[:timeout],
+    assert_equal Agents::Upgrader::Machine::TEARDOWN_SECONDS, removal[:timeout],
       "the teardown has no deadline, so a wedged daemon holds a step that already passed"
   end
 
@@ -328,8 +328,8 @@ class MachineTest < Minitest::Test
     container(runner: shell).start!(stage: "interpreter", stages: [])
 
     run_argv = shell.calls.first[:argv].join(" ")
-    assert_includes run_argv, "--label org.agentsfyi.upgrader.step=agentsfyi-step-run1-2-2"
-    assert_includes run_argv, "--label org.agentsfyi.upgrader.pid=#{Process.pid}"
+    assert_includes run_argv, "--label org.agents.upgrader.step=agents-step-run1-2-2"
+    assert_includes run_argv, "--label org.agents.upgrader.pid=#{Process.pid}"
   end
 
   # **A deployment that shares its daemon with a served application caps the step's disk rate.**
@@ -383,8 +383,8 @@ class MachineTest < Minitest::Test
   def test_a_container_whose_owner_is_gone_is_reaped_and_a_live_one_is_not
     gone = dead_pid
     listing = [
-      "aaa111\tagentsfyi-step-20261017193851-#{gone}-2-1\t",
-      "bbb222\tagentsfyi-step-20261017193851-#{Process.pid}-2-1\t#{Process.pid}"
+      "aaa111\tagents-step-20261017193851-#{gone}-2-1\t",
+      "bbb222\tagents-step-20261017193851-#{Process.pid}-2-1\t#{Process.pid}"
     ].join("\n") + "\n"
     inspector = FakeInspector.new(listing: listing)
 
@@ -396,7 +396,7 @@ class MachineTest < Minitest::Test
   # the run id `Step#run_id` composes — `<timestamp>-<pid>` — so the reaper finds the ones
   # already on a daemon rather than only the ones it starts from now on.
   def test_a_container_from_before_the_labels_is_reaped_through_the_pid_in_its_name
-    listing = "ccc333\tagentsfyi-step-20261017193851-#{dead_pid}-2-1\t\n"
+    listing = "ccc333\tagents-step-20261017193851-#{dead_pid}-2-1\t\n"
 
     assert_equal ["ccc333"], Machine::Container.reap!(inspector: FakeInspector.new(listing: listing))
   end
@@ -405,7 +405,7 @@ class MachineTest < Minitest::Test
   # which is what keeps the leak from accumulating in the first place.
   def test_starting_a_container_reaps_what_a_killed_run_left_behind
     inspector = FakeInspector.new(
-      listing: "ddd444\tagentsfyi-step-20261017193851-#{dead_pid}-2-1\t\n"
+      listing: "ddd444\tagents-step-20261017193851-#{dead_pid}-2-1\t\n"
     )
     machine = container(runner: FakeShell.new(
       answers: { "docker run" => [0, "c0ffee\n"], "ruby -v" => [0, "ruby 2.2.10\n"] }

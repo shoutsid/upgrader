@@ -3,13 +3,13 @@
 require "minitest/autorun"
 require "tmpdir"
 require "json"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The delivery feed is a list, replaced one move at a time, and it is read by another process. What
 # is pinned here is what a reader relies on: one entry per move, a later attempt replacing its own
 # row, and a corrupt file reading as empty rather than as a site admin error.
 class DeliveriesTest < Minitest::Test
-  Deliveries = AgentsFyi::Upgrader::Deliveries
+  Deliveries = Agents::Upgrader::Deliveries
 
   REPO = "https://github.com/shoutsid/biddingapp"
 

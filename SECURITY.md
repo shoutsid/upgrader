@@ -19,7 +19,7 @@ is a security matter.
 
 Please include:
 
-- the version (`agents-fyi-upgrader --version` or the image tag);
+- the version (`agents-upgrader --version` or the image tag);
 - the operating system and Ruby version;
 - the command, mode and relevant flags;
 - what an attacker can do, and what they need to start with;

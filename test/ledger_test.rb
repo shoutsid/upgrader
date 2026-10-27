@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "tmpdir"
-require "agents_fyi/upgrader/ledger"
+require "agents/upgrader/ledger"
 
 # The durable memory of what has been walked. What is asserted here is every case in
 # which the wrong answer is expensive rather than merely wrong: work redone for weeks,
@@ -17,7 +17,7 @@ class LedgerTest < Minitest::Test
   TO = "6.1.0"
 
   def ledger_at(path, machine: MACHINE)
-    AgentsFyi::Upgrader::Ledger.new(path: path, machine: machine).read!
+    Agents::Upgrader::Ledger.new(path: path, machine: machine).read!
   end
 
   def record(ledger, verdict:, to: TO, commit: COMMIT, note: "")
@@ -30,13 +30,13 @@ class LedgerTest < Minitest::Test
   def test_a_verdict_survives_a_round_trip_through_the_file
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
-      record(ledger_at(path), verdict: AgentsFyi::Upgrader::Ledger::PASSED, note: "the suite was green")
+      record(ledger_at(path), verdict: Agents::Upgrader::Ledger::PASSED, note: "the suite was green")
 
       read = ledger_at(path)
       entry = read.find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
 
       assert_equal 1, read.size
-      assert_equal AgentsFyi::Upgrader::Ledger::PASSED, entry.verdict
+      assert_equal Agents::Upgrader::Ledger::PASSED, entry.verdict
       assert_equal "green", entry.baseline
       assert_equal MACHINE, entry.machine
       assert_equal 1, entry.attempts
@@ -52,7 +52,7 @@ class LedgerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
       ledger = ledger_at(path)
-      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      record(ledger, verdict: Agents::Upgrader::Ledger::PASSED)
       ledger.deliver(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO,
         state: { "attempted" => true, "delivered" => false, "commit" => "c0ffee01" })
 
@@ -61,7 +61,7 @@ class LedgerTest < Minitest::Test
       assert_equal false, read.delivery["delivered"]
       refute_empty read.delivery["attempted_at"]
 
-      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      record(ledger, verdict: Agents::Upgrader::Ledger::PASSED)
       cleared = ledger_at(path).find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
       assert_nil cleared.delivery, "a new record kept a delivery about another attempt"
     end
@@ -83,8 +83,8 @@ class LedgerTest < Minitest::Test
   # would have succeeded.
   def test_a_pass_and_a_refusal_settle_on_arrival_and_the_other_two_do_not
     settled_on_arrival = [
-      AgentsFyi::Upgrader::Ledger::PASSED,
-      AgentsFyi::Upgrader::Ledger::REFUSED
+      Agents::Upgrader::Ledger::PASSED,
+      Agents::Upgrader::Ledger::REFUSED
     ]
 
     Dir.mktmpdir do |dir|
@@ -97,13 +97,13 @@ class LedgerTest < Minitest::Test
           "#{verdict} is settled on arrival"
       end
 
-      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::FAILED, to: "6.9.0")
+      record(ledger, verdict: Agents::Upgrader::Ledger::FAILED, to: "6.9.0")
 
       refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.9.0"),
         "a failure is retried rather than believed"
       assert_equal 1, ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.9.0")
 
-      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::UNVERIFIED, to: "6.8.0")
+      record(ledger, verdict: Agents::Upgrader::Ledger::UNVERIFIED, to: "6.8.0")
 
       refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: "6.8.0"),
         "a run that established nothing was believed"
@@ -121,10 +121,10 @@ class LedgerTest < Minitest::Test
   def test_an_unverified_step_is_retried_however_many_times_it_has_run
     Dir.mktmpdir do |dir|
       ledger = ledger_at(File.join(dir, "ledger.json"))
-      ceiling = AgentsFyi::Upgrader::Ledger::MAX_ATTEMPTS
+      ceiling = Agents::Upgrader::Ledger::MAX_ATTEMPTS
 
       (ceiling + 2).times do |attempt|
-        record(ledger, verdict: AgentsFyi::Upgrader::Ledger::UNVERIFIED)
+        record(ledger, verdict: Agents::Upgrader::Ledger::UNVERIFIED)
 
         refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
           "attempt #{attempt + 1} left the move settled although nothing was established"
@@ -133,7 +133,7 @@ class LedgerTest < Minitest::Test
       end
 
       # And the ceiling still bounds a move that *fails*, which is the case it exists for.
-      ceiling.times { record(ledger, verdict: AgentsFyi::Upgrader::Ledger::FAILED) }
+      ceiling.times { record(ledger, verdict: Agents::Upgrader::Ledger::FAILED) }
       assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
         "a move that failed at the ceiling is still retried for ever"
     end
@@ -144,10 +144,10 @@ class LedgerTest < Minitest::Test
   def test_a_failed_step_is_retried_until_the_ceiling_and_then_settled
     Dir.mktmpdir do |dir|
       ledger = ledger_at(File.join(dir, "ledger.json"))
-      ceiling = AgentsFyi::Upgrader::Ledger::MAX_ATTEMPTS
+      ceiling = Agents::Upgrader::Ledger::MAX_ATTEMPTS
 
       (1..ceiling).each do |attempt|
-        record(ledger, verdict: AgentsFyi::Upgrader::Ledger::FAILED)
+        record(ledger, verdict: Agents::Upgrader::Ledger::FAILED)
         settled = ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
         attempts = ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
 
@@ -169,7 +169,7 @@ class LedgerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
       other = ledger_at(path, machine: OTHER_MACHINE)
-      record(other, verdict: AgentsFyi::Upgrader::Ledger::PASSED, note: "the suite was green there")
+      record(other, verdict: Agents::Upgrader::Ledger::PASSED, note: "the suite was green there")
 
       assert other.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
         "the machine that produced it believes it"
@@ -178,7 +178,7 @@ class LedgerTest < Minitest::Test
 
       refute read.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
         "another interpreter's verdict does not settle this one"
-      assert_equal AgentsFyi::Upgrader::Ledger::PASSED,
+      assert_equal Agents::Upgrader::Ledger::PASSED,
         read.find(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO).verdict,
         "re-opened, not deleted: the reason is the thing worth reading"
     end
@@ -191,11 +191,11 @@ class LedgerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       path = File.join(dir, "ledger.json")
       File.write(path, JSON.generate(
-        "schema_version" => AgentsFyi::Upgrader::Ledger::SCHEMA_VERSION,
+        "schema_version" => Agents::Upgrader::Ledger::SCHEMA_VERSION,
         "entries" => [
           {
             "repo" => REPO, "commit" => COMMIT, "from_version" => FROM, "to_version" => TO,
-            "verdict" => AgentsFyi::Upgrader::Ledger::PASSED
+            "verdict" => Agents::Upgrader::Ledger::PASSED
           }
         ]
       ))
@@ -212,7 +212,7 @@ class LedgerTest < Minitest::Test
   def test_two_commits_are_two_pieces_of_work
     Dir.mktmpdir do |dir|
       ledger = ledger_at(File.join(dir, "ledger.json"))
-      record(ledger, verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      record(ledger, verdict: Agents::Upgrader::Ledger::PASSED)
 
       assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
       refute ledger.settled?(repo: REPO, commit: "0000000", from_version: FROM, to_version: TO)
@@ -251,7 +251,7 @@ class LedgerTest < Minitest::Test
         "entries" => [
           {
             "repo" => REPO, "commit" => COMMIT, "from_version" => FROM, "to_version" => TO,
-            "verdict" => AgentsFyi::Upgrader::Ledger::PASSED
+            "verdict" => Agents::Upgrader::Ledger::PASSED
           }
         ]
       ))
@@ -271,7 +271,7 @@ class LedgerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       nested = File.join(dir, "state", "upgrader")
       path = File.join(nested, "ledger.json")
-      record(ledger_at(path), verdict: AgentsFyi::Upgrader::Ledger::PASSED)
+      record(ledger_at(path), verdict: Agents::Upgrader::Ledger::PASSED)
 
       assert File.file?(path)
       assert_equal ["ledger.json"], Dir.children(nested), "no half-written neighbour is left behind"

@@ -37,7 +37,7 @@ FROM ${RUBY_IMAGE}
 #   install a real application's bundle, so the compiler arrives with it — see
 #   `WITH_BUILD_TOOLS` below, which is how "the step's own image" is spelled without a
 #   second Dockerfile that would drift from this one.
-# - **Bundler as a program we run.** `bin/agents-fyi-upgrader` puts `lib` on the load
+# - **Bundler as a program we run.** `bin/agents-upgrader` puts `lib` on the load
 #   path itself; a `bundle exec` in front of a tool with no dependencies is a
 #   dependency on Bundler dressed up as hygiene.
 RUN apt-get update \
@@ -139,12 +139,12 @@ COPY README.md ./
 # exactly this, so scratch is sent to the volume and the tmpfs is left as a small
 # bound for whatever ignores `TMPDIR`.
 RUN useradd --system --uid 10003 --create-home upgrader \
-    && mkdir -p /home/upgrader/.cache/agents-fyi-upgrader \
-        /home/upgrader/.cache/agents-fyi-upgrader/tmp \
-        /home/upgrader/.cache/agents-fyi-upgrader/bundle \
-        /home/upgrader/.cache/agents-fyi-upgrader/state \
+    && mkdir -p /home/upgrader/.cache/agents-upgrader \
+        /home/upgrader/.cache/agents-upgrader/tmp \
+        /home/upgrader/.cache/agents-upgrader/bundle \
+        /home/upgrader/.cache/agents-upgrader/state \
         /home/upgrader/.gem \
-    && chmod +x /app/bin/agents-fyi-upgrader /app/entrypoint.sh \
+    && chmod +x /app/bin/agents-upgrader /app/entrypoint.sh \
     && chown -R upgrader:upgrader /app /home/upgrader
 USER upgrader
 
@@ -160,10 +160,10 @@ USER upgrader
 # `bundle install` and neither is. This is an image *ENV*, which applies to the
 # runtime as well as the build — which is the whole reason `PIP_NO_CACHE_DIR=1` in the
 # miner was wrong in both.
-ENV UPGRADER_HOME=/home/upgrader/.cache/agents-fyi-upgrader \
+ENV UPGRADER_HOME=/home/upgrader/.cache/agents-upgrader \
     GEM_HOME=/home/upgrader/.gem \
-    BUNDLE_USER_HOME=/home/upgrader/.cache/agents-fyi-upgrader/bundle \
-    TMPDIR=/home/upgrader/.cache/agents-fyi-upgrader/tmp
+    BUNDLE_USER_HOME=/home/upgrader/.cache/agents-upgrader/bundle \
+    TMPDIR=/home/upgrader/.cache/agents-upgrader/tmp
 
 # The entrypoint stays the one-shot CLI, and the *service* is this same image with
 # `entrypoint: /app/entrypoint.sh` (see `docker-compose.yml`). That ordering is
@@ -175,4 +175,4 @@ ENV UPGRADER_HOME=/home/upgrader/.cache/agents-fyi-upgrader \
 # No HEALTHCHECK in the image: the loop's liveness is the age of a heartbeat file the
 # *service* owns, and a check that ships in the image would be a check on the wrong
 # thing for a one-shot `plan`.
-ENTRYPOINT ["/app/bin/agents-fyi-upgrader"]
+ENTRYPOINT ["/app/bin/agents-upgrader"]

@@ -1,10 +1,10 @@
-# agents-fyi upgrader
+# Agents upgrader
 
 A Ruby client that moves a Rails application one minor release at a time, and records what
 the move cost: the patch, every command with its exit code, the suite's verdict before and
 after, and every change the move carried that no machine may apply.
 
-The tool is a client of the **agents-fyi** service. The ladder — what each Rails release
+The tool is a client of the **agents** service. The ladder — what each Rails release
 changed, and which of those changes a machine may make — lives in the service, not here.
 The upgrader reads an application's own `Gemfile.lock`, asks the service what a move
 crosses, and applies only what the service calls mechanical. It never invents a fix, and it
@@ -48,15 +48,15 @@ dependencies; `Bundler::LockfileParser`, a default gem, is the only lockfile rea
 ```bash
 git clone https://github.com/shoutsid/upgrader.git
 cd upgrader
-./bin/agents-fyi-upgrader --help
+./bin/agents-upgrader --help
 ```
 
 Point it at the service. There is **no default service**: the deployment or the caller must
 name one. The public deployment is `https://agents.shoutsid.fyi`.
 
 ```bash
-export AGENTS_FYI_URL=https://agents.shoutsid.fyi
-./bin/agents-fyi-upgrader plan --repo /path/to/a/rails/app --to 7.1.0
+export AGENTS_URL=https://agents.shoutsid.fyi
+./bin/agents-upgrader plan --repo /path/to/a/rails/app --to 7.1.0
 ```
 
 `--to` is optional for `plan` and `step`: without it, the target is the top of the service's
@@ -68,7 +68,7 @@ a repository is going must not start walking it.
 A write or a queue read needs an operator key:
 
 ```bash
-export AGENTS_FYI_KEY=your-operator-key
+export AGENTS_KEY=your-operator-key
 ```
 
 Anonymous reads — the ladder, a plan, and a scan of source you send — need no account. The key
@@ -77,7 +77,7 @@ is sent as `X-API-Key`; the tool never accepts an admin token for these operatio
 A first step writes nothing to your repository:
 
 ```bash
-./bin/agents-fyi-upgrader step \
+./bin/agents-upgrader step \
   --repo https://github.com/owner/application.git \
   --to 7.1.0 \
   --record ./out

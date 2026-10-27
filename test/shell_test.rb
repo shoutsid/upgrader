@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The one place a child process is spawned.
 #
@@ -10,7 +10,7 @@ require "agents_fyi/upgrader"
 # reach rubygems hung until somebody noticed: one walk sat in `bundle update` for nine minutes and would have
 # sat there for the hour a hand-run step allows. What is asserted here is the half that was missing.
 class ShellTest < Minitest::Test
-  Shell = AgentsFyi::Upgrader::Shell
+  Shell = Agents::Upgrader::Shell
 
   # **A resolver's middle is where its cause is.** `TAIL_BYTES` bounds a suite's output because a suite's
   # middle is noise; a resolver's output is a handful of blocks and any one of them may be the block that

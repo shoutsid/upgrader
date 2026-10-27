@@ -5,7 +5,7 @@ require "fileutils"
 require "open3"
 require "stringio"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # The two things that decide whether a walk can move: what a step leaves behind when it
 # passed, and what it leaves behind when it did not.
@@ -16,7 +16,7 @@ require "agents_fyi/upgrader"
 # `tmp/` survive a step being thrown away. That distinction is invisible in a unit test
 # that does not have ignored files in it.
 class CheckpointTest < Minitest::Test
-  Checkpoint = AgentsFyi::Upgrader::Checkpoint
+  Checkpoint = Agents::Upgrader::Checkpoint
 
   def setup
     @dir = Dir.mktmpdir
@@ -144,7 +144,7 @@ class CheckpointTest < Minitest::Test
   end
 
   def test_the_message_names_both_releases
-    assert_equal "agents-fyi upgrader: the 7.1.0 -> 7.2.0 step, as this tool made it",
+    assert_equal "agents upgrader: the 7.1.0 -> 7.2.0 step, as this tool made it",
       Checkpoint.message(from: "7.1.0", to: "7.2.0")
   end
 
@@ -172,7 +172,7 @@ class CheckpointTest < Minitest::Test
   # step, and a step that commits as it goes passes the concern so `git log` reads as a sequence of
   # concerns rather than one opaque commit.
   def test_a_concern_is_named_in_the_message
-    assert_equal "agents-fyi upgrader: the 7.1.0 -> 7.2.0 step — pin Rails and move gems",
+    assert_equal "agents upgrader: the 7.1.0 -> 7.2.0 step — pin Rails and move gems",
       Checkpoint.message(from: "7.1.0", to: "7.2.0", concern: "pin Rails and move gems")
   end
 end

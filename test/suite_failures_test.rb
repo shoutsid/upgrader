@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents_fyi/upgrader/suite_failures"
+require "agents/upgrader/suite_failures"
 
 # **The suite's text, read as the failure it is.** The fixture is the biddingapp 6.0 rung's real
 # output — three of its six blocks, copied whole — because a parser tested on a sentence written for
@@ -28,7 +28,7 @@ class SuiteFailuresTest < Minitest::Test
   MISSING_TRANSLATION = File.expand_path("fixtures/rspec_71_missing_translation.txt", __dir__)
 
   # Not `failures`: Minitest::Test already owns that name for the assertions that failed.
-  def parsed = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
+  def parsed = Agents::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
 
   def test_a_failure_names_the_application_file_and_line_it_came_out_of
     first = parsed.first
@@ -71,7 +71,7 @@ class SuiteFailuresTest < Minitest::Test
   # expectation at line 113 failed and not what it said — which is the whole of the evidence the
   # redirect-body repair is made from.
   def test_an_expectation_failure_is_read_without_an_exception_class
-    first = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(DIASPORA)).first
+    first = Agents::Upgrader::SuiteFailures.parse(File.read(DIASPORA)).first
 
     assert_equal "spec/controllers/api/openid_connect/authorizations_controller_spec.rb", first.file
     assert_equal 113, first.line
@@ -93,7 +93,7 @@ class SuiteFailuresTest < Minitest::Test
   # The failure a serialized column raises after the CVE-2022-32224 backport. Its class is the
   # evidence the YAML-column repair acts on, and the permitted class is in the sentence below it.
   def test_a_disallowed_class_is_read_as_the_exception_and_its_class_name
-    failure = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(YAML_COLUMNS)).first
+    failure = Agents::Upgrader::SuiteFailures.parse(File.read(YAML_COLUMNS)).first
 
     assert_equal "Psych::DisallowedClass", failure.error
     assert_includes failure.message, "ActiveSupport::HashWithIndifferentAccess"
@@ -106,7 +106,7 @@ class SuiteFailuresTest < Minitest::Test
   # non-empty line as the message kept `expect(page).` and lost `translation missing: …`, which
   # is the only line a repair can act on.
   def test_a_class_line_after_a_source_excerpt_takes_the_message_below_it
-    failure = AgentsFyi::Upgrader::SuiteFailures.parse(File.read(MISSING_TRANSLATION)).first
+    failure = Agents::Upgrader::SuiteFailures.parse(File.read(MISSING_TRANSLATION)).first
 
     assert_equal "I18n::MissingTranslationData", failure.error
     assert_equal "translation missing: en.admin.navigation.locations", failure.message

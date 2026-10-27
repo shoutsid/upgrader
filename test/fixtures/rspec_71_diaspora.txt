@@ -4,16 +4,16 @@ Failures:
      Failure/Error: expect(response.body).to match("error=invalid_scope")
        expected "" to match "error=invalid_scope"
      # ./spec/controllers/api/openid_connect/authorizations_controller_spec.rb:113:in `block (5 levels) in <top (required)>'
-     # /agents-fyi/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'
+     # /agents/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'
 
   2) Api::OpenidConnect::AuthorizationsController#new when not yet authorized when prompt is none should return an interaction required error
      Failure/Error: expect(response.body).to include("User must already be authorized when `prompt` is `none`")
        expected "" to include "User must already be authorized when `prompt` is `none`"
      # ./spec/controllers/api/openid_connect/authorizations_controller_spec.rb:131:in `block (5 levels) in <top (required)>'
-     # /agents-fyi/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'
+     # /agents/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'
 
   3) Api::OpenidConnect::AuthorizationsController#new when not yet authorized when prompt is none and user not signed in should return an interaction required error
      Failure/Error: expect(response.body).to include("User must already be logged in when `prompt` is `none`")
        expected "" to include "User must already be logged in when `prompt` is `none`"
      # ./spec/controllers/api/openid_connect/authorizations_controller_spec.rb:144:in `block (5 levels) in <top (required)>'
-     # /agents-fyi/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'
+     # /agents/bundles/dd9082de4d5225b5/3.2/ruby/3.2.0/gems/webmock-3.26.2/lib/webmock/rspec.rb:39:in `block (2 levels) in <top (required)>'

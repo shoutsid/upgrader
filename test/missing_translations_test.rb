@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "fileutils"
 require "tmpdir"
-require "agents_fyi/upgrader"
+require "agents/upgrader"
 
 # **The ohana-api 7.1.6 failure, as a fixture.** The rung made every `I18n.t` raise on a key the
 # application never defines, and this spec identified a link by one: the navigation renders
@@ -11,7 +11,7 @@ require "agents_fyi/upgrader"
 # call returned a `translation missing:` string and the assertion passed for a reason it did not
 # mean. The tests below are a tree and a failure — no Rails, no suite, no database.
 class MissingTranslationsTest < Minitest::Test
-  Failure = AgentsFyi::Upgrader::SuiteFailures::Failure
+  Failure = Agents::Upgrader::SuiteFailures::Failure
   SPEC = "spec/features/admin/dashboard_spec.rb"
 
   def setup
@@ -35,7 +35,7 @@ class MissingTranslationsTest < Minitest::Test
   # The measured line, repaired to the half that identifies the link. The href is the fact the spec
   # already carries; the label is the half the application cannot supply.
   def test_the_missing_key_is_dropped_and_the_href_kept
-    edit = AgentsFyi::Upgrader::MissingTranslations.for(root: @root,
+    edit = Agents::Upgrader::MissingTranslations.for(root: @root,
       failures: [missing_translation(line: 5)]).first
 
     refute_nil edit
@@ -53,7 +53,7 @@ class MissingTranslationsTest < Minitest::Test
     write(SPEC, "expect(page).not_to have_link(I18n.t(\"admin.navigation.locations\"), " \
                 "href: admin_locations_path)\n")
 
-    edit = AgentsFyi::Upgrader::MissingTranslations.for(root: @root,
+    edit = Agents::Upgrader::MissingTranslations.for(root: @root,
       failures: [missing_translation(line: 1)]).first
 
     assert_equal "expect(page).not_to have_link(href: admin_locations_path)", edit["after"]
@@ -66,7 +66,7 @@ class MissingTranslationsTest < Minitest::Test
       "<%= link_to t('admin.navigation.locations'), admin_locations_path %>\n")
 
     failures = [missing_translation(file: "app/views/layouts/_navigation.html.erb", line: 1)]
-    assert_empty AgentsFyi::Upgrader::MissingTranslations.for(root: @root, failures: failures)
+    assert_empty Agents::Upgrader::MissingTranslations.for(root: @root, failures: failures)
   end
 
   # With no href the matcher has nothing left to identify a link with, and `have_link` with no
@@ -74,7 +74,7 @@ class MissingTranslationsTest < Minitest::Test
   def test_a_matcher_with_no_destination_is_refused
     write(SPEC, "expect(page).not_to have_link I18n.t('admin.navigation.locations')\n")
 
-    assert_empty AgentsFyi::Upgrader::MissingTranslations.for(root: @root,
+    assert_empty Agents::Upgrader::MissingTranslations.for(root: @root,
       failures: [missing_translation(line: 1)])
   end
 
@@ -83,7 +83,7 @@ class MissingTranslationsTest < Minitest::Test
     other = missing_translation(line: 5, error: "NoMethodError",
       message: "undefined method `have_link' for nil")
 
-    assert_empty AgentsFyi::Upgrader::MissingTranslations.for(root: @root, failures: [other])
+    assert_empty Agents::Upgrader::MissingTranslations.for(root: @root, failures: [other])
   end
 
   # A retry after the first repair finds a line with no call left to remove, so the repair is not
@@ -91,7 +91,7 @@ class MissingTranslationsTest < Minitest::Test
   def test_a_repaired_line_produces_no_edit
     write(SPEC, "expect(page).not_to have_link href: admin_locations_path\n")
 
-    assert_empty AgentsFyi::Upgrader::MissingTranslations.for(root: @root,
+    assert_empty Agents::Upgrader::MissingTranslations.for(root: @root,
       failures: [missing_translation(line: 1)])
   end
 
@@ -100,7 +100,7 @@ class MissingTranslationsTest < Minitest::Test
   def test_a_computed_key_is_refused
     write(SPEC, "expect(page).not_to have_link I18n.t(link_key), href: admin_locations_path\n")
 
-    assert_empty AgentsFyi::Upgrader::MissingTranslations.for(root: @root,
+    assert_empty Agents::Upgrader::MissingTranslations.for(root: @root,
       failures: [missing_translation(line: 1)])
   end
 
