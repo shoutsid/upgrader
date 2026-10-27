@@ -462,15 +462,22 @@ module AgentsFyi
         %w[branch pr].include?(project&.delivery&.publish.to_s)
       end
 
-      # **A delivery debt is retried when any account has asked for a handoff.** The old gate was the
-      # deployment-wide `--publish`, so an account-level `publish: pr` published a passed rung and
-      # then never retried a failed one. The feed is the authority; a deployment with every account
-      # at `off` still publishes nothing.
+      # **A delivery debt is retried when the ledger says the rung asked for a handoff.** The old
+      # gate was the deployment-wide `--publish`, so an account-level `publish: pr` published a
+      # passed rung and then never retried a failed one. The ledger entry carries the mode the
+      # first attempt used, so this read does not consume a project-feed read — the feed is
+      # refreshed per target, and an extra read here shifted the checkpoint the first target used.
       def publish_configured?
         return true if @publish
+        return false if @ledger.nil?
 
-        refresh_account_projects! if account_projects.empty?
-        account_projects.any? { |project| %w[branch pr].include?(project.delivery.publish.to_s) }
+        @ledger.entries.any? do |entry|
+          delivery = entry.delivery
+          next false unless entry.verdict == Ledger::PASSED
+          next false if delivery.is_a?(Hash) && delivery["delivered"] == true
+
+          %w[branch pr].include?(delivery.is_a?(Hash) ? delivery["publish"].to_s : "")
+        end
       end
 
       def publish_mode(project)
@@ -602,7 +609,8 @@ module AgentsFyi
           chain = delivery.is_a?(Hash) && delivery.key?("chain") ? delivery["chain"] != false :
             (project.nil? ? true : project.delivery.chain)
           mode = delivery.is_a?(Hash) ? delivery["publish"].to_s : ""
-          mode = "pr" if mode.empty?
+          mode = "pr" if mode.empty? && @publish
+          next if mode == "off"
           publisher = @publish_class.new(
             root: root, repository: entry.repo, from_version: entry.from_version,
             to_version: entry.to_version, record: record, commit: commit,
