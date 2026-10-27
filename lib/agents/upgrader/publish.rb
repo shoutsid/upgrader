@@ -114,7 +114,7 @@ module Agents
       def initialize(root:, repository:, from_version:, to_version:, record: nil, token: nil,
                      out: nil, api: nil, git: nil, pause: nil, branch_pattern: nil, commit: nil,
                      report_base: nil, base_ref: nil, chain: true, deploy: [],
-                     editorial: nil, expected_body_digest: nil, base: nil)
+                     editorial: nil, body_override: nil, expected_body_digest: nil, base: nil)
         @root = root
         @repository = repository.to_s
         @from_version = from_version.to_s
@@ -124,6 +124,11 @@ module Agents
         # editorial is prepended; the evidence sections below it are still the record's. An empty
         # editorial is the no-model path, not a different body shape.
         @editorial = editorial.to_s
+        # **The service's whole body, when the model wrote the narrative sections.** It already
+        # contains the editorial and the deterministic evidence; the walker applies it verbatim so
+        # the bytes it writes are the bytes the service validated and digested. An empty override is
+        # the lead-only path.
+        @body_override = body_override.to_s
         # **The body the publisher last wrote, for a maintenance update.** A republish may only
         # replace a body that still matches this digest; a person's edit is the owner's now.
         @expected_body_digest = expected_body_digest.to_s
@@ -560,8 +565,11 @@ module Agents
       # it, what is different in *this* application, what did the tool decide, what is left for me,
       # and is it safe to merge. The run record is below, collapsed, because it is the evidence and
       # not the first thing a person should have to read. Every line is composed from the record, so
-      # the request cannot say something the record does not.
+      # the request cannot say something the record does not — except the model's lead and narrative,
+      # which the service validates and returns as `body_override`.
       def body
+        return @body_override unless @body_override.empty?
+
         [@editorial, deterministic_body].reject(&:empty?).join("\n\n")
       end
 

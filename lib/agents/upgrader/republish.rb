@@ -63,6 +63,7 @@ module Agents
             branch_pattern: delivery["branch_pattern"], report_base: @report_base,
             base_ref: base_ref, chain: chain,
             editorial: editorial_for(presentation),
+            body_override: override_for(presentation),
             expected_body_digest: expected,
             base: delivery["base"].to_s
           )
@@ -145,6 +146,7 @@ module Agents
             branch_pattern: delivery["branch_pattern"], report_base: @report_base,
             base_ref: base_ref, chain: chain,
             editorial: presentation["editorial"].to_s,
+            body_override: presentation["body_override"].to_s,
             expected_body_digest: expected_digest(delivery),
             base: delivery["base"].to_s
           )
@@ -196,6 +198,17 @@ module Agents
         return "" unless %w[drafted applied].include?(presentation["state"].to_s)
 
         presentation["editorial"].to_s
+      end
+
+      # **The service's whole body wins over the lead join.** A presentation whose model wrote the
+      # narrative sections carries the composed body; the walker must apply those exact bytes for
+      # the service's applied digest to match. An older lead-only answer carries no override and
+      # falls back to `Publish`'s editorial join.
+      def override_for(presentation)
+        return "" unless presentation.is_a?(Hash)
+        return "" unless %w[drafted applied].include?(presentation["state"].to_s)
+
+        presentation["body_override"].to_s
       end
 
       # A delivery recorded before `brief_digest` existed still has the body; its digest is the

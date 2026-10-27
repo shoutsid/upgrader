@@ -1087,6 +1087,18 @@ class PublishTest < Minitest::Test
     assert_includes text, "## Checks"
   end
 
+  def test_a_validated_body_override_is_applied_verbatim
+    record = passed_record(repository: "https://github.com/acme/storefront")
+    override = "## Summary\n\nThe lead and the narrative.\n\n## What moved\n\nThe model's prose.\n\n" \
+               "## Checks\n\nThe record's table."
+    text = Publish.new(root: "/tmp", repository: record.repository,
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      editorial: "## Summary\n\nThe lead.", body_override: override).preview_body
+
+    assert_equal override, text
+    refute_includes text, "The record's review brief"
+  end
+
   def test_a_body_only_update_refuses_to_overwrite_a_person_s_edit
     record = passed_record(repository: "https://github.com/acme/storefront")
     api = FakeApi.new(previous: {

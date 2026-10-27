@@ -153,14 +153,17 @@ class RepublishTest < Minitest::Test
       File.write(File.join(home, "records", "#{stem}.json"), JSON.generate(record.to_h))
 
       corpus = FakeCorpus.new({ "state" => "drafted", "run_id" => "run-1",
-        "editorial" => "## Summary\n\nA lead.", "task_id" => "t1",
-        "model" => "provider/model", "prompt_version" => "presenter-prompt-1" })
+        "editorial" => "## Summary\n\nA lead.",
+        "body_override" => "## Summary\n\nA lead.\n\n## What moved\n\nThe narrative.",
+        "task_id" => "t1", "model" => "provider/model",
+        "prompt_version" => "presenter-prompt-2" })
       results = Republish.new(home: home, token: "t", ledger: ledger, corpus: corpus,
         publish_class: FakeUpdatePublish).apply_presentations(repository: REPO)
 
       assert_equal 1, results.length
       kwargs = FakeUpdatePublish.calls.first
       assert_equal "## Summary\n\nA lead.", kwargs[:editorial]
+      assert_includes kwargs[:body_override], "The narrative."
       assert_equal Digest::SHA256.hexdigest("the body the walker wrote"),
         kwargs[:expected_body_digest]
       assert_equal "main", FakeUpdatePublish.update_calls.first[:current_base]
