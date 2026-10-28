@@ -183,7 +183,7 @@ module Agents
         end
 
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
-          framework_removal_repairs
+          framework_removal_repairs + devise_token_repairs
         decisions = []
         notes = []
         deferred = []
@@ -227,6 +227,51 @@ module Agents
       end
 
       private
+
+      # **Devise 3.5 removed the token-authenticatable module, and the application still names it.**
+      # Measured on `rails-4-api` 4.1.16 -> 4.2.11.3: the pin moved devise to 3.5.10 and the boot
+      # died on `NameError: uninitialized constant Devise::Models::TokenAuthenticatable` from the
+      # `User` model's own `devise` call. The module was extracted to
+      # `devise-token_authenticatable` (0.4.0 requires devise ~> 3.5.0), and adding that line makes
+      # the same boot print `4.2.11.3`. It is a declaration rather than a model edit because the
+      # model's line is the application's and the gem is the module the line names; the rule does
+      # nothing for a Rails 4.1 application, where devise 3.0 still ships the module.
+      DEVISE_TOKEN_MODEL = /^\s*devise\b[^)]*:token_authenticatable/m
+
+      def devise_token_repairs
+        return [] unless rails_between?("4.2", "5.0")
+
+        gemfile = File.join(@root, "Gemfile")
+        return [] unless File.file?(gemfile)
+
+        text = File.binread(gemfile)
+        return [] if text.include?("devise-token_authenticatable")
+
+        models = Dir[File.join(@root, "app", "models", "**", "*.rb")]
+        found = models.any? do |path|
+          File.read(path, encoding: "utf-8").match?(DEVISE_TOKEN_MODEL)
+        rescue SystemCallError
+          false
+        end
+        return [] unless found
+
+        line = %(gem "devise-token_authenticatable", "~> 0.4.0")
+        separator = text.empty? || text.end_with?("\n") ? "" : "\n"
+        File.binwrite(gemfile, "#{text}#{separator}#{line}\n")
+        [Repair.new(path: "Gemfile", line: nil, text: nil, after: line,
+          subject: "devise-token_authenticatable",
+          note: "devise 3.5 extracted :token_authenticatable into this gem; the model still names " \
+                "the module, and the boot dies on the missing constant without it")]
+      rescue SystemCallError
+        []
+      end
+
+      def rails_between?(from, to)
+        version = Gem::Version.new(@rails.to_s[/\d+(?:\.\d+)*/].to_s)
+        version >= Gem::Version.new(from) && version < Gem::Version.new(to)
+      rescue ArgumentError
+        false
+      end
 
       # **An exact interpreter pin names a patch the matrix may not have.** The walk's matrix is one
       # image per era — 2.7 is Ruby 2.7.8 — and a Gemfile saying `ruby "2.7.5"` is a statement Bundler

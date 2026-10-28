@@ -184,6 +184,52 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "Gemfile"), %(File.read("config/ruby"))
   end
 
+  # **Devise 3.5 extracted `:token_authenticatable`, and an application's model still names it.**
+  # Measured on `rails-4-api` at 4.2.11.3: devise moved to 3.5.10 and the boot died on
+  # `NameError: uninitialized constant Devise::Models::TokenAuthenticatable`; adding the extracted
+  # gem made the same boot print the release. The rule is a declaration because the model's line is
+  # the application's and the gem is the module that line names.
+  def test_a_token_authenticatable_model_gets_the_extracted_devise_gem
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11.3"\ngem "devise", "~> 3.2"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "user.rb"),
+      "class User < ActiveRecord::Base\n  devise :database_authenticatable, :token_authenticatable\nend\n")
+
+    result = preflight(dir, rails: "4.2.11.3")
+
+    repair = result.repairs.find { |each| each.subject == "devise-token_authenticatable" }
+    refute_nil repair, result.details.inspect
+    assert_includes read(dir, "Gemfile"), %(gem "devise-token_authenticatable", "~> 0.4.0")
+    assert_includes repair.note, "devise 3.5"
+  end
+
+  # The module is still in devise 3.0, which is the line a Rails 4.1 application uses; adding the
+  # extracted gem there would be a dependency the application does not need.
+  def test_a_rails_4_1_token_model_is_left_alone
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.1.16"\ngem "devise", "~> 3.0.0"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "user.rb"), "class User\n  devise :token_authenticatable\nend\n")
+
+    result = preflight(dir, rails: "4.1.16")
+
+    assert_empty result.repairs.select { |each| each.subject == "devise-token_authenticatable" }
+    refute_includes read(dir, "Gemfile"), "devise-token_authenticatable"
+  end
+
+  # A model that does not name the module is not the rule's application, even on 4.2.
+  def test_a_4_2_devise_app_without_the_module_gets_no_extra_gem
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "4.2.11.3"\ngem "devise", "~> 3.2"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "user.rb"), "class User\n  devise :database_authenticatable\nend\n")
+
+    result = preflight(dir, rails: "4.2.11.3")
+
+    assert_empty result.repairs.select { |each| each.subject == "devise-token_authenticatable" }
+  end
+
   # A requirement is already the statement the exact pin should have been, and rewriting it would
   # be a second opinion about an application's own bound.
   def test_an_interpreter_requirement_is_left_alone

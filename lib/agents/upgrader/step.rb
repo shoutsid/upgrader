@@ -713,15 +713,25 @@ module Agents
       # passes a rung, and the attempt is in the record either way.
       def repair(stages, step, subject:, rerun:, before_the_move: false)
         @control&.check!
-        return nil if subject.nil? || !subject.ran || subject.ok?
+        if subject.nil? || !subject.ran || subject.ok?
+          @out&.puts("  repair: not attempted — the #{before_the_move ? "baseline" : "subject"} " \
+                     "did not run or was green")
+          return nil
+        end
         # A post-move repair is only meaningful against a green baseline: with a red one, the
         # failure is the application's and there is nothing to attribute to the move. The
         # baseline's own repair is the one case where "red" is the subject.
-        return nil if !before_the_move && (@baseline.nil? || !@baseline.ok?)
+        if !before_the_move && (@baseline.nil? || !@baseline.ok?)
+          @out&.puts("  repair: not attempted — the baseline was not green, so the move is not attributable")
+          return nil
+        end
 
         repairer = @repair || Repair
         budget = repair_budget(repairer.budget(@env))
-        return nil if budget.nil?
+        if budget.nil?
+          @out&.puts("  repair: not attempted — no budget (UPGRADER_REPAIR_ATTEMPTS) or the account permits no repair")
+          return nil
+        end
 
         result = repairer.new(
           root: @worktree.root,
