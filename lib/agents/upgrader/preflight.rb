@@ -183,7 +183,7 @@ module Agents
         end
 
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
-          framework_removal_repairs + devise_token_repairs
+          framework_removal_repairs
         decisions = []
         notes = []
         deferred = []
@@ -223,6 +223,11 @@ module Agents
           # with the line or the suite the pin leaves behind cannot load.
           apply_companion(entry, repairs, notes)
         end
+        # **The extracted devise module waits for the pin with the devise line it belongs to.**
+        # The token gem requires devise ~> 3.5, and the application's Gemfile still names the
+        # 4.0-era line at the install stage; adding it there made every era fail to resolve.
+        # After the pin, the devise line is the rung's line and the pair resolves.
+        repairs.concat(devise_token_repairs)
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: [])
       end
 

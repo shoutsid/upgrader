@@ -134,6 +134,11 @@ class PreflightTest < Minitest::Test
     Preflight.new(root: dir, corpus: corpus, ruby: ruby, rails: rails).run
   end
 
+  # The stage after the pin: rung-scoped declarations and the rules that belong with them.
+  def declarations(dir, rails: nil)
+    Preflight.new(root: dir, corpus: FakeCorpus.new, rails: rails).declare_deferred([])
+  end
+
   def read(dir, name) = File.read(File.join(dir, name))
 
   # **An exact interpreter pin is a patch the matrix may not carry.** Ruby 2.7 is one image, and a
@@ -196,7 +201,7 @@ class PreflightTest < Minitest::Test
     File.write(File.join(dir, "app", "models", "user.rb"),
       "class User < ActiveRecord::Base\n  devise :database_authenticatable, :token_authenticatable\nend\n")
 
-    result = preflight(dir, rails: "4.2.11.3")
+    result = declarations(dir, rails: "4.2.11.3")
 
     repair = result.repairs.find { |each| each.subject == "devise-token_authenticatable" }
     refute_nil repair, result.details.inspect
@@ -212,7 +217,7 @@ class PreflightTest < Minitest::Test
     FileUtils.mkdir_p(File.join(dir, "app", "models"))
     File.write(File.join(dir, "app", "models", "user.rb"), "class User\n  devise :token_authenticatable\nend\n")
 
-    result = preflight(dir, rails: "4.1.16")
+    result = declarations(dir, rails: "4.1.16")
 
     assert_empty result.repairs.select { |each| each.subject == "devise-token_authenticatable" }
     refute_includes read(dir, "Gemfile"), "devise-token_authenticatable"
@@ -225,7 +230,7 @@ class PreflightTest < Minitest::Test
     FileUtils.mkdir_p(File.join(dir, "app", "models"))
     File.write(File.join(dir, "app", "models", "user.rb"), "class User\n  devise :database_authenticatable\nend\n")
 
-    result = preflight(dir, rails: "4.2.11.3")
+    result = declarations(dir, rails: "4.2.11.3")
 
     assert_empty result.repairs.select { |each| each.subject == "devise-token_authenticatable" }
   end
