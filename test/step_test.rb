@@ -459,6 +459,27 @@ class StepTest < Minitest::Test
     end
   end
 
+  # A runner whose first boot fails and whose second succeeds: the shape a boot repair is
+  # measured on. Every other command is the ordinary fake.
+  class BootOnceRunner < FakeRunner
+    def initialize
+      super()
+      @boots = 0
+    end
+
+    def run(argv, **kwargs)
+      if argv.join(" ").include?("runner puts Rails.version")
+        @boots += 1
+        if @boots == 1
+          return Command.new(stage: kwargs[:stage], command: argv.join(" "), ran: true,
+            exit_code: 1, seconds: 0.0,
+            output_tail: "NameError: uninitialized constant Widget")
+        end
+      end
+      super
+    end
+  end
+
   # **A double whose update task behaves like the real one in the one way a test needs: it writes a
   # file.** `adopt_added_only` reads the worktree's dirty paths, so a runner that only returns a
   # `Command` can never make `@adopted` non-empty — and a test of the re-preparation that skipped
@@ -1225,6 +1246,36 @@ class StepTest < Minitest::Test
     assert_includes repair_stage.output_tail, "app/models/user.rb"
     assert_operator record.stages.count { |stage| stage.stage == "suite" }, :>=, 2,
       "the suite must be run again after the attempt"
+  end
+
+  # A patch rung is maintenance rather than a framework move, and the suite is the subject the
+  # repair loop is given. The gate on a red boot must not swallow a step whose boot stage is
+  # absent (prelaunchr's 4.2.11 -> 4.2.11.3 record) or green.
+  def test_a_red_suite_on_a_patch_rung_reaches_the_repair_loop
+    dir = track(app)
+    record = step(dir, to: "4.0.1", tests: SequencedTests.new(results: [green, red, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict, record.why
+    refute_nil record.stages.find { |stage| stage.stage == "repair" },
+      "a patch rung never reached the repair loop"
+  end
+
+  # **A boot failure is the same attributable shape as a red suite, one stage earlier.** Every
+  # command the suite runs happens after `bin/rails runner` has loaded the application; when
+  # that fails, repairing the suite measures a tree Rails never loaded. The attempt is made
+  # against the boot's own output and the boot is what is run again.
+  def test_a_red_boot_after_a_green_baseline_is_repaired_before_the_suite
+    dir = track(app)
+    record = step(dir, runner: BootOnceRunner.new, repair: FakeRepair,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict, record.why
+    repair_stage = record.stages.find { |stage| stage.stage == "repair" }
+    refute_nil repair_stage, "the boot failure never reached the agent"
+    assert_includes repair_stage.output_tail, "app/models/user.rb"
+    assert_equal 2, record.stages.count { |stage| stage.stage == "boot" },
+      "the boot must be run again after the attempt"
   end
 
   # **What a repair did is captured while it is knowable, and filed as knowledge.** The record is

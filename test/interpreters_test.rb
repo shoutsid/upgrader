@@ -266,6 +266,27 @@ class InterpretersTest < Minitest::Test
       "the script changes the host's system packages instead of reporting them")
   end
 
+  # **The two eras below 2.1 are built, not pulled.** Docker Hub no longer serves
+  # `ruby:1.9.3` or `ruby:2.0`; a matrix row that named either tag would build a 404, and a
+  # row with no source would build a Debian image with no Ruby in it. The source tarball is
+  # pinned by SHA-256 because the download is made with `-k` (jessie's CA store predates the
+  # chain) and the digest is then the only integrity check.
+  def test_the_pre_2_1_eras_are_built_from_a_pinned_source
+    payload = JSON.parse(File.read(Interpreters::MATRIX_PATH, encoding: "utf-8"))
+    %w[1.9.3 2.0.0].each do |ruby|
+      row = payload.fetch("interpreters").find { |entry| entry["ruby"] == ruby }
+      refute_nil row, "the shipped matrix no longer carries Ruby #{ruby}"
+      assert_match(/\Adebian:jessie@sha256:[0-9a-f]{64}\z/, row["base"],
+        "#{ruby}'s base is not a pinned Debian image: #{row["base"]}")
+      source = row["source"]
+      refute_nil source, "#{ruby} has no source tarball to build"
+      assert_includes source["url"], "cache.ruby-lang.org/pub/ruby/",
+        "#{ruby}'s source is not ruby-lang's own tarball"
+      assert_match(/\A[0-9a-f]{64}\z/, source["sha256"],
+        "#{ruby}'s source is not pinned by SHA-256")
+    end
+  end
+
   def test_the_era_images_and_the_matrix_agree
     root = File.expand_path("..", __dir__)
     dockerfile = File.read(File.join(root, "images", "Dockerfile"), encoding: "utf-8")
@@ -276,6 +297,21 @@ class InterpretersTest < Minitest::Test
       assert_includes dockerfile, "ARG #{argument}", "the Dockerfile takes no #{argument}"
       assert_includes builder, "build-arg \"#{argument}=", "the builder never passes #{argument}"
     end
+    # The pre-2.1 eras are compiled from a tarball, so the Dockerfile and the builder must
+    # agree on both the URL and the digest; a build that receives one without the other
+    # either downloads unverified or fails the checksum against an empty string.
+    %w[RUBY_SOURCE_URL RUBY_SOURCE_SHA256].each do |argument|
+      assert_includes dockerfile, "ARG #{argument}", "the Dockerfile takes no #{argument}"
+      assert_includes builder, "build-arg \"#{argument}=", "the builder never passes #{argument}"
+    end
+    # 1.9.3's RubyGems predates `--no-document`; the image tries the modern spelling and
+    # falls back to the 2014 one, which is the same request.
+    assert_includes dockerfile, "--no-ri --no-rdoc",
+      "the source-built eras cannot install Bundler on a RubyGems that predates --no-document"
+    # A stated suite command runs through `sh -lc`, and a login shell on a source-built era
+    # reset PATH; the profile fragment is what keeps `bundle` findable there.
+    assert_includes dockerfile, "/etc/profile.d/agents-path.sh",
+      "the login shell a suite command runs under does not see the bundle bin directory"
     # **The distribution is read, not passed.** Two of the six eras were wrong about theirs
     # (2.5 is buster, 2.7 is bullseye), and apt pointed at the wrong release answers a
     # package-list error; so the Dockerfile asks the image and the builder has no column

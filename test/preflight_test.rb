@@ -152,6 +152,38 @@ class PreflightTest < Minitest::Test
     assert_includes repair.note, "patch releases of a minor are compatible"
   end
 
+  # **The exact patch can live in `.ruby-version` instead of the Gemfile.** A Gemfile that says
+  # `ruby File.read(".ruby-version").strip` is the same statement one file over, and the preflight
+  # that only read literals left `volunteer_portal` refused by every era: its `.ruby-version` says
+  # 2.7.1 and the 2.7 image is 2.7.8. The Gemfile becomes the floor; the version file is not edited.
+  def test_an_interpreter_pin_read_from_the_version_file_becomes_the_floor_it_meant
+    dir = app(gemfile: %(source "https://rubygems.org"\nruby File.read(".ruby-version").strip\ngem "rails", "5.2.8"\n),
+      lockfile: PLAIN_LOCKFILE)
+    File.write(File.join(dir, ".ruby-version"), "2.7.1\n")
+
+    result = preflight(dir)
+
+    repair = result.repairs.find { |each| each.subject == "ruby" }
+    refute_nil repair, result.details.inspect
+    assert_equal %(ruby ">= 2.7.1"), read(dir, "Gemfile").lines[1].strip
+    assert_equal "2.7.1\n", read(dir, ".ruby-version"),
+      "the version manager's file is not the Gemfile's requirement"
+  end
+
+  # The expression is understood only for the one file it names. A shell command, or a version
+  # file holding a requirement rather than a version, is not a pin this class can relax.
+  def test_an_interpreter_expression_this_class_does_not_understand_is_left_alone
+    gemfile = %(source "https://rubygems.org"\nruby File.read("config/ruby").strip\ngem "rails", "5.2.8"\n)
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "ruby"), "2.7.1\n")
+
+    result = preflight(dir)
+
+    assert_empty result.repairs
+    assert_includes read(dir, "Gemfile"), %(File.read("config/ruby"))
+  end
+
   # A requirement is already the statement the exact pin should have been, and rewriting it would
   # be a second opinion about an application's own bound.
   def test_an_interpreter_requirement_is_left_alone
@@ -683,6 +715,22 @@ class PreflightTest < Minitest::Test
     assert_includes lock_repair.note, "2022"
   end
 
+  def test_a_dead_gem_mirror_is_rewritten_in_both_files
+    gemfile = %(source "https://rubygems.org"\nsource "https://gems.ruby-china.org"\n)
+    gemfile += %(gem "rails", "4.0.0.rc1"\n)
+    lockfile = PLAIN_LOCKFILE.sub("remote: https://rubygems.org/",
+      "remote: https://gems.ruby-china.org/")
+    dir = app(gemfile: gemfile, lockfile: lockfile)
+
+    result = preflight(dir)
+
+    assert_includes read(dir, "Gemfile"), %(source "https://rubygems.org")
+    refute_includes read(dir, "Gemfile"), "ruby-china"
+    refute_includes read(dir, "Gemfile.lock"), "ruby-china"
+    repairs = result.repairs.select { |repair| repair.subject == "dead gem mirror" }
+    assert_equal 2, repairs.size, "the Gemfile's source and the lockfile's remote are one fact in two files"
+  end
+
   # **The other spelling of the dead protocol.** Bundler 1.x expands `github: "owner/name"`
   # to `git://github.com/owner/name.git`, which is why every 2013 Gemfile that pinned a fork
   # broke at once — and rewriting only the literal `git://` left the first real application
@@ -886,7 +934,6 @@ class PreflightTest < Minitest::Test
     cases = {
       "a comment on the line" => %(gem "devise" # pinned for the rails4 branch\n),
       "a multi-line declaration" => %(gem "devise",\n  github: "plataformatec/devise",\n  branch: "rails4"\n),
-      "an option that changes behaviour" => %(gem "devise", require: false\n),
       "platforms" => %(gem "devise", platforms: :ruby\n)
     }
 
@@ -902,6 +949,24 @@ class PreflightTest < Minitest::Test
       assert_includes result.notes.first, "devise"
       assert_includes read(dir, "Gemfile"), declaration.lines.first.strip
     end
+  end
+
+  # **A version rewrite keeps the application's `require: false`.** Measured on `pong`, whose
+  # bootsnap line carries the option and whose boot dies inside bootsnap 1.3.2 on the 2.7 era: the
+  # option is what keeps Bundler from loading it, and `config/boot` loads it itself. Dropping the
+  # option would turn a version repair into a second, unmeasured change.
+  def test_a_replaced_entry_keeps_a_require_false_option
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "bootsnap", ">= 1.1.0", require: false\n),
+      lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "bootsnap", kind: "replaced",
+      replacement: "bootsnap", requirement: "~> 1.4.9",
+      condition: { "ruby_at_least" => "2.6" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.7")
+
+    repair = result.repairs.find { |each| each.subject == "bootsnap" }
+    refute_nil repair, result.details.inspect
+    assert_equal %(gem "bootsnap", "~> 1.4.9", require: false), read(dir, "Gemfile").lines[1].strip
   end
 
   # **The kind that keeps the gem and stops it loading at boot.** `capistrano`/`rvm-capistrano`

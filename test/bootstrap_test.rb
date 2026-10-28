@@ -130,6 +130,51 @@ class BootstrapTest < Minitest::Test
     assert File.file?(File.join(dir, ".env"))
   end
 
+  # **A database example can name its adapter after the filename.** Rails 3/4 applications ship
+  # `database.yml.example.pg` rather than `database.yml.example`; the trailing segment is the
+  # variant, not the target's extension. Measured on `19wu`, whose three examples all promise
+  # `config/database.yml` — the old reading computed `database.yml.pg` and seeded nothing.
+  def test_an_adapter_suffixed_database_example_seeds_the_database_file
+    dir = repo({ "config/database.yml.example.pg" => "adapter: postgresql\n" },
+      ignore: "config/database.yml\n")
+
+    seeds, failures = Bootstrap.seed(dir)
+
+    assert_empty failures
+    assert_equal ["config/database.yml"], seeds.map(&:path)
+    assert_equal "adapter: postgresql\n", File.read(File.join(dir, "config", "database.yml"))
+    assert_includes seeds.first.source, "database.yml.example.pg"
+  end
+
+  # **One target, several variants, and the walk serves PostgreSQL.** `19wu` ships `.pg`,
+  # `.mysql2` and `.sqlite3` examples for the same file; filename order would configure MySQL,
+  # which the era images do not start, and the measurement would fail for the walker's reason
+  # rather than the application's.
+  def test_the_postgres_adapter_variant_wins_when_several_examples_promise_one_target
+    dir = repo({
+      "config/database.yml.example.mysql2" => "adapter: mysql2\n",
+      "config/database.yml.example.pg" => "adapter: postgresql\n",
+      "config/database.yml.example.sqlite3" => "adapter: sqlite3\n"
+    }, ignore: "config/database.yml\n")
+
+    seeds, failures = Bootstrap.seed(dir)
+
+    assert_empty failures
+    assert_equal ["config/database.yml"], seeds.map(&:path)
+    assert_equal "adapter: postgresql\n", File.read(File.join(dir, "config", "database.yml"))
+  end
+
+  # Two targets the repository says are both local config is an ambiguity the rule will not
+  # guess at. The example is still tracked, but neither candidate is uniquely ignored.
+  def test_two_ignored_targets_for_one_example_are_left_alone
+    dir = repo({ "config/settings.example.yml" => "key: value\n" },
+      ignore: "config/settings\nconfig/settings.yml\n")
+
+    seeds, _failures = Bootstrap.seed(dir)
+
+    assert_empty seeds
+  end
+
   # A vendored dependency's test fixture named `something.example` is not this application's
   # configuration, and the prune is what keeps the rule from walking a gem tree.
   def test_a_vendored_example_is_not_local_configuration

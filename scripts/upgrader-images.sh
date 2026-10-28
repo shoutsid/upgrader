@@ -44,7 +44,8 @@ usage() {
 rows() {
   ruby -rjson -e '
     JSON.parse(File.read(ARGV[0])).fetch("interpreters").each do |entry|
-      puts [entry["name"], entry["base"], entry["bundler"], entry["image"], entry["ruby"]].join("\t")
+      puts [entry["name"], entry["base"], entry["bundler"], entry["image"], entry["ruby"],
+        entry.dig("source", "url").to_s, entry.dig("source", "sha256").to_s].join("\t")
     end
   ' "$MATRIX"
 }
@@ -52,20 +53,20 @@ rows() {
 selected() {
   local requested=("$@")
   local found=0
-  # Four columns out of the five `rows` carries, and this is the *only* place the projection
-  # happens: `read` gives the remainder of the line to its last variable, so a five-column
-  # row handed to the build's own four-column read arrived as an image reference ending in
-  # "\t2.1.10" — "invalid tag … invalid reference format", which is how this was found.
+  # Six columns out of the seven `rows` carries, and this is the *only* place the projection
+  # happens: `read` gives the remainder of the line to its last variable, so a seven-column
+  # row handed to the build's own six-column read arrived as a sha that ended in the next
+  # field — "invalid reference format", which is how this was found when `ruby` sat here.
   # The no-names path takes the same projection, because it used to hand `rows` straight
   # through and the bug only showed on a full build.
-  while IFS=$'\t' read -r name base bundler image _ruby_version; do
+  while IFS=$'\t' read -r name base bundler image _ruby_version source_url source_sha; do
     if [ "${#requested[@]}" -eq 0 ]; then
-      printf '%s\t%s\t%s\t%s\n' "$name" "$base" "$bundler" "$image"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$base" "$bundler" "$image" "$source_url" "$source_sha"
       continue
     fi
     for want in "${requested[@]}"; do
       if [ "$want" = "$name" ]; then
-        printf '%s\t%s\t%s\t%s\n' "$name" "$base" "$bundler" "$image"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$base" "$bundler" "$image" "$source_url" "$source_sha"
         found=$((found + 1))
       fi
     done
@@ -77,12 +78,20 @@ selected() {
 }
 
 build() {
-  selected "$@" | while IFS=$'\t' read -r name base bundler image; do
+  selected "$@" | while IFS=$'\t' read -r name base bundler image source_url source_sha; do
+    if [ -n "$source_url" ] && [ -z "$source_sha" ]; then
+      echo "the matrix names a source for $name but no SHA-256" >&2
+      exit 2
+    fi
     echo "building $image — Ruby $name (base $base)"
     previous="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)"
+    arguments=(--build-arg "BASE_IMAGE=$base" --build-arg "BUNDLER=$bundler")
+    if [ -n "$source_url" ]; then
+      arguments+=(--build-arg "RUBY_SOURCE_URL=$source_url"
+        --build-arg "RUBY_SOURCE_SHA256=$source_sha")
+    fi
     docker build \
-      --build-arg "BASE_IMAGE=$base" \
-      --build-arg "BUNDLER=$bundler" \
+      "${arguments[@]}" \
       -t "$image" \
       -f "$DOCKERFILE" "$CONTEXT"
     current="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)"
@@ -115,7 +124,7 @@ prune() {
 }
 
 list() {
-  rows | while IFS=$'\t' read -r name base bundler image ruby_version; do
+  rows | while IFS=$'\t' read -r name base bundler image ruby_version source_url source_sha; do
     present="$(docker image inspect -f '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
     if [ -n "$present" ]; then
       printf '%-4s ruby %-8s %s\n' "$name" "$ruby_version" "$present"

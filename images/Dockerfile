@@ -22,6 +22,21 @@ FROM ${BASE_IMAGE}
 # application arrives with. Each entry of the matrix names its own version.
 ARG BUNDLER=2.6.9
 
+# **Before 2.1 there is no official `ruby` image left to start from.** Docker Hub no longer
+# serves `ruby:1.9.3` or `ruby:2.0` (nor the `-p551`/`-p648` spellings), and the same is true
+# of the community images this was checked against. A Rails 3.2 application that predates
+# Ruby 2.0 support cannot be walked without one, so those two eras start from a pinned
+# `debian:jessie` and build the interpreter from ruby-lang's source tarball. The empty
+# default is what keeps every other era a `FROM ruby:<version>`: a build that did not name a
+# source must not silently compile a second copy of an interpreter the base already carries.
+#
+# **The download is made with `-k` and verified by SHA-256, and the order is the point.**
+# jessie's CA bundle predates the chain cache.ruby-lang.org serves now, so a strict TLS
+# verification fails on a host whose only job is to compile a 2013 interpreter. The digest
+# is the integrity check; TLS would only be a second, and an unavailable, one.
+ARG RUBY_SOURCE_URL=
+ARG RUBY_SOURCE_SHA256=
+
 # **The browser a live-Debian era ships as its default, pinned, and why the distribution's own is
 # not.** bookworm's `chromium` is 156 today and a different number next month, so the pair a step
 # drives moves under it — and the application's test stack does not. Measured on the ohana walk:
@@ -190,7 +205,44 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
 
-RUN gem install bundler -v "$BUNDLER" --no-document
+# **The source-built eras get the same gem home the official images have**, so the walker's
+# `bundle` is the one this image installed and `start.sh`'s chown hands the same directory
+# over. Without it, a 1.9.3 build installs Bundler into `/usr/local/lib/ruby/gems/1.9.1`,
+# the walker's `GEM_HOME` names an empty directory, and the first `bundle install` resolves
+# against a different set of gems than the image was built with.
+ENV GEM_HOME=/usr/local/bundle
+ENV PATH=/usr/local/bundle/bin:${PATH}
+
+# **A login shell is how a stated suite command is run, and `/etc/profile` resets `PATH`.**
+# `bundle exec rspec` is a string, so the machine hands it to `sh -lc`; on the official images
+# the profile keeps the gem bin directory, but a source-built era had only the `ENV` above, and
+# the first suite on 1.9.3 died with `sh: 1: bundle: not found` — after the pin, the edits and
+# the bundle had all succeeded. The profile fragment is what makes the shell see the same
+# `PATH` the direct `docker exec` commands do, for every era rather than just the two that
+# happened to carry a profile of their own.
+RUN printf 'export PATH="/usr/local/bundle/bin:$PATH"\n' > /etc/profile.d/agents-path.sh
+
+# Build the interpreter only for the eras Docker Hub no longer serves. The configure line is
+# the one the official images use: no docs, shared libruby so native extensions can link it.
+RUN set -eux; \
+    if [ -n "$RUBY_SOURCE_URL" ]; then \
+      curl -kfsSL -o /tmp/ruby.tar.gz "$RUBY_SOURCE_URL"; \
+      echo "$RUBY_SOURCE_SHA256  /tmp/ruby.tar.gz" | sha256sum -c -; \
+      mkdir -p /usr/src/ruby; \
+      tar -xzf /tmp/ruby.tar.gz -C /usr/src/ruby --strip-components=1; \
+      cd /usr/src/ruby; \
+      ./configure --disable-install-doc --enable-shared; \
+      make -j"$(nproc)"; \
+      make install; \
+      rm -rf /usr/src/ruby /tmp/ruby.tar.gz; \
+      ruby -v; \
+    fi
+
+# **1.9.3's RubyGems predates `--no-document`**, so the modern spelling is tried first and
+# the 2014 one is the fallback. Both are the same request: install Bundler without the
+# documentation that would otherwise be built for a gem the image never reads.
+RUN gem install bundler -v "$BUNDLER" --no-document || \
+    gem install bundler -v "$BUNDLER" --no-ri --no-rdoc
 
 # **The libpq socket default is `/var/run/postgresql`, and it must exist for an application
 # that names no host to connect at all.** Rails' own generated `database.yml` before 6.0 has

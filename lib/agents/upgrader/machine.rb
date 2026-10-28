@@ -391,6 +391,14 @@ module Agents
 
         def interpreter = "ruby #{entry.ruby}"
 
+        # **A database the application names only by URL.** `services.sh` reads a keyed
+        # `database.yml` to decide whether to start PostgreSQL; a Heroku-style file whose test
+        # section is `url: <%= ENV["DATABASE_URL"] %>` names no adapter at all, so the script
+        # started nothing and the application died on `nil` before its first command. Measured
+        # on `limestone` at the 6.1 patch rung. The URL names the role and database the script
+        # creates; an application with a keyed file ignores it.
+        def database_url = "postgres://app@127.0.0.1:#{PG_PORT}/app"
+
         # The interpreter's own version, for the routing question ("can these gems run on
         # the Ruby this step executes on?") which is asked of the machine rather than of the
         # process.
@@ -660,6 +668,9 @@ module Agents
         def interpreter = "ruby #{entry.ruby}"
         def ruby_version = entry.ruby
         def era = entry.name
+        # The sibling container publishes the port the host connects to, and the URL-only
+        # configuration has to name that port rather than the container's own 5432.
+        def database_url = "postgres://app@127.0.0.1:#{@services.pg_port}/app"
         # The record's `image` field for a machine that has none: where the interpreter came
         # from, which is the closest honest analogue of an image reference.
         def image = "rvm #{rvm_name}@#{@gemset}"

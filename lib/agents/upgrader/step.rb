@@ -425,6 +425,13 @@ module Agents
         style_stage(stages)
         checkpoint("format the application")
         @boot = boot(stages)
+        # **A boot failure is attributable to the move in exactly the way a red suite is, and it
+        # reaches the agent before the suite does.** Measured on several of the first walks: the
+        # application cannot load its own classes, so the suite that follows fails for the boot's
+        # reason, and repairing the suite would be measuring a tree that never booted. The loop's
+        # premise — a green baseline before, a red subject after — is unchanged; only the subject
+        # is the boot command rather than the suite.
+        repair(stages, step, subject: @boot, rerun: -> { @boot = boot(stages) })
         missing_gems(stages)
         @suite = suite(stages)
 
@@ -446,8 +453,13 @@ module Agents
         # **The agentic half, and the last thing before the verdict.** A step that ran a green
         # baseline and a red suite has a failure attributable to the move, which is what makes
         # repair a measurement rather than a hope; the attempt(s) and the suite they were
-        # followed by are stages, so the record says how the rung was reached.
-        repair(stages, step, subject: @suite, rerun: -> { @suite = run_suite(stages, Record::SUITE) })
+        # followed by are stages, so the record says how the rung was reached. A boot that is
+        # still red explains the suite, and repairing behind it measures a tree Rails never
+        # loaded — the boot's own attempt already had its chance. A patch rung has no boot
+        # stage at all, and the suite is the only subject there is.
+        if @boot.nil? || @boot.ok?
+          repair(stages, step, subject: @suite, rerun: -> { @suite = run_suite(stages, Record::SUITE) })
+        end
 
         # **The rest of the gate, after the suite and the repairs it needed.** A check that ran
         # before a repair would judge a tree the suite never saw. The suite is not run again here:
@@ -833,8 +845,16 @@ module Agents
 
       def preflight_stage(stages, step)
         corpus = @corpus || Corpus.new(base: @api)
+        # **A patch checkpoint has no rung floor of its own**, so a `ruby_below` entry was
+        # evaluated against nothing and skipped — measured on the 3.2.9 -> 3.2.22.5 move, where
+        # multipart-post 2.2.0 was pulled in and the suite died on `Module#deprecate_constant`.
+        # The application's own declared interpreter is the best fact this stage has when the
+        # step carries no floor; it is a hint, exactly as it is for the interpreter choice, and
+        # an unreadable declaration stays nil rather than becoming a guess.
+        declared = @lockfile.declared_ruby.to_s[/\d+(?:\.\d+)*/]
         @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
-          ruby: step["requires_ruby"] || @lockfile.locked_ruby, rails: rung_of(step))
+          ruby: step["requires_ruby"] || @lockfile.locked_ruby || declared,
+          rails: rung_of(step))
         result = @preflight.run
         # **What the preflight could not do because the Gemfile and the pin did not agree yet.**
         # A rung-scoped entry — a declaration *or* a rewrite of a line the application already
@@ -1539,7 +1559,12 @@ module Agents
       def services_stage(stages)
         return nil unless @machine.services?
 
-        stages << command(Record::SERVICES, @stack.services_command, chdir: @worktree.root)
+        # **The stage that reads `database.yml` sees the same environment as the commands it
+        # precedes.** A URL-only file needs `DATABASE_URL` to name an adapter at all; without
+        # it the script concluded there was no database and started none, and the boot after it
+        # died on the file's own `nil`.
+        stages << command(Record::SERVICES, @stack.services_command, chdir: @worktree.root,
+          env: application_env)
         stages.last
       end
 
@@ -1964,7 +1989,26 @@ module Agents
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
         @tests.machine_test_env(@stack).merge(bundle_env(@machine))
-          .merge(project_env).merge(@suite_env).merge(browser_env)
+          .merge(database_env).merge(project_env).merge(@suite_env).merge(browser_env)
+      end
+
+      # **A `database.yml` that names only `DATABASE_URL` still needs the database named.**
+      # Measured on `limestone` at the 6.1 patch rung: every environment in its file is
+      # `url: <%= ENV["DATABASE_URL"].gsub(...) %>`, the services stage read no adapter and
+      # started nothing, and the boot died on `undefined method gsub for nil`. The machine's
+      # URL points at the server its own services stage starts; a keyed file ignores it, and a
+      # caller's own value (a suite env file, an account's env) is merged after this one.
+      def database_env
+        return {} if @worktree.nil?
+
+        path = File.join(@worktree.root, "config", "database.yml")
+        return {} unless File.file?(path)
+        return {} unless File.read(path, encoding: "utf-8").match?(/ENV\[\s*["']DATABASE_URL["']\s*\]/)
+        return {} unless @machine.respond_to?(:database_url)
+
+        { "DATABASE_URL" => @machine.database_url }
+      rescue SystemCallError
+        {}
       end
 
       # **The cache the machine seeded, named the way the driver gem reads it.** Only a machine

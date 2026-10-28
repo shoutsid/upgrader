@@ -22,7 +22,7 @@ class StepMachineTest < Minitest::Test
 
   # The matrix's eras, in the order the selection tries them for this lockfile (no `ruby` line
   # and no `RUBY VERSION`, so the floor is the only filter and the walk starts at the oldest).
-  ERAS = %w[2.1 2.2 2.5 2.7 3.1 3.2 3.3].freeze
+  ERAS = %w[1.9.3 2.0 2.1 2.2 2.5 2.7 3.1 3.2 3.3].freeze
 
   LOCKFILE = <<~LOCK
     GEM
@@ -477,6 +477,8 @@ class StepMachineTest < Minitest::Test
       flags = env.flat_map { |name, value| ["-e", "#{name}=#{value}"] }
       [["fake", era, *argv, *flags], {}]
     end
+
+    def database_url = "postgres://app@127.0.0.1:5432/app"
   end
 
   # A queue that asks for a later release than the next rung: the plan still starts at the
@@ -691,9 +693,15 @@ class StepMachineTest < Minitest::Test
   def test_the_first_era_that_installs_the_bundle_is_the_one_the_step_runs_on
     dir = app
     fleet = machines
+    # The shipped matrix now starts at 1.9.3, so the declaration names the pair this test is
+    # about; without it the first era would be 1.9.3 and the probe would be a different test.
+    project = Agents::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "4.1.0",
+      "eras" => %w[2.1 2.2], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    })
     runner = FakeRunner.new(answers: { "fake 2.1 bundle install" => [1, "json 1.7.7 fails to build"] })
     tests = FakeTests.new
-    record = step(dir, machines: fleet, runner: runner, tests: tests).run
+    record = step(dir, machines: fleet, runner: runner, tests: tests, project: project).run
 
     assert_equal "passed", record.verdict, record.why
     assert_equal "ruby 2.2", record.interpreter
@@ -1355,6 +1363,30 @@ class StepMachineTest < Minitest::Test
     assert_equal "passed", record.verdict, record.why
   end
 
+  # **A test section that names only `DATABASE_URL` gets the machine's database.** Measured on
+  # `limestone`: the file's test block is `url: <%= ENV["DATABASE_URL"].gsub(...) %>`, the services
+  # stage read no adapter and started nothing, and the boot died on `undefined method gsub for nil`.
+  # The URL is the walker's, not the application's; a keyed file ignores it.
+  def test_a_url_only_database_config_gets_the_machine_database_url
+    dir = app
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "database.yml"),
+      "test:\n  url: <%= ENV['DATABASE_URL'] %>\n")
+    runner = FakeRunner.new
+    machines = ERAS.to_h { |era| [era, EnvCarryingMachine.new(era)] }
+
+    record = step(dir, machines: machines, runner: runner).run
+
+    command = runner.calls.find { |line| line.include?("DATABASE_URL=") }
+    refute_nil command, "no command carried a DATABASE_URL: #{runner.calls.grep(/db:create|runner/).first(2)}"
+    assert_includes command, "DATABASE_URL=postgres://app@127.0.0.1:5432/app"
+    services = runner.calls.find { |line| line.include?("agents-services") }
+    refute_nil services, "the services stage did not run"
+    assert_includes services, "DATABASE_URL=postgres://app@127.0.0.1:5432/app",
+      "the stage that reads database.yml must see the URL it names"
+    assert_equal "passed", record.verdict, record.why
+  end
+
   # **A browser suite is answered by the machine, not by the application's tree.** The connect
   # wizard declares `chrome` for a suite that drives a browser, and the era container cannot run
   # Chromium's sandbox — its setuid helper builds a network and a PID namespace, which needs
@@ -1386,7 +1418,7 @@ class StepMachineTest < Minitest::Test
     assert_includes install.command, "chromium chromium-driver"
     flags = browser.find { |stage| stage.command.include?("/etc/chromium.d/") }
     refute_nil flags, "the launcher was never told how to start in a container"
-    assert_includes flags.command, "fake-root 2.1", "the drop-in was not written as root"
+    assert_includes flags.command, "fake-root 1.9.3", "the drop-in was not written as root"
     assert_includes flags.command, "--no-sandbox"
     # The declaration says `pinned`, so the two names the suite and the driver gem read are
     # pointed at the image's verified build, and the versions are read back into the record.
@@ -1399,13 +1431,13 @@ class StepMachineTest < Minitest::Test
     assert_includes pin.command, "chromium --version"
     seed = browser.find { |stage| stage.command.include?("chromedriver.version") }
     refute_nil seed, "the driver the image installs was never offered to the gem"
-    assert_includes seed.command, "/agents/home/browser/2.1/webdrivers"
+    assert_includes seed.command, "/agents/home/browser/1.9.3/webdrivers"
     assert_includes seed.command, "chromedriver --version"
 
     # The cache is where the gem reads it, the era is part of its name, and the application's
     # own tree holds nothing.
     assert_includes runner.calls.join("\n"),
-      "-e WD_INSTALL_DIR=/agents/home/browser/2.1/webdrivers",
+      "-e WD_INSTALL_DIR=/agents/home/browser/1.9.3/webdrivers",
       "no application command was told where the seeded driver is"
     assert_empty Dir.glob(File.join(dir, "**", "*agents*")),
       "the browser answer was written into the application's checkout"
@@ -1458,7 +1490,7 @@ class StepMachineTest < Minitest::Test
     assert_equal 1, packages.length, "the packages stage ran once per started era: #{packages.length}"
     install = packages.first
     assert install.ok?, install.output_tail
-    assert_includes install.command, "fake-root 2.1 sh -lc apt-get update"
+    assert_includes install.command, "fake-root 1.9.3 sh -lc apt-get update"
     assert_includes install.command, "--no-install-recommends libidn11-dev cmake"
     before = record.stages.index(install)
     bundle = record.stages.index { |stage| stage.command.include?("bundle install") }
@@ -1672,22 +1704,22 @@ class StepMachineTest < Minitest::Test
     ledger = Agents::Upgrader::Ledger.new(path: File.join(dir, "ledger.json"), machine: "ruby 3.3.12")
     ledger.record(repo: "acme/old", commit: "abc12345", from_version: "4.0.0.rc1",
       to_version: "4.1.0", verdict: "passed",
-      machine: "ruby 2.1 (era-2.1@sha256:#{"f" * 64})", era: "2.1")
+      machine: "ruby 1.9.3 (era-1.9.3@sha256:#{"f" * 64})", era: "1.9.3")
 
     fleet = machines
     assert_nil step(dir, machines: fleet, ledger: ledger).run,
       "the same machine would run this move again, so it should be settled"
-    refute fleet["2.1"].started
+    refute fleet["1.9.3"].started
 
     # The same era, rebuilt: the tag is the same and the bytes are not, so the stamp differs
     # and the move is walked again.
     rebuilt = machines
     ledger.record(repo: "acme/old", commit: "abc12345", from_version: "4.0.0.rc1",
       to_version: "4.1.0", verdict: "passed",
-      machine: "ruby 2.1 (era-2.1@sha256:#{"e" * 64})", era: "2.1")
+      machine: "ruby 1.9.3 (era-1.9.3@sha256:#{"e" * 64})", era: "1.9.3")
     record = step(dir, machines: rebuilt, ledger: ledger).run
 
     assert_equal "passed", record.verdict
-    assert rebuilt["2.1"].started, "a move settled under another machine was not re-opened"
+    assert rebuilt["1.9.3"].started, "a move settled under another machine was not re-opened"
   end
 end

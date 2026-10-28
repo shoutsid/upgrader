@@ -490,11 +490,11 @@ module Agents
         return unless @corpus.respond_to?(:presentation)
 
         Republish.new(
-          home: @home, token: github_token(project.repo_url), out: @out,
+          home: @home, token: github_token(project.repository), out: @out,
           report_base: ENV["UPGRADER_PUBLIC_URL"], ledger: @ledger, corpus: @corpus
-        ).apply_presentations(repository: project.repo_url)
+        ).apply_presentations(repository: project.repository)
       rescue Corpus::Refused, Corpus::Unreachable => e
-        @out.puts("presentation: #{project.repo_url} could not apply a lead: #{e.message}")
+        @out.puts("presentation: #{project.repository} could not apply a lead: #{e.message}")
       end
 
       # **The account's handoff switch, with the CLI as an override.** A loop started with

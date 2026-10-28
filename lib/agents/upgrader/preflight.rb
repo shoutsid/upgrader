@@ -63,6 +63,17 @@ module Agents
       # application's install stuck cloning over a protocol GitHub stopped accepting.
       GITHUB_OPTION = /github:\s*(["'])([^"']+)\1/
 
+      # **A gem mirror is a host, and a host that no longer resolves is the same class of fact
+      # as a protocol that no longer speaks.** Measured on 19wu's 4.0 rung: the Gemfile's
+      # `source "https://gems.ruby-china.org"` (and the lockfile's `remote:`) made every era's
+      # `bundle install` exit 17 with `Could not reach host gems.ruby-china.org`, before any
+      # gem could be resolved. The project's other source is rubygems.org, so the repair is the
+      # canonical host rather than a guess at the mirror's successor (which is also unreachable
+      # from this deployment). The replacement is the host alone; the scheme and path stay.
+      DEAD_GEM_SOURCES = {
+        "gems.ruby-china.org" => "rubygems.org"
+      }.freeze
+
       # One repair that was written: the line before, the line after, and the gem it is
       # about. The field names are `Applier::Applied`'s so a record can show a preflight
       # repair and a scanned edit the same way.
@@ -72,6 +83,16 @@ module Agents
       # whatever follows the version. The rest is kept out of the rewrite: an `engine:` names a
       # different interpreter, and a comment is a sentence this class has no business editing.
       RUBY_DIRECTIVE = /\A(\s*)ruby\s+(["'])([^"']+)\2(.*)\z/
+
+      # **The same exact patch, read from the file a version manager owns.** A Gemfile can say
+      # `ruby File.read(".ruby-version").strip`, and the version then lives one file over. Measured
+      # on `volunteer_portal`: the Gemfile carries this line and `.ruby-version` says `2.7.1`, so the
+      # preflight saw no literal to relax, every era was refused by Bundler with "Your Ruby version
+      # is 2.7.8, but your Gemfile specified 2.7.1", and the baseline never ran. The Gemfile line
+      # becomes the floor the application meant; `.ruby-version` is left for the developer's version
+      # manager, which does not understand a requirement.
+      VERSION_FILE_DIRECTIVE =
+        /\A(\s*)ruby\s+File\.read\(\s*(["'])\.ruby-version\2\s*\)\s*(?:\.strip)?\s*\z/
 
       # Nothing here is an application.
       class NotAnApplication < StandardError; end
@@ -224,7 +245,7 @@ module Agents
         lines = File.binread(path).split("\n", -1)
         changed = false
         repairs = lines.each_with_index.filter_map do |line, index|
-          after = relaxed_ruby_pin(line)
+          after = relaxed_ruby_pin(line) || relaxed_version_file_pin(line)
           next if after.nil?
 
           lines[index] = after
@@ -249,6 +270,26 @@ module Agents
         return nil unless version.match?(/\A\d+(?:\.\d+)*\z/)
 
         %(#{indent}ruby #{quote}>= #{version}#{quote})
+      end
+
+      # The version-file form of the same pin: the Gemfile's expression is understood only
+      # when it reads `.ruby-version` and that file holds a bare version. Anything else — a
+      # shell command, a second file, a requirement already — is a declaration this class
+      # does not rewrite.
+      def relaxed_version_file_pin(line)
+        match = VERSION_FILE_DIRECTIVE.match(line)
+        return nil unless match
+
+        path = File.join(@root, ".ruby-version")
+        return nil unless File.file?(path)
+
+        version = File.read(path, encoding: "utf-8").strip
+        return nil unless version.match?(/\A\d+(?:\.\d+)*\z/)
+
+        indent, quote = match.captures
+        %(#{indent}ruby #{quote}>= #{version}#{quote})
+      rescue SystemCallError
+        nil
       end
 
       # `git://` was accepted until GitHub turned it off in 2022, and every 2013 Gemfile that
@@ -411,6 +452,13 @@ module Agents
       # checkpoint of the first real application: the install succeeded from the lock and the
       # pin, which is the stage that moves Rails, died on the shorthand it had just rewritten.
       def protocol_line(line, revisions = {})
+        DEAD_GEM_SOURCES.each do |dead, live|
+          next unless line.include?(dead)
+
+          return [line.gsub(dead, live), "dead gem mirror",
+            "`#{dead}` no longer resolves, so every era's install stops before a gem is read; " \
+            "`#{live}` is where the same gems are published"]
+        end
         if line.include?("git://")
           return [line.gsub("git://", "https://"), "git://",
             "GitHub stopped accepting the git:// protocol in 2022; https:// is the same " \
@@ -785,6 +833,10 @@ module Agents
         else
           Gem::Version.new(named) < Gem::Version.new(value)
         end
+      rescue ArgumentError
+        # A fact this stage cannot place — a range read as a version, a malformed floor — does
+        # not meet the clause. The alternative is a preflight that dies on a digest entry.
+        false
       end
 
       # **Why an entry did not apply, in the cases that differ.** A condition this move does not meet,
@@ -865,6 +917,15 @@ module Agents
         tokens = line.sub(DECLARATION, "").gsub(/"[^"]*"|'[^']*'/, "\"\"")
                      .scan(/([a-z_]+):/).flatten.uniq
         extra = tokens - SOURCE_OPTIONS
+        # **`require: false` is preserved by a version rewrite, so it is not a reason to skip
+        # one.** Measured on `pong`: its bootsnap line is `gem 'bootsnap', '>= 1.1.0', require:
+        # false`, and the 2.7 boot dies inside bootsnap 1.3.2 before Rails exists; the option is
+        # what keeps Bundler from loading it, and config/boot loads it itself. Rewriting the
+        # version while appending the same option changes nothing else on the line. A `require:`
+        # with any other value keeps the old refusal, because this class would be dropping a
+        # decision it does not understand.
+        extra -= ["require"] if %w[replaced updated].include?(kind) &&
+          line.match?(/\brequire:\s*false\b/)
         return nil if extra.empty?
 
         "carries #{extra.sort.join(", ")}, which changes what the application does rather " \
@@ -889,11 +950,16 @@ module Agents
           return nil if replacement.empty?
 
           requirement = entry["requirement"].to_s
-          if requirement.empty?
+          after = if requirement.empty?
             %(#{indent}gem "#{replacement}")
           else
             %(#{indent}gem "#{replacement}", "#{requirement}")
           end
+          # The one option a version rewrite keeps, for the reason `unrewritable` gives: the
+          # application's statement about whether Bundler should load the gem is not the
+          # version's business.
+          after = "#{after}, require: false" if line.match?(/\brequire:\s*false\b/)
+          after
         when "forked"
           # The gem keeps its name; only where it comes from changes. No requirement: the fork's
           # own gemspec states what it accepts, and a version beside a Git source would pin a

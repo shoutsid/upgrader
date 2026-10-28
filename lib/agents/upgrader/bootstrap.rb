@@ -55,7 +55,23 @@ module Agents
       # one suffix further left. Measured on `ohana-api`: the example was tracked and the target
       # ignored, and the rule looked past it, so `bin/rails` died on `Figaro::MissingKeys` for every
       # stage after the install.
+      #
+      # **The trailing segment is not always the target's extension.** Rails 3/4 applications
+      # commonly ship one example per adapter — `config/database.yml.example.pg`,
+      # `.example.mysql2`, `.example.sqlite3` — where `.pg` names the variant and the target is
+      # `config/database.yml`. Measured on `19wu`: the file was ignored and the examples tracked,
+      # and the rule computed `config/database.yml.pg`, so no database file was seeded and every
+      # rung's boot died on `Could not load database configuration`. The two readings are told
+      # apart by git: the target is the one the repository ignores, which is the same question
+      # the rule already asks.
       EXAMPLE = %r{\.(example|sample)(\.[^./]+)?\z}
+
+      # **When several examples promise the same target, the walk configures the one it can
+      # serve.** `19wu` ships PostgreSQL, MySQL and SQLite examples; the era images start a
+      # PostgreSQL server only, so choosing by filename order would configure MySQL and measure
+      # a failure the walk itself caused. The preference is the walker's capability, not a guess
+      # about the application: PostgreSQL first, then the adapters the image does not start.
+      ADAPTER_PREFERENCE = %w[pg postgres postgresql mysql2 mysql sqlite3 sqlite].freeze
 
       def self.seed(root, out: nil)
         new(root: root, out: out).seed
@@ -71,6 +87,11 @@ module Agents
         seeds = []
         failures = []
         candidates.each do |source, target|
+          # **One target is configured once.** Several examples can promise it — one per
+          # adapter — and the first is the preferred one; copying the rest over it would make
+          # the record claim three seeds and leave the last filename's content.
+          next if File.exist?(target)
+
           FileUtils.cp(source, target)
           seed = Seed.new(path: relative(target), source: relative(source))
           seeds << seed
@@ -99,15 +120,36 @@ module Agents
 
           match = path.match(EXAMPLE)
           next if match.nil?
-
-          target = path.sub(EXAMPLE, match[2].to_s)
-          next if File.exist?(target)
-          next unless ignored?(target)
           next unless tracked?(path)
+
+          target = targets(path, match).find do |candidate|
+            !File.exist?(candidate) && ignored?(candidate)
+          end
+          next if target.nil?
 
           found << [path, target]
         end
-        found.sort_by { |source, _target| source }
+        found.sort_by { |source, target| [relative(target), rank(source), relative(source)] }
+      end
+
+      # **The two readings of the suffix, decided by git.** `application.example.yml` promises
+      # `application.yml`; `database.yml.example.pg` promises `database.yml`, with `.pg` naming
+      # the variant. Both are computed, and the caller takes the one the repository ignores — a
+      # file git does not ignore is not local configuration, which is the rule's first question.
+      # More than one ignored candidate is an ambiguity this class will not resolve by guessing.
+      def targets(path, match)
+        base = path.sub(EXAMPLE, "")
+        suffix = match[2].to_s
+        options = [base, suffix.empty? ? nil : "#{base}#{suffix}"].compact.uniq
+        ignored = options.select { |candidate| ignored?(candidate) }
+        ignored.size == 1 ? ignored : []
+      end
+
+      # PostgreSQL first because that is the server the era images start; the other adapters
+      # are ranked only so that a repository shipping several examples has a stable answer.
+      def rank(source)
+        variant = File.basename(source).split(".").last
+        ADAPTER_PREFERENCE.index(variant) || ADAPTER_PREFERENCE.length
       end
 
       # A path git ignores. `--no-index` is deliberately absent: the question is about the file
