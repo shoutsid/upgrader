@@ -1338,6 +1338,24 @@ class StepTest < Minitest::Test
     assert_includes record.why, "before anything was moved"
   end
 
+  # The account's permission is what the production walk uses, and the record carries it as a
+  # `repair` object. A project that names `fallback` must take the same path as the budget-only
+  # test above; measured on the first walks, this is the fact that decides whether a red
+  # baseline reaches the agent at all.
+  def test_a_project_that_allows_fallback_repairs_a_red_baseline
+    dir = track(app)
+    project = Agents::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/storefront", "from" => "4.0.0.rc1", "to" => "6.0.0",
+      "repair" => { "policy" => "fallback", "model" => "" }
+    })
+    record = step(dir, project: project, tests: SequencedTests.new(results: [red, green, green, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_includes record.stages.map(&:stage), "repair",
+      "a project whose account permits fallback never reached the baseline repair"
+  end
+
   # And with no budget there is no model call at all: the step is `unverified`, which is the
   # honest verdict for an application whose suite was already red.
   def test_a_red_baseline_with_no_repair_budget_is_unverified_and_spends_nothing
