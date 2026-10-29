@@ -842,6 +842,8 @@ module Agents
 
       def repair_stage(attempt)
         tail = attempt.output_tail.to_s
+        stream = attempt.respond_to?(:stream_sentence) ? attempt.stream_sentence : ""
+        tail = "#{tail}\n#{stream}" unless stream.to_s.empty?
         unless attempt.changed.empty?
           tail = "#{tail}\nfiles changed by this attempt: #{attempt.changed.join(", ")}"
         end

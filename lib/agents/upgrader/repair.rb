@@ -42,6 +42,13 @@ module Agents
       ENV_MODEL = "UPGRADER_REPAIR_MODEL"
       ENV_AGENT = "UPGRADER_REPAIR_AGENT"
       ENV_BINARY = "UPGRADER_REPAIR_BINARY"
+      # **Where the agent's own event stream is kept.** The record is a summary; a model that
+      # read the wrong file, looped on a tool, or died with the provider's reset in a JSON error
+      # cannot be understood from a 60-line tail. The stream is opencode's native JSON events,
+      # written whole beside the config, and the session id names the same run in
+      # `opencode export`. `UPGRADER_REPAIR_STREAMS` moves it for a deployment that collects
+      # artifacts elsewhere.
+      ENV_STREAMS = "UPGRADER_REPAIR_STREAMS"
 
       # Off, and ten minutes per attempt when it is not: one attempt is a model call with a
       # tool loop around it, and a rung's suite is measured in minutes rather than seconds.
@@ -70,9 +77,25 @@ module Agents
       # minutes and was recorded as "did not run", which stopped the loop before the suite ever
       # looked at what it had changed. An attempt that timed out is measured like any other.
       Attempt = Struct.new(:number, :command, :ran, :timed_out, :exit_code, :seconds, :output_tail,
-        :changed, :limited, :limit_until, keyword_init: true) do
+        :changed, :limited, :limit_until, :stream_path, :stream_log, :session,
+        :event_count, :tool_count, :error_count, :tokens, :cost, keyword_init: true) do
         def ok? = ran && !timed_out && !exit_code.nil? && exit_code.zero?
         def limited? = limited == true
+
+        # The line the record and the operator both read. It names the stream and the opencode
+        # session, because those are the two facts that turn "the model failed" into something
+        # a person can open and finish reading.
+        def stream_sentence
+          return "" if stream_path.to_s.empty?
+
+          parts = ["session #{session}"]
+          parts << "#{event_count} event(s)"
+          parts << "#{tool_count} tool call(s)" if tool_count.to_i.positive?
+          parts << "#{error_count} error(s)" if error_count.to_i.positive?
+          parts << "#{tokens} token(s)" if tokens.to_i.positive?
+          parts << format("$%.6f", cost) if cost.to_f.positive?
+          "stream #{stream_path} (#{parts.join(", ")})"
+        end
       end
 
       # **What a repair did, kept while it is still knowable.** The record is written from the final
@@ -239,7 +262,8 @@ module Agents
       end
 
       def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
-                     on_attempt: nil, before_the_move: false, config_dir: nil, home: nil)
+                     on_attempt: nil, before_the_move: false, config_dir: nil, home: nil,
+                     stream_dir: nil)
         @root = root
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
@@ -273,6 +297,11 @@ module Agents
         # is also where a credential belongs: a token in an image layer is a token in
         # every container that image starts.
         @home = home.to_s
+        # **The stream belongs to the agent's own directory, not the application's tree.** The
+        # config already lives under `repair/` in the client's home; the raw event stream sits
+        # beside it, so a walk never writes an artifact into somebody's repository.
+        @stream_dir = stream_dir.to_s
+        @stream_dir = default_stream_dir if @stream_dir.empty?
         # **A limited model is removed before the first attempt.** The provider's reset is a
         # fact about the next step as much as this one, and `ModelLimits` keeps it in the
         # client's home. A chain of `free,paid` therefore starts at `paid` while the free tier
@@ -349,18 +378,25 @@ module Agents
         prompt = prompt_for(failure)
         before = changed_files
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        exit_code, output, outcome = run_agent(prompt, model)
+        exit_code, stdout, stderr, outcome = run_agent(prompt, model)
+        # **The whole stream is kept before anything reads a summary of it.** The event file is
+        # the model's own account of what it did — the session, every tool call and its output,
+        # every provider error and the token count — and the summary below is only the part a
+        # record can hold. A failure that is not in the summary is still in the stream.
+        stream = write_stream(number, model, stdout, stderr, outcome)
+        summary = stream[:summary]
+        raw = [stdout, stderr].reject { |part| part.to_s.empty? }.join("\n")
         # **A failed call is read for the provider's own sentence.** A successful call's answer
         # is about the application, even if it happens to mention a rate limit in prose.
         limit = if model.to_s.empty? || (exit_code.to_i.zero? && outcome != :timed_out)
           nil
         else
-          @limits.record(model: model, output: output, timed_out: outcome == :timed_out,
+          @limits.record(model: model, output: raw, timed_out: outcome == :timed_out,
             exit_code: exit_code)
         end
         if limit
-          output = "#{output}\n[repair] #{model} limited until #{limit.until_time.utc.iso8601}: " \
-                   "#{limit.reason}"
+          summary = "#{summary}\n[repair] #{model} limited until #{limit.until_time.utc.iso8601}: " \
+                    "#{limit.reason}"
           @out.puts("  repair: #{model} is limited until #{limit.until_time.utc.iso8601} " \
                     "(#{limit.reason}); switching to the next model") if @out
         end
@@ -368,8 +404,11 @@ module Agents
           number: number, command: command_label(prompt, model), ran: outcome != :not_started,
           timed_out: outcome == :timed_out, exit_code: exit_code,
           seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
-          output_tail: tail(output), changed: changed_files - before,
-          limited: !limit.nil?, limit_until: limit&.until_time
+          output_tail: tail(summary), changed: changed_files - before,
+          limited: !limit.nil?, limit_until: limit&.until_time,
+          stream_path: stream[:path], stream_log: stream[:log_path], session: stream[:session],
+          event_count: stream[:events], tool_count: stream[:tools], error_count: stream[:errors],
+          tokens: stream[:tokens], cost: stream[:cost]
         )
       end
 
@@ -419,6 +458,12 @@ module Agents
         # `--dir` is the flag that makes the worktree the project.
         argv = [@binary, "run", "--dir", @root, "--agent", @agent]
         argv += ["--model", model] unless model.empty?
+        # **`--format json` is opencode's own event stream, not a rendering of it.** Each line is
+        # the session, the tool calls with their inputs and outputs, the model's text, the provider
+        # errors and the step's token count; `--print-logs` adds the client's own log lines on
+        # stderr. The stream is written whole beside the config and the record keeps a summary, so
+        # a failure can be read rather than guessed at.
+        argv += ["--format", "json", "--print-logs", "--log-level", "INFO"]
         argv << prompt
         # **`to_h`, because the live caller hands this `ENV`.** `ENV` answers `[]`, `each` and
         # `to_h` but *not* `merge`, and its class is `Object` — so the failure read
@@ -429,19 +474,28 @@ module Agents
         env["OPENCODE_CONFIG"] = config_path(model)
         env["HOME"] = @home unless @home.empty?
         answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)
-        exit_code, output, outcome = answer
-        # An injected runner answers `[exit_code, output]`, the way the first tests wrote it;
-        # what that means is decided here rather than by every fake: no exit code and no
-        # outcome is a start that never happened.
-        [exit_code, output, outcome || (exit_code.nil? ? :not_started : :ran)]
+        # An injected runner answers `[exit_code, output]` or `[exit_code, output, outcome]`, the
+        # way the first tests wrote it, and a real one answers stdout and stderr apart. What the
+        # answer means is decided here rather than by every fake: no exit code and no outcome is
+        # a start that never happened.
+        exit_code, stdout, stderr, outcome =
+          case Array(answer).length
+          when 0, 1 then [nil, "", "", nil]
+          when 2 then [answer[0], answer[1], "", nil]
+          when 3 then [answer[0], answer[1], "", answer[2]]
+          else [answer[0], answer[1], answer[2], answer[3]]
+          end
+        [exit_code, stdout.to_s, stderr.to_s,
+          outcome || (exit_code.nil? ? :not_started : :ran)]
       end
 
-      # `[exit_code, output, outcome]`, where the outcome is `:ran`, `:timed_out` or
+      # `[exit_code, stdout, stderr, outcome]`, where the outcome is `:ran`, `:timed_out` or
       # `:not_started`. **A killed attempt is not a failed start**: the process existed and its
       # edits are in the tree, so the caller measures them rather than discarding them — and a
       # process killed by something other than this deadline is still one that ran.
       def collect(argv, env)
-        output = +""
+        stdout = +""
+        stderr = +""
         status = nil
         # **The process gets its own group, because the agent is a process tree.** A bare
         # `opencode` call spawns a node child that owns the model connection and the file handles;
@@ -449,20 +503,35 @@ module Agents
         # pipe, which is how one repair attempt held a walk for more than ten minutes after its
         # deadline. `pgroup: true` makes the child the group leader, and the timeout kills the
         # group rather than hoping the parent forwards it.
-        Open3.popen2e(env, *argv, chdir: @root, pgroup: true) do |stdin, stream, wait|
+        Open3.popen3(env, *argv, chdir: @root, pgroup: true) do |stdin, out, err, wait|
           stdin.close
+          readers = [
+            Thread.new { out.each_line { |line| stdout << line } },
+            Thread.new { err.each_line { |line| stderr << line } }
+          ]
           begin
-            Timeout.timeout(@timeout) { stream.each_line { |line| output << line } }
+            Timeout.timeout(@timeout) { status = wait.value }
           rescue Timeout::Error
             terminate(wait.pid)
-            stream.close
-            return [nil, output + "\nthe repair agent was killed after #{@timeout}s", :timed_out]
+            stderr << "\nthe repair agent was killed after #{@timeout}s"
+            join_readers(readers)
+            return [nil, stdout, stderr, :timed_out]
           end
-          status = wait.value
+          join_readers(readers)
         end
-        [status.exitstatus, output, :ran]
+        [status.exitstatus, stdout, stderr, :ran]
       rescue Errno::ENOENT => e
-        [nil, "the repair agent could not be started: #{e.message}", :not_started]
+        [nil, "", "the repair agent could not be started: #{e.message}", :not_started]
+      end
+
+      # A reader blocked on a pipe whose process was killed is allowed to finish; it is not the
+      # attempt's result and a thread that outlives it would hold the walk's memory.
+      def join_readers(readers)
+        readers.each do |reader|
+          reader.join(2)
+        rescue StandardError
+          nil
+        end
       end
 
       # **A polite signal and then a hard one.** The agent may ignore TERM while it is in a model
@@ -489,21 +558,128 @@ module Agents
       end
 
       def describe(attempt)
-        return "did not run (#{attempt.output_tail.lines.first.to_s.strip})" unless attempt.ran
-        if attempt.limited?
-          return "limited until #{attempt.limit_until.utc.iso8601} — " \
-                 "#{attempt.output_tail.lines.last.to_s.strip}"
+        sentence = if !attempt.ran
+          "did not run (#{attempt.output_tail.lines.first.to_s.strip})"
+        elsif attempt.limited?
+          "limited until #{attempt.limit_until.utc.iso8601} — " \
+            "#{attempt.output_tail.lines.last.to_s.strip}"
+        elsif attempt.timed_out
+          "timed out after #{attempt.seconds.round(1)}s"
+        else
+          "exit #{attempt.exit_code} in #{attempt.seconds.round(1)}s" \
+            "#{attempt.changed.empty? ? ", no file changed" : ", #{attempt.changed.size} file(s) changed"}"
         end
-        return "timed out after #{attempt.seconds.round(1)}s" if attempt.timed_out
-
-        "exit #{attempt.exit_code} in #{attempt.seconds.round(1)}s" \
-          "#{attempt.changed.empty? ? ", no file changed" : ", #{attempt.changed.size} file(s) changed"}"
+        stream = attempt.stream_sentence
+        stream.empty? ? sentence : "#{sentence} — #{stream}"
       end
 
       def tail(output)
         text = output.to_s
         lines = text.lines
         lines.length > 60 ? lines.last(60).join : text
+      end
+
+      def default_stream_dir
+        explicit = @env[ENV_STREAMS].to_s.strip
+        return explicit unless explicit.empty?
+
+        base = @home.empty? ? Dir.tmpdir : @home
+        File.join(base, "repair", "streams")
+      end
+
+      # **The stream is written before the summary is parsed, and a failure to write it is not a
+      # failure to repair.** The attempt's result is the suite's; losing the artifact must not turn
+      # a measurable attempt into a refused one, so the summary falls back to the raw text and the
+      # error travels in the stream's place.
+      def write_stream(number, model, stdout, stderr, _outcome)
+        FileUtils.mkdir_p(@stream_dir)
+        stamp = Time.now.utc.strftime("%Y%m%dT%H%M%S")
+        stem = "#{stamp}-repair-#{number}-#{safe_name(model.to_s.empty? ? "default" : model)}"
+        path = File.join(@stream_dir, "#{stem}.jsonl")
+        log_path = File.join(@stream_dir, "#{stem}.log")
+        File.binwrite(path, stdout.to_s)
+        File.binwrite(log_path, stderr.to_s)
+        parsed = parse_stream(stdout.to_s)
+        log_lines = stderr.to_s.lines.last(10).map { |line| "[log] #{line.strip}" }
+        parsed[:summary] = [parsed[:summary], *log_lines].reject(&:empty?).join("\n")
+        parsed.merge(path: path, log_path: log_path, bytes: File.size(path),
+          log_bytes: File.size(log_path), error: nil)
+      rescue SystemCallError => e
+        { summary: [stdout.to_s, stderr.to_s].reject(&:empty?).join("\n"), path: nil,
+          log_path: nil, session: nil, events: 0, tools: 0, errors: 0, tokens: 0, cost: 0.0,
+          error: "the event stream could not be written: #{e.message}" }
+      end
+
+      def safe_name(value)
+        value.to_s.gsub(/[^A-Za-z0-9_.-]+/, "-")[0, 80]
+      end
+
+      # **The native event stream, read for the record rather than rendered as prose.** A text
+      # event is the model's sentence, a tool event is what it did and what came back, and a
+      # step-finish carries the tokens and cost; the raw line for an event this build does not
+      # know is kept as its type, because a new opencode event must be visible rather than
+      # silently dropped.
+      def parse_stream(text)
+        events = 0
+        tools = 0
+        errors = 0
+        tokens = 0
+        cost = 0.0
+        session = nil
+        lines = []
+        text.to_s.each_line do |line|
+          line = line.strip
+          next if line.empty?
+
+          events += 1
+          event = begin
+            JSON.parse(line)
+          rescue JSON::ParserError
+            lines << line
+            next
+          end
+          session ||= event["sessionID"]
+          part = event["part"].is_a?(Hash) ? event["part"] : {}
+          case part["type"].to_s
+          when "text"
+            body = part["text"].to_s.strip
+            lines << body unless body.empty?
+          when "tool"
+            tools += 1
+            lines << tool_line(part)
+          when "step-finish"
+            total = part.dig("tokens", "total").to_i
+            tokens += total
+            cost += part["cost"].to_f
+            lines << "[step] #{part["reason"]} · #{total} token(s) · " \
+              "$#{format("%.6f", part["cost"].to_f)}"
+          when "error"
+            errors += 1
+            lines << "[error] #{event_error(part)}"
+          else
+            label = part["type"] || event["type"]
+            lines << "[#{label}] #{line[0, 300]}" unless label.to_s.empty?
+          end
+        end
+        { summary: lines.last(60).join("\n"), session: session, events: events, tools: tools,
+          errors: errors, tokens: tokens, cost: cost }
+      end
+
+      def tool_line(part)
+        state = part["state"].is_a?(Hash) ? part["state"] : {}
+        input = state["input"].is_a?(Hash) ? state["input"] : {}
+        detail = input["filePath"] || input["path"] || input["pattern"] || input["command"] ||
+          input["description"]
+        output = state["output"].to_s.strip.gsub(/\s+/, " ")
+        detail = detail.to_s.strip[0, 200]
+        "[tool] #{part["tool"]}#{detail.empty? ? "" : " #{detail}"}" \
+          "#{output.empty? ? "" : " -> #{output[0, 300]}"}"
+      end
+
+      def event_error(part)
+        error = part["error"] || part["message"] || part["text"] || part
+        text = error.is_a?(Hash) ? (error["message"] || error["data"] || error.to_json) : error.to_s
+        text.to_s.gsub(/\s+/, " ")[0, 500]
       end
 
       # Everything the worktree has changed since its base commit, as a sorted list. Both

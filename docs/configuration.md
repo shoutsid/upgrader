@@ -49,6 +49,7 @@ A setting that is not present is a setting the caller did not make.
 | `UPGRADER_REPAIR_AGENT` | `repair` | the agent name in the generated config. |
 | `UPGRADER_REPAIR_BINARY` | `opencode` | the agent binary, for an installation that names it differently. |
 | `UPGRADER_REPAIR_LIMITS` | empty | the file where a model's reported reset is kept; empty uses `repair_model_limits.json` in the client's home. |
+| `UPGRADER_REPAIR_STREAMS` | empty | the directory where each attempt's opencode event stream is kept; empty uses `repair/streams` in the client's home. |
 
 Repair is off by default because it is the only setting here that spends money. Turning it on
 also needs an authenticated model in the agent's own configuration; the deployment's home volume
@@ -67,6 +68,15 @@ still measured, because a paid model may be slow because it is working. The dead
 `UPGRADER_REPAIR_LIMITS` (or `repair_model_limits.json` in the client's home), so the next repair,
 and the next process, starts at the next model until the recorded time passes. The attempt's log
 and record name the model, the reset and the reason.
+
+**Every attempt runs opencode with its native JSON event stream and keeps it whole.** The flags are
+`--format json --print-logs --log-level INFO`; stdout is the event stream (session id, model text,
+each tool call with its input and output, provider errors, token counts and cost) and stderr is the
+client's own log. Both are written under `UPGRADER_REPAIR_STREAMS` (or `repair/streams` in the
+client's home) as `<timestamp>-repair-<n>-<model>.jsonl` and `.log`. The record's repair stage
+carries a summary — the text, the tools, the step results — plus the stream path and the opencode
+session id; `opencode export <session>` replays the same session. A failure that the 60-line
+summary does not contain is still in the stream, which is the point.
 
 ### The operator's stop switch
 

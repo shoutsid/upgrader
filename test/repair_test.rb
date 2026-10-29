@@ -408,13 +408,14 @@ class RepairTest < Minitest::Test
       env: {})
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-    exit_code, output, outcome = repair.send(:collect, ["sh", "-c", "sleep 60"], {})
+    exit_code, output, errors, outcome = repair.send(:collect, ["sh", "-c", "sleep 60"], {})
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
     assert_equal :timed_out, outcome
     assert_nil exit_code
     assert_operator elapsed, :<, 10, "the timeout waited for the child instead of killing it"
-    assert_includes output, "the repair agent was killed after 1s"
+    assert_empty output, "the command wrote nothing to stdout"
+    assert_includes errors, "the repair agent was killed after 1s"
   end
 
   def test_a_timed_out_attempt_says_so_rather_than_claiming_it_never_ran
@@ -496,6 +497,64 @@ class RepairTest < Minitest::Test
     assert_includes result.attempts.first.command, "opencode run --dir #{@root} --agent repair"
     assert_includes result.attempts.first.command, "--model opencode-go/deepseek-v4.1-flash"
     assert_includes result.attempts.first.command, "bytes"
+  end
+
+  # **The stream is the model's own account, not the record's summary of it.** opencode emits
+  # one JSON event per line: the session, the tool call with its input and output, the model's
+  # text, and the step's token count. The file is written whole beside the config, and the
+  # attempt names the session so `opencode export` reaches the same run.
+  def test_the_json_event_stream_is_kept_whole_and_summarised_for_the_record
+    home = temp_home
+    events = [
+      { "type" => "step_start", "sessionID" => "ses_stream", "part" => { "type" => "step-start" } },
+      { "type" => "tool_use", "sessionID" => "ses_stream",
+        "part" => { "type" => "tool", "tool" => "read",
+                    "state" => { "status" => "completed",
+                                 "input" => { "filePath" => "app/models/user.rb" },
+                                 "output" => "class User\nend" } } },
+      { "type" => "text", "sessionID" => "ses_stream",
+        "part" => { "type" => "text", "text" => "Fixed the model." } },
+      { "type" => "step_finish", "sessionID" => "ses_stream",
+        "part" => { "type" => "step-finish", "reason" => "stop",
+                    "tokens" => { "total" => 1234 }, "cost" => 0.0012 } }
+    ].map { |event| JSON.generate(event) }.join("\n")
+    agent = FakeAgent.new do |_argv, chdir, _n|
+      File.write(File.join(chdir, "fixed.rb"), "x\n")
+      [0, events, "", :ran]
+    end
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      models: ["opencode-go/paid"], home: home).run
+
+    attempt = result.attempts.first
+    assert_equal "ses_stream", attempt.session
+    assert_equal 4, attempt.event_count
+    assert_equal 1, attempt.tool_count
+    assert_equal 1234, attempt.tokens
+    assert_in_delta 0.0012, attempt.cost, 0.000001
+    assert File.file?(attempt.stream_path), "the raw stream was not written"
+    assert_equal events, File.read(attempt.stream_path)
+    assert_includes attempt.output_tail, "Fixed the model."
+    assert_includes attempt.output_tail, "[tool] read app/models/user.rb"
+    assert_includes attempt.output_tail, "[step] stop"
+    assert_includes attempt.stream_sentence, "stream #{attempt.stream_path}"
+    assert_includes attempt.stream_sentence, "session ses_stream"
+  end
+
+  # **The argv is the native stream and the client's own log, because a summary that omits an
+  # event is what this exists to prevent.** The flags sit after the model so the command a
+  # reader sees is still `opencode run --dir … --agent … --model …`.
+  def test_the_agent_runs_opencode_with_its_json_event_stream
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)]).run
+
+    argv = agent.calls.first[:argv]
+    assert_includes argv, "--format"
+    assert_equal "json", argv[argv.index("--format") + 1]
+    assert_includes argv, "--print-logs"
+    assert_equal "INFO", argv[argv.index("--log-level") + 1]
+    assert_includes argv.last, "The suite command is"
   end
 
   # **The agent's home is the one the container can write.** The deployment runs this image
