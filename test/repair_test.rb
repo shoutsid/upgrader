@@ -536,7 +536,10 @@ class RepairTest < Minitest::Test
     assert_equal events, File.read(attempt.stream_path)
     assert_includes attempt.output_tail, "Fixed the model."
     assert_includes attempt.output_tail, "[tool] read app/models/user.rb"
+    assert_includes attempt.output_tail, "[step] started"
     assert_includes attempt.output_tail, "[step] stop"
+    refute_includes attempt.output_tail, "step-start",
+      "the raw step document lives in the stream, not in the record's summary"
     assert_includes attempt.stream_sentence, "stream #{attempt.stream_path}"
     assert_includes attempt.stream_sentence, "session ses_stream"
   end

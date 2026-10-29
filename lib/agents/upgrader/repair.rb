@@ -88,13 +88,14 @@ module Agents
         def stream_sentence
           return "" if stream_path.to_s.empty?
 
-          parts = ["session #{session}"]
+          parts = []
+          parts << "session #{session}" unless session.to_s.empty?
           parts << "#{event_count} event(s)"
           parts << "#{tool_count} tool call(s)" if tool_count.to_i.positive?
           parts << "#{error_count} error(s)" if error_count.to_i.positive?
           parts << "#{tokens} token(s)" if tokens.to_i.positive?
           parts << format("$%.6f", cost) if cost.to_f.positive?
-          "stream #{stream_path} (#{parts.join(", ")})"
+          "stream #{stream_path}#{parts.empty? ? "" : " (#{parts.join(", ")})"}"
         end
       end
 
@@ -656,9 +657,15 @@ module Agents
           when "error"
             errors += 1
             lines << "[error] #{event_error(part)}"
+          when "step-start"
+            lines << "[step] started"
           else
+            # **The type is the summary; the raw line is the stream.** A `step_start` event
+            # carries a whole part document and would spend the summary on JSON that the file
+            # already holds; an unknown event still says it happened so a new opencode event is
+            # visible rather than silently dropped.
             label = part["type"] || event["type"]
-            lines << "[#{label}] #{line[0, 300]}" unless label.to_s.empty?
+            lines << "[#{label}]" unless label.to_s.empty?
           end
         end
         { summary: lines.last(60).join("\n"), session: session, events: events, tools: tools,
