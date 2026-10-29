@@ -1437,6 +1437,43 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "app/models/user.rb"), "updated_at.to_s(:db)"
   end
 
+  # **Rails 7.2 removed the silenced setter, and the boot dies before any suite can see it.**
+  # Measured on volunteer-portal's 7.2.4 boot: `config/application.rb:14` sets
+  # `ActiveSupport::Deprecation.silenced = true`; the release's global switch is
+  # `behavior = :silence`, and `:stderr` is the default. The rule waits for the pin, because the
+  # 7.1.6 baseline still runs the old setter.
+  def test_a_silenced_deprecation_setting_moves_to_behavior_at_the_7_2_rung
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.2.4"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "application.rb"),
+      "ActiveSupport::Deprecation.silenced = true\n")
+
+    preflight = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.2.4")
+    started = preflight.run
+    assert_empty started.repairs.select { |repair| repair.subject == "ActiveSupport::Deprecation" },
+      "the deprecation rule ran before the baseline"
+
+    applied = preflight.declare_deferred([]).repairs
+      .select { |repair| repair.subject == "ActiveSupport::Deprecation" }
+    assert_equal 1, applied.size, "the silenced setter was not repaired"
+    assert_includes read(dir, "config/application.rb"), "ActiveSupport::Deprecation.behavior = :silence"
+
+    File.write(File.join(dir, "config", "application.rb"),
+      "ActiveSupport::Deprecation.silenced = false\n")
+    Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.2.4")
+      .declare_deferred([])
+    assert_includes read(dir, "config/application.rb"), "ActiveSupport::Deprecation.behavior = :stderr"
+
+    File.write(File.join(dir, "config", "application.rb"),
+      "ActiveSupport::Deprecation.silenced = true\n")
+    below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.1.6")
+      .declare_deferred([]).repairs
+      .select { |repair| repair.subject == "ActiveSupport::Deprecation" }
+    assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
+    assert_includes read(dir, "config/application.rb"), "silenced = true"
+  end
+
   # **A removal name is rewritten only where it *ends*, because one of these names is a prefix of
   # another.** `be_success` is a prefix of `be_successful`, so a plain `gsub` turns a line the
   # application had already migrated into `be_successfulful` — and a rewrite that has to run before

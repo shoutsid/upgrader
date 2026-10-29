@@ -238,6 +238,7 @@ module Agents
         # would turn a working baseline red. It is applied here, after the baseline and after the
         # pin, where the rung's release is the one the suite will run on.
         repairs.concat(time_format_repairs)
+        repairs.concat(deprecation_silenced_repairs)
         # **The extracted devise module waits for the pin with the devise line it belongs to.**
         # The token gem requires devise ~> 3.5, and the application's Gemfile still names the
         # 4.0-era line at the install stage; adding it there made every era fail to resolve.
@@ -821,6 +822,44 @@ module Agents
                 subject: "to_fs",
                 note: "Rails 7.1 removed the format argument from `to_s` and `to_formatted_s`; " \
                       "`to_fs` is the successor the release names, and it returns the same string")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
+        end
+        repairs
+      end
+
+      # **Rails 7.2 removed `ActiveSupport::Deprecation.silenced=`.** The global switch the release
+      # names is `behavior = :silence` (`:stderr` is the default). Measured on volunteer-portal's
+      # 7.2.4 boot: `config/application.rb:14` sets `ActiveSupport::Deprecation.silenced = true`,
+      # and every command dies at boot with `undefined method 'silenced='`. The line is applied
+      # after the baseline and the pin, because the 7.1.6 baseline still has the old setter.
+      DEPRECATION_SILENCED = /ActiveSupport::Deprecation\.silenced\s*=\s*(true|false)/
+
+      def deprecation_silenced_repairs
+        return [] unless clause_holds?("rails_at_least", "7.2")
+
+        repairs = []
+        RUBY_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            name = full.sub("#{@root}/", "")
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              after = line.gsub(DEPRECATION_SILENCED) do
+                "ActiveSupport::Deprecation.behavior = " \
+                  "#{Regexp.last_match(1) == "true" ? ":silence" : ":stderr"}"
+              end
+              next if after == line
+
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+                subject: "ActiveSupport::Deprecation",
+                note: "Rails 7.2 removed `ActiveSupport::Deprecation.silenced=`; the release's " \
+                      "global switch is `behavior = :silence`, and `:stderr` is the default")
             end
             File.binwrite(full, lines.join("\n")) if changed
           end
