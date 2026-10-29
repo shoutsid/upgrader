@@ -511,8 +511,16 @@ module Agents
         Open3.popen3(env, *argv, chdir: @root, pgroup: true) do |stdin, out, err, wait|
           stdin.close
           readers = [
-            Thread.new { out.each_line { |line| stdout << line } },
-            Thread.new { err.each_line { |line| stderr << line } }
+            Thread.new do
+              out.each_line { |line| stdout << line }
+            rescue IOError, Errno::EBADF
+              nil
+            end,
+            Thread.new do
+              err.each_line { |line| stderr << line }
+            rescue IOError, Errno::EBADF
+              nil
+            end
           ]
           begin
             Timeout.timeout(@timeout) { status = wait.value }
