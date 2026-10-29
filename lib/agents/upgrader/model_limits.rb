@@ -21,8 +21,11 @@ module Agents
     # * a limit sentence (`rate limit`, `usage limit`, `quota`, `too many requests`, `429`);
     # * the reset the provider names — an ISO timestamp, a clock time, "in 30 minutes", a
     #   `retry-after` value — through `Time.parse`, which is Ruby's own reading of the same words;
-    # * when no reset is named, a one-hour cooldown. That is a choice, not a fact about the
-    #   provider, and the entry says so (`reset_reported` is false).
+    # * when no reset is named, an **indefinite** hold until an operator clears the entry. That is
+    #   a fact about the sentence, not a guess about the provider: the live free tier answered
+    #   `Free usage limit reached` and named no reset at all, and a guessed hourly cooldown spends
+    #   the paid fallback's deadline every hour to re-learn the same sentence. The entry marks
+    #   `reset_reported` false, so a reader knows the hold is the absence of a fact rather than one.
     #
     # **A free model that never answers is treated as unavailable too.** The live free tier timed
     # out at the attempt deadline with no error at all; waiting the full deadline on every later
@@ -31,7 +34,9 @@ module Agents
     class ModelLimits
       FILE = "repair_model_limits.json"
       ENV_PATH = "UPGRADER_REPAIR_LIMITS"
-      DEFAULT_COOLDOWN = 60 * 60
+      # What `limited_until` answers for an entry whose provider named no reset. It is not a time
+      # and must not be compared as one; an operator clears it by editing the state file.
+      INDEFINITE = :indefinite
 
       LIMIT = /(?:rate|usage|free)\s*limit|quota|too many requests|\b429\b|insufficient (?:quota|credits)|exceeded.{0,40}(?:limit|quota)|out of credits/i
       RESET = /(?:resets?|reset|try again|retry|available|until)\s*(?:at|on|in|after|:)?\s*([^\n.;]+)/i
@@ -40,7 +45,8 @@ module Agents
       DURATION = /(\d+)\s*(second|minute|hour|day)s?/i
 
       Entry = Struct.new(:model, :until_time, :reason, :reset_reported, keyword_init: true) do
-        def until_iso = until_time.utc.iso8601
+        def until_iso = until_time&.utc&.iso8601
+        def indefinite? = until_time.nil? && !reset_reported
 
         def to_h
           { "until" => until_iso, "reason" => reason, "reset_reported" => reset_reported }
@@ -63,6 +69,17 @@ module Agents
         key = model.to_s
         entry = @entries[key]
         return nil if entry.nil?
+
+        # A hold with no time is the provider's own sentence: it was limited, and it did not say
+        # when that ends. Nothing in this process can decide that for it, so the entry stays until
+        # an operator removes it.
+        if entry["until"].to_s.strip.empty?
+          return INDEFINITE if entry["reset_reported"] == false
+
+          @entries.delete(key)
+          save!
+          return nil
+        end
 
         deadline = parse_time(entry["until"])
         if deadline.nil? || deadline <= @now.call
@@ -89,24 +106,26 @@ module Agents
         moment = (now || @now.call).utc
         reset = extract_reset(text, moment)
         reported = !reset.nil?
-        deadline = reset || (moment + DEFAULT_COOLDOWN)
+        deadline = reset
         reason = if reported
           "the provider reported a limit and named the reset"
         elsif timed_out && free
-          "the free model did not answer before the deadline; no reset was reported"
+          "the free model did not answer before the deadline; no reset was reported, so the " \
+            "model is held until an operator clears the entry"
         else
-          "the provider reported a limit without a reset time"
+          "the provider reported a limit without a reset time, so the model is held until an " \
+            "operator clears the entry"
         end
 
         @entries[model.to_s] = {
-          "until" => deadline.utc.iso8601,
+          "until" => deadline&.utc&.iso8601,
           "reason" => reason,
           "reset_reported" => reported,
           "reported_at" => moment.iso8601,
           "sentence" => text.to_s[-400..].to_s
         }
         save!
-        Entry.new(model: model.to_s, until_time: deadline.utc, reason: reason,
+        Entry.new(model: model.to_s, until_time: deadline&.utc, reason: reason,
           reset_reported: reported)
       end
 

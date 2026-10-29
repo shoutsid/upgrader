@@ -61,13 +61,16 @@ no model means the account's chain, and an empty account chain means this variab
 measured `UPGRADER_REPAIR_MODEL` stays in force until somebody names a chain against a project.
 
 **A free model that has reported a limit is skipped until its reset.** The provider's sentence is
-read for an ISO time, a clock time, `in 30 minutes` or a `retry-after`; when no reset is named, a
-one-hour cooldown is recorded and marked as unreported. A free model that times out with no answer
-is treated the same way — the live free tier did exactly that — while a paid model's timeout is
-still measured, because a paid model may be slow because it is working. The deadline is written to
-`UPGRADER_REPAIR_LIMITS` (or `repair_model_limits.json` in the client's home), so the next repair,
-and the next process, starts at the next model until the recorded time passes. The attempt's log
-and record name the model, the reset and the reason.
+read for an ISO time, a clock time, `in 30 minutes` or a `retry-after`. **A limit with no reset is
+held until an operator clears the entry, not given a guessed cooldown**: the live free tier answered
+`Free usage limit reached` and named no time at all, and an hourly retry spends the paid fallback's
+deadline to re-learn the same sentence. The entry keeps `reset_reported: false` and the provider's
+own sentence, so a reader can see why it is held. A free model that times out with no answer is
+treated the same way, while a paid model's timeout is still measured, because a paid model may be
+slow because it is working. The hold is written to `UPGRADER_REPAIR_LIMITS` (or
+`repair_model_limits.json` in the client's home); clear the model's entry there when the free tier
+is known to be back. The attempt's log and record name the model, the reset (or the operator hold)
+and the reason.
 
 **Every attempt runs opencode with its native JSON event stream and keeps it whole.** The flags are
 `--format json --print-logs --log-level INFO`; stdout is the event stream (session id, model text,

@@ -50,13 +50,21 @@ class ModelLimitsTest < Minitest::Test
     assert_equal Time.utc(2026, 10, 30, 18, 0, 0), entry.until_time
   end
 
-  def test_a_limit_without_a_reset_gets_a_default_cooldown_and_says_so
+  # **A reset the provider did not name is not a clock this process may invent.** The live free
+  # tier answered `Free usage limit reached` with no time at all; an hourly retry spends the paid
+  # fallback's deadline to re-learn the same sentence, so the entry is held until an operator
+  # clears it and the reason says the hold is the absence of a fact.
+  def test_a_limit_without_a_reset_is_held_until_an_operator_clears_it
     entry = limits.record(model: "opencode/free", exit_code: 1,
-      output: "Rate limit exceeded. Please try again later.")
+      output: "Free usage limit reached. Subscribe to OpenCode Go to keep going.")
 
-    assert_equal @now + Limits::DEFAULT_COOLDOWN, entry.until_time
+    assert_nil entry.until_time
     refute entry.reset_reported
-    assert_includes entry.reason, "without a reset"
+    assert entry.indefinite?
+    assert_includes entry.reason, "operator clears"
+    assert_equal Limits::INDEFINITE, limits.limited_until("opencode/free")
+    assert_equal Limits::INDEFINITE, limits(now: @now + (365 * 86_400)).limited_until("opencode/free"),
+      "an indefinite hold does not expire on a guessed cooldown"
   end
 
   # **A free model that never answered is unavailable too.** The live tier timed out with no

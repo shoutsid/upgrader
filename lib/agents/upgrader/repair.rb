@@ -315,7 +315,7 @@ module Agents
           next false if deadline.nil?
 
           @skipped_models << [model, deadline]
-          @out.puts("  repair: #{model} is limited until #{deadline.utc.iso8601}; " \
+          @out.puts("  repair: #{model} is limited until #{limit_sentence(deadline)}; " \
                     "using the next model") if @out
           true
         end
@@ -326,9 +326,13 @@ module Agents
         # spending a model call to re-learn it is the cost this record exists to avoid. The
         # earliest reset is named so an operator can see when the free tier returns.
         if @models.empty? && @skipped_models.any?
-          earliest = @skipped_models.min_by { |_model, deadline| deadline }.last
-          @out.puts("  repair: every model is limited (earliest reset " \
-                    "#{earliest.utc.iso8601}); no attempt") if @out
+          finite = @skipped_models.map(&:last).reject { |deadline| deadline == ModelLimits::INDEFINITE }
+          sentence = if finite.empty?
+            "no reset was reported; an operator must clear the entry"
+          else
+            "earliest reset #{finite.min.utc.iso8601}"
+          end
+          @out.puts("  repair: every model is limited (#{sentence}); no attempt") if @out
           return Result.new(attempts: [], repaired: false)
         end
 
@@ -349,8 +353,8 @@ module Agents
           if attempt.limited?
             @models.delete_at(@model_index) if @models[@model_index] == model
             if @models.empty?
-              @out.puts("  repair: no model is left; the earliest reset is " \
-                        "#{attempt.limit_until.utc.iso8601}") if @out
+              @out.puts("  repair: no model is left; " \
+                        "#{limit_sentence(attempt.limit_until)}") if @out
               break
             end
             next
@@ -396,9 +400,9 @@ module Agents
             exit_code: exit_code)
         end
         if limit
-          summary = "#{summary}\n[repair] #{model} limited until #{limit.until_time.utc.iso8601}: " \
-                    "#{limit.reason}"
-          @out.puts("  repair: #{model} is limited until #{limit.until_time.utc.iso8601} " \
+          summary = "#{summary}\n[repair] #{model} limited until " \
+                    "#{limit_sentence(limit.until_time)}: #{limit.reason}"
+          @out.puts("  repair: #{model} is limited until #{limit_sentence(limit.until_time)} " \
                     "(#{limit.reason}); switching to the next model") if @out
         end
         Attempt.new(
@@ -562,7 +566,7 @@ module Agents
         sentence = if !attempt.ran
           "did not run (#{attempt.output_tail.lines.first.to_s.strip})"
         elsif attempt.limited?
-          "limited until #{attempt.limit_until.utc.iso8601} — " \
+          "limited until #{limit_sentence(attempt.limit_until)} — " \
             "#{attempt.output_tail.lines.last.to_s.strip}"
         elsif attempt.timed_out
           "timed out after #{attempt.seconds.round(1)}s"
@@ -578,6 +582,16 @@ module Agents
         text = output.to_s
         lines = text.lines
         lines.length > 60 ? lines.last(60).join : text
+      end
+
+      # A deadline the provider named, or the honest sentence for one it did not. The nil case is
+      # an indefinite hold: an entry with no time is not available and is not a date.
+      def limit_sentence(deadline)
+        if deadline.nil? || deadline == ModelLimits::INDEFINITE
+          "an operator clears it (no reset was reported)"
+        else
+          deadline.utc.iso8601
+        end
       end
 
       def default_stream_dir
