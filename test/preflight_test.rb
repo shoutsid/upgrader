@@ -1411,8 +1411,16 @@ class PreflightTest < Minitest::Test
       "class User\n  def stamp\n    updated_at.to_s(:db)\n  end\nend\n" \
       "created_at.to_formatted_s(:short)\nupdated_at.to_s\n")
 
-    at_the_rung = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6")
-      .send(:time_format_repairs)
+    # **The rewrite waits for the pin.** A 6.1 baseline runs on 6.1, where `to_fs` does not exist;
+    # applying the rule at the start of the step would turn a working baseline red before the move
+    # had been measured. The preflight stage finds nothing, and the post-pin stage applies it.
+    preflight = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6")
+    started = preflight.run
+    assert_empty started.repairs.select { |repair| repair.subject == "to_fs" },
+      "the time-format rule ran before the baseline"
+    assert_includes read(dir, "app/models/user.rb"), "updated_at.to_s(:db)"
+
+    at_the_rung = preflight.declare_deferred([]).repairs.select { |repair| repair.subject == "to_fs" }
     body = read(dir, "app/models/user.rb")
 
     assert_equal 2, at_the_rung.size, "the two formatted calls were not repaired"
@@ -1423,7 +1431,7 @@ class PreflightTest < Minitest::Test
     File.write(File.join(dir, "app", "models", "user.rb"),
       "updated_at.to_s(:db)\ncreated_at.to_formatted_s(:short)\nupdated_at.to_s\n")
     below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.0.10")
-      .send(:time_format_repairs)
+      .declare_deferred([]).repairs.select { |repair| repair.subject == "to_fs" }
 
     assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
     assert_includes read(dir, "app/models/user.rb"), "updated_at.to_s(:db)"

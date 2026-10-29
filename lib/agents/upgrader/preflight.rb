@@ -184,10 +184,9 @@ module Agents
         end
 
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
-          framework_removal_repairs + time_format_repairs + mailer_host_repairs +
-          squiggly_heredoc_repairs + magic_encoding_repairs + autoload_namespace_repairs +
-          mongo_mapper_xml_repairs + bundler_lock_repairs + test_gem_removal_repairs +
-          whitelist_attributes_repairs
+          framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
+          magic_encoding_repairs + autoload_namespace_repairs + mongo_mapper_xml_repairs +
+          bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs
         decisions = []
         notes = []
         deferred = []
@@ -233,6 +232,12 @@ module Agents
           # with the line or the suite the pin leaves behind cannot load.
           apply_companion(entry, repairs, notes)
         end
+        # **A call the release removed waits for the pin with the framework it belongs to.** The
+        # `to_fs` rewrite must not run before the baseline: a 6.1 application's baseline is
+        # measured on 6.1, where `to_fs` does not exist, so the rewrite at the start of the step
+        # would turn a working baseline red. It is applied here, after the baseline and after the
+        # pin, where the rung's release is the one the suite will run on.
+        repairs.concat(time_format_repairs)
         # **The extracted devise module waits for the pin with the devise line it belongs to.**
         # The token gem requires devise ~> 3.5, and the application's Gemfile still names the
         # 4.0-era line at the install stage; adding it there made every era fail to resolve.
