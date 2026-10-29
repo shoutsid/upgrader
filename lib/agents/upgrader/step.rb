@@ -2402,7 +2402,8 @@ module Agents
       def run_suite(stages, stage)
         @control&.check!
         announce(stage, @suite_plan.command)
-        result = run_suite_once
+        stream = File.join(@home, "logs", "#{run_id}-#{stage}-suite.log")
+        result = run_suite_once(stream: stream)
         # **A browser that died at startup is not a finding about the move.** Measured on 19wu's
         # 4.0 baseline: the only failure was `Capybara::Poltergeist::DeadClient` at the first
         # `:js` example's `visit`, and the same example passed in the suite after the move. A
@@ -2411,7 +2412,7 @@ module Agents
         retried = browser_retry_allowed? && dead_client_only?(result)
         if retried
           @out&.puts("  #{stage}: the only failure was a dead PhantomJS client; rerunning once")
-          result = run_suite_once
+          result = run_suite_once(stream: stream)
         end
         # **The repair reads this, the record reads `output_tail`.** The two bounds are different
         # because the two readers are: a failure list longer than the record's excerpt is still a
@@ -2423,6 +2424,7 @@ module Agents
           tail = "#{tail}\n(the first run's only failure was " \
                  "Capybara::Poltergeist::DeadClient; the suite was rerun)"
         end
+        tail = "#{tail}\n[full output: #{stream}]" if File.file?(stream) && File.size(stream).positive?
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
           exit_code: result.exit_code, seconds: result.seconds, output_tail: tail)
         @progress.finish(stage: stage, status: status_for(result),
@@ -2430,9 +2432,9 @@ module Agents
         stages.last
       end
 
-      def run_suite_once
+      def run_suite_once(stream: nil)
         @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
-          env: application_env, machine: @machine)
+          env: application_env, machine: @machine, stream: stream)
       end
 
       # An empty policy is the deployment's old behaviour; `retry_once` is the platform default and

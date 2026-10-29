@@ -53,6 +53,20 @@ class TestsTest < Minitest::Test
     end
   end
 
+  # **The analysis is bounded for the parser; the stream is for the reader.** A suite that
+  # prints more than the record's tail can keep the whole output beside it, and the run's
+  # command names the file.
+  def test_the_suite_can_keep_its_whole_output_beside_the_analysis
+    with_app({}) do |dir|
+      path = File.join(dir, "logs", "suite.log")
+      result = Tests.run(dir, suite(kind: :check, script: "puts :hello; puts :world"),
+        timeout: 60, stream: path)
+
+      assert result.passed, result.output_tail
+      assert_equal "hello\nworld\n", File.read(path)
+    end
+  end
+
   # The order in the table is the decision, and this is the case it decides: a Rails 5
   # application has a Rakefile as well, and `rake test` is the deprecated entry.
   def test_a_rails_five_application_runs_its_suite_through_bin_rails_rather_than_rake

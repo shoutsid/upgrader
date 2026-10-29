@@ -271,7 +271,7 @@ class StepTest < Minitest::Test
 
     def no_suite_reason(_root, _stack = nil) = "no test directory, no spec directory and no Rakefile"
 
-    def run(_root, _suite, timeout:, env:, machine: nil, stack: nil)
+    def run(_root, _suite, timeout:, env:, machine: nil, stack: nil, stream: nil)
       # Recorded rather than ignored: "the suite ran through the machine the step chose" is
       # the wiring the selection tests exist for, and a double that dropped the argument
       # would let the pipeline stop passing it without a red test.
@@ -297,7 +297,7 @@ class StepTest < Minitest::Test
       @seen = []
     end
 
-    def run(root, _suite, timeout:, env:, machine: nil, stack: nil)
+    def run(root, _suite, timeout:, env:, machine: nil, stack: nil, stream: nil)
       @machines << machine
       @seen << File.read(File.join(root, "Gemfile"))
       @results.shift || @results.last
@@ -430,7 +430,7 @@ class StepTest < Minitest::Test
       @calls_when_it_ran = []
     end
 
-    def run(root, _suite, timeout:, env:, machine: nil, stack: nil)
+    def run(root, _suite, timeout:, env:, machine: nil, stack: nil, stream: nil)
       @seen << File.read(File.join(root, "Gemfile"))
       @envs << env
       @calls_when_it_ran << (@runner && @runner.calls.dup)

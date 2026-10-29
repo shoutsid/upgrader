@@ -140,7 +140,7 @@ module Agents
       SUITE_ANALYSIS_HEAD_SHARE = 0.5
 
       def self.run(root, suite, timeout: 1800, env: {}, tail_bytes: SUITE_EXCERPT_BYTES, machine: nil,
-        stack: Stacks::Rails, analysis_bytes: SUITE_ANALYSIS_BYTES)
+        stack: Stacks::Rails, analysis_bytes: SUITE_ANALYSIS_BYTES, stream: nil)
         # First, so the rescue below can always measure: a run that fails to start is
         # still a run that has a duration, and the record keeps it.
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -154,11 +154,22 @@ module Agents
         # process group is killed and how much of an output is kept, and `Shell`'s docstring says why — two
         # places building a recorded command is the drift that module exists to prevent. What stays here is
         # what is *suite*-specific: the command string, what the exit code means, and the excerpt's size.
-        status, text, timed_out = Shell.spawn_with_deadline(
-          argv, chdir: root, env: process_env, timeout: timeout,
-          excerpt: Shell::Excerpt.new(bytes: tail_bytes, head_share: SUITE_EXCERPT_HEAD_SHARE),
-          analysis: analysis
-        )
+        # **The stream is the whole suite, not the 1MB analysis.** The analysis is for the
+        # failure parser; the stream is for the person reading a run whose failure the parser
+        # could not name. The file is closed here, after the spawn has drained its pipe.
+        file = Shell.open_stream(stream)
+        begin
+          status, text, timed_out = Shell.spawn_with_deadline(
+            argv, chdir: root, env: process_env, timeout: timeout,
+            excerpt: Shell::Excerpt.new(bytes: tail_bytes, head_share: SUITE_EXCERPT_HEAD_SHARE),
+            analysis: analysis, stream: file
+          )
+        ensure
+          if file
+            file.flush
+            file.close
+          end
+        end
         if timed_out
           Result.new(
             command: command, ran: false, passed: false, exit_code: nil,

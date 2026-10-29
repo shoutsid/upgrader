@@ -244,7 +244,7 @@ class StepMachineTest < Minitest::Test
     def detect(_root, declared: nil, stack: nil) = Agents::Upgrader::Tests::Suite.new(kind: :rspec, command: "bundle exec rspec")
     def no_suite_reason(_root, _stack = nil) = "no suite"
 
-    def run(root, _suite, timeout:, env:, machine: nil, stack: nil)
+    def run(root, _suite, timeout:, env:, machine: nil, stack: nil, stream: nil)
       @machines << machine
       (@results&.shift || @results&.last) || green
     end
