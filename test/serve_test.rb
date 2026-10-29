@@ -38,6 +38,13 @@ class ServeTest < Minitest::Test
   Result = Struct.new(:verdict, :to_version, :worktree, :repository, :from_version, :commit,
     :run_id, keyword_init: true) do
     def passed? = verdict == Agents::Upgrader::Record::PASSED
+
+    # The loop can lower a run it finds behind the project's start; the double only needs the
+    # verdict, because `settle` reads that and the worktree.
+    def reconcile!(verdict:, note: nil)
+      self.verdict = verdict
+      self
+    end
   end
 
   # A step that never runs anything. It records every invocation — including whether the
@@ -96,8 +103,11 @@ class ServeTest < Minitest::Test
       File.write(File.join(@worktree, "app_update_added.rb"), "# what app:update wrote\n")
       settle(result)
 
+      declared = @kwargs[:project]&.from.to_s
+      default_from = declared.empty? ? "4.2.11" : declared
+      from_version = result.from_version.to_s.empty? ? default_from : result.from_version.to_s
       Result.new(verdict: result.verdict, to_version: result.to_version, worktree: @worktree,
-        repository: @kwargs[:repository], from_version: "4.2.11", commit: "9f2c1ab8",
+        repository: @kwargs[:repository], from_version: from_version, commit: "9f2c1ab8",
         run_id: "run-1")
     end
 
@@ -517,6 +527,33 @@ class ServeTest < Minitest::Test
     # And the flag that made it a kept tree at all: a loop that asked for a per-run copy
     # would re-clone every cycle and never see its own previous step.
     assert_equal [true], FakeStep.calls.map { |call| call[:reuse] }.uniq
+  end
+
+  # **A run that starts behind the project's `from` is not a checkpoint.** A kept tree can be
+  # left behind when the service does not advance a run; publishing that run would deliver a
+  # rung the project has already passed and stack a new branch on the old history. Measured on
+  # sample-legacy-rails-app, where a 4.1.0 tree was published after the service had kept the
+  # project at 4.1.16.
+  def test_a_passed_run_behind_the_project_is_reset_and_not_published
+    FakeStep.reset!(results: [Result.new(verdict: "passed", from_version: "4.1.0",
+      to_version: "4.2.11.3")])
+    FakePublish.reset!
+    out = StringIO.new
+    project = Agents::Upgrader::Project.new({
+      "slug" => "sample", "repo" => "acme/sample", "from" => "4.1.16", "to" => "4.2.11.3",
+      "suite" => { "kind" => "minitest", "command" => "bundle exec rake test" },
+      "delivery" => { "provider" => "none" }
+    })
+
+    serve(corpus: FakeCorpus.new(targets: [{ "repo_url" => "acme/sample" }]), cycles: 1,
+      project: project, walk: true, rungs: 1, publish: true, out: out).run
+
+    assert_empty FakePublish.published, "a run behind the project's start was published"
+    assert_includes out.string, "behind the project's 4.1.16"
+    tree = File.join(home, "fake-tree")
+    subject, = capture2("git", "-C", tree, "log", "-1", "--format=%s")
+    refute_includes subject, "4.1.0 -> 4.2.11.3",
+      "a run behind the project was committed as the next checkpoint"
   end
 
   # A step that did not pass advances nothing, so the tree goes back to its base commit:

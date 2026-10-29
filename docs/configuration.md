@@ -48,6 +48,7 @@ A setting that is not present is a setting the caller did not make.
 | `UPGRADER_REPAIR_MODEL` | empty | the model the agent is asked to use. Empty uses the agent's own configuration. |
 | `UPGRADER_REPAIR_AGENT` | `repair` | the agent name in the generated config. |
 | `UPGRADER_REPAIR_BINARY` | `opencode` | the agent binary, for an installation that names it differently. |
+| `UPGRADER_REPAIR_LIMITS` | empty | the file where a model's reported reset is kept; empty uses `repair_model_limits.json` in the client's home. |
 
 Repair is off by default because it is the only setting here that spends money. Turning it on
 also needs an authenticated model in the agent's own configuration; the deployment's home volume
@@ -57,6 +58,15 @@ is the place for that credential, never the image.
 feeds carries a `repair` object, and its `model` replaces this variable for that walk. A row with
 no model means the account's chain, and an empty account chain means this variable — so a
 measured `UPGRADER_REPAIR_MODEL` stays in force until somebody names a chain against a project.
+
+**A free model that has reported a limit is skipped until its reset.** The provider's sentence is
+read for an ISO time, a clock time, `in 30 minutes` or a `retry-after`; when no reset is named, a
+one-hour cooldown is recorded and marked as unreported. A free model that times out with no answer
+is treated the same way — the live free tier did exactly that — while a paid model's timeout is
+still measured, because a paid model may be slow because it is working. The deadline is written to
+`UPGRADER_REPAIR_LIMITS` (or `repair_model_limits.json` in the client's home), so the next repair,
+and the next process, starts at the next model until the recorded time passes. The attempt's log
+and record name the model, the reset and the reason.
 
 ### The operator's stop switch
 

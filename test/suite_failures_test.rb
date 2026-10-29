@@ -1,116 +1,129 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "agents/upgrader/suite_failures"
+require "agents/upgrader"
 
-# **The suite's text, read as the failure it is.** The fixture is the biddingapp 6.0 rung's real
-# output — three of its six blocks, copied whole — because a parser tested on a sentence written for
-# it tests the spelling somebody chose rather than the formatter's.
+# The two suite dialects, as data a repair can read.
 class SuiteFailuresTest < Minitest::Test
-  FIXTURE = File.expand_path("fixtures/rspec_60_biddingapp.txt", __dir__)
+  SuiteFailures = Agents::Upgrader::SuiteFailures
 
-  # **The other dialect: a failed expectation.** Copied whole from diaspora's 7.1.6 rung, where
-  # Rails 7.1 stopped writing a redirect's body and three examples read the redirect's target out
-  # of it. There is no `SomeError:` line in any of the three, which is the shape the parser had to
-  # learn.
-  DIASPORA = File.expand_path("fixtures/rspec_71_diaspora.txt", __dir__)
+  # The exact Minitest shape volunteer_portal's 6.1 rung printed. The exception class ends in
+  # `Reference`, not `Error`, which is why the parser's class vocabulary had to grow.
+  MINITEST_ERROR = <<~OUT
+    E
 
-  # **The YAML-column failure, copied from the Consul 5.2.8.1 rung.** Its exception is
-  # `Psych::DisallowedClass`, which ends in `Class` rather than `Error`, and the parser's class
-  # pattern used to know only the three common suffixes — so the class and the message were
-  # dropped while the file and line still parsed.
-  YAML_COLUMNS = File.expand_path("fixtures/rspec_528_psych.txt", __dir__)
+    Error:
+    UserResolver::individual_events::when user has both events and individual events#test_0001_does not return the correct order:
+    ActiveRecord::UnknownAttributeReference: Query method called with non-attribute argument(s): "( SUM( (EXTRACT(EPOCH FROM \\"events\\".\\"ends_at\\") - EXTRACT(EPOCH FROM \\"events\\".\\"starts_at\\")) / 60 ) + SUM( COALESCE(\\"individual_events\\".\\"duration\\", 0) ) ) DESC"
+        app/graphql/resolvers/user_resolver.rb:109:in `scope_with_sort_by'
+        app/graphql/resolvers/user_resolver.rb:21:in `all'
+        test/graphql/resolvers/user_resolver_test.rb:127:in `block (4 levels) in <top (required)>'
 
-  # **The 7.1.6 failure whose class is not an `…Error` and whose message is below its source
-  # excerpt.** Copied whole from ohana-api's rung: Rails 7.1 raises
-  # `I18n::MissingTranslationData` for a spec's undefined key, the class ends in `Data`, and the
-  # line after `Failure/Error:` is the two-line excerpt rather than the message.
-  MISSING_TRANSLATION = File.expand_path("fixtures/rspec_71_missing_translation.txt", __dir__)
+    Finished in 0.888324s, 106.9429 runs/s, 136.2115 assertions/s.
+    95 runs, 121 assertions, 0 failures, 8 errors, 0 skips
+  OUT
 
-  # Not `failures`: Minitest::Test already owns that name for the assertions that failed.
-  def parsed = Agents::Upgrader::SuiteFailures.parse(File.read(FIXTURE))
+  def test_a_minitest_error_keeps_its_name_class_message_file_and_line
+    failure = SuiteFailures.parse(MINITEST_ERROR).first
 
-  def test_a_failure_names_the_application_file_and_line_it_came_out_of
-    first = parsed.first
-
-    assert_equal "BidsController GET #edit responds with HTTP 200 status", first.name
-    assert_equal "app/views/bids/edit.html.erb", first.file
-    assert_equal 5, first.line
-    assert_equal "<%= link_to 'Show', @bid %> |", first.source
-    assert_equal "ActionView::Template::Error", first.error
+    refute_nil failure
+    assert_includes failure.name, "UserResolver::individual_events"
+    assert_equal "ActiveRecord::UnknownAttributeReference", failure.error
+    assert_includes failure.messages.first, "Query method called with non-attribute argument(s)"
+    assert_equal "app/graphql/resolvers/user_resolver.rb", failure.file
+    assert_equal 109, failure.line
   end
 
-  # RSpec wraps a template's exception, so the class a repair can act on is the cause. A parser
-  # that stopped at `ActionView::Template::Error` would know a page failed and not why.
-  def test_the_cause_is_read_through_the_template_wrapper
-    first = parsed.first
+  # **The browser process is an exception class too.** 19wu's RSpec baseline printed
+  # `Capybara::Poltergeist::DeadClient:` as the only failure; without `Client` in the class
+  # vocabulary the block read as an anonymous message, and the step's rerun rule could not see it.
+  def test_a_browser_client_death_keeps_its_class
+    text = <<~OUT
+      Failures:
 
-    assert_equal "NoMethodError", first.caused_by
-    assert_includes first.caused_by_message, "undefined method `bid_path'"
-    assert_includes first.messages.join(" "), "undefined method `bid_path'"
+        1) group collaborators sign in
+           Failure/Error: before { sign_in user }
+           Capybara::Poltergeist::DeadClient:
+             PhantomJS client died while processing
+           # ./spec/support/devise.rb:33:in `sign_in'
+
+      Finished in 3 minutes 35.1 seconds
+      393 examples, 1 failure, 1 pending
+    OUT
+
+    failure = SuiteFailures.parse(text).first
+
+    refute_nil failure
+    assert_equal "Capybara::Poltergeist::DeadClient", failure.error
+    assert_equal "spec/support/devise.rb", failure.file
+    assert_equal 33, failure.line
   end
 
-  # The layout's failure is the same shape with the other cause: a URL helper given a nil segment.
-  # It is found by the file it names, which is how the repair will reach it too.
-  def test_a_url_generation_failure_names_the_missing_key_and_the_layout_line
-    nav = parsed.find { |failure| failure.file == "app/views/layouts/_navigation.html.erb" }
+  def test_a_minitest_assertion_failure_keeps_the_expected_sentence_and_the_test_frame
+    text = <<~OUT
+      Failure:
+      ThingTest#test_the_answer:
+      Expected: 42
+        Actual: 41
+          test/models/thing_test.rb:12:in `test_the_answer'
+    OUT
 
-    refute_nil nav
-    assert_equal 81, nav.line
-    assert_equal "ActionController::UrlGenerationError", nav.caused_by
-    assert_includes nav.messages.join(" "), "missing required keys: [:category_id]"
-    assert_includes nav.source, "new_category_item_path(@category)"
+    failure = SuiteFailures.parse(text).first
+
+    refute_nil failure
+    assert_equal "ThingTest#test_the_answer", failure.name
+    assert_nil failure.error
+    assert_equal "Expected: 42", failure.message
+    assert_equal "test/models/thing_test.rb", failure.file
+    assert_equal 12, failure.line
   end
 
-  def test_the_failed_examples_list_is_not_a_failure_block
-    assert_equal 3, parsed.size
+  # **The suite's colors are not part of its grammar.** The step container's terminal makes
+  # Minitest print `\e[31mError:\e[0m`; the record's tail is stripped, so a parser tested against
+  # the tail looked correct while the live repair saw nothing.
+  def test_ansi_colors_do_not_hide_a_minitest_error
+    colored = MINITEST_ERROR.sub("Error:", "\e[31mError:\e[0m")
+
+    failure = SuiteFailures.parse(colored).first
+
+    refute_nil failure
+    assert_equal "ActiveRecord::UnknownAttributeReference", failure.error
+    assert_equal "app/graphql/resolvers/user_resolver.rb", failure.file
   end
 
-  # **An expectation failure prints no class line, and its own sentence is the failure.** Before
-  # this the file and the line parsed and the sentence was nil, so a repair could see that an
-  # expectation at line 113 failed and not what it said — which is the whole of the evidence the
-  # redirect-body repair is made from.
-  def test_an_expectation_failure_is_read_without_an_exception_class
-    first = Agents::Upgrader::SuiteFailures.parse(File.read(DIASPORA)).first
+  # **A Minitest suite can print a `Failure/Error:` string without being RSpec.** Volunteer's
+  # `rails test` output includes application log lines, and the parser used to choose the RSpec
+  # branch on that substring, leaving the real `Error:` blocks unread and the SQL repair with
+  # nothing to act on. The two dialects are now both parsed.
+  def test_a_minitest_suite_that_mentions_failure_error_still_yields_its_errors
+    text = MINITEST_ERROR.sub("E\n\nError:", "E\n\nsome log: Failure/Error: not an RSpec block\n\nError:")
 
-    assert_equal "spec/controllers/api/openid_connect/authorizations_controller_spec.rb", first.file
-    assert_equal 113, first.line
-    assert_equal 'expect(response.body).to match("error=invalid_scope")', first.source
-    assert_nil first.error
-    assert_equal 'expected "" to match "error=invalid_scope"', first.message
+    failures = SuiteFailures.parse(text)
+
+    assert_equal "ActiveRecord::UnknownAttributeReference", failures.first.error
+    assert_equal "app/graphql/resolvers/user_resolver.rb", failures.first.file
   end
 
-  # A raised exception still reads as it did: the class line follows `Failure/Error:` and takes the
-  # message branch ahead of the detail this parser now expects there.
-  def test_a_class_line_still_names_the_exception
-    first = parsed.first
+  def test_rspec_still_reads_its_own_failure_error_dialect
+    text = <<~OUT
+        1) A thing fails
+           Failure/Error: expect(subject).to eq(1)
 
-    assert_equal "ActionView::Template::Error", first.error
-    assert_equal "undefined method `bid_path' for #<#<Class:0x00005578e9acc7d8>:0x00005578e910c7e8>",
-      first.message
-  end
+           NoMethodError:
+             undefined method `one' for nil
+           # ./app/models/thing.rb:7:in `one'
+           # ./spec/models/thing_spec.rb:4:in `block (2 levels)'
+    OUT
+    # RSpec's numbered line carries two leading spaces; the squiggly heredoc above removes the
+    # common indent, so put them back rather than widening the parser to accept an unindented
+    # line the real formatter never prints.
+    text = text.lines.map { |line| "  #{line}" }.join
 
-  # The failure a serialized column raises after the CVE-2022-32224 backport. Its class is the
-  # evidence the YAML-column repair acts on, and the permitted class is in the sentence below it.
-  def test_a_disallowed_class_is_read_as_the_exception_and_its_class_name
-    failure = Agents::Upgrader::SuiteFailures.parse(File.read(YAML_COLUMNS)).first
+    failure = SuiteFailures.parse(text).first
 
-    assert_equal "Psych::DisallowedClass", failure.error
-    assert_includes failure.message, "ActiveSupport::HashWithIndifferentAccess"
-    assert_equal "app/controllers/legislation/annotations_controller.rb", failure.file
-    assert_equal 52, failure.line
-  end
-
-  # **The excerpt above a class is not the exception's message.** RSpec prints the source after a
-  # bare `Failure/Error:`, then the class and its own sentence; a parser that took the first
-  # non-empty line as the message kept `expect(page).` and lost `translation missing: …`, which
-  # is the only line a repair can act on.
-  def test_a_class_line_after_a_source_excerpt_takes_the_message_below_it
-    failure = Agents::Upgrader::SuiteFailures.parse(File.read(MISSING_TRANSLATION)).first
-
-    assert_equal "I18n::MissingTranslationData", failure.error
-    assert_equal "translation missing: en.admin.navigation.locations", failure.message
-    assert_equal "spec/features/admin/dashboard_spec.rb", failure.file
-    assert_equal 28, failure.line
+    refute_nil failure
+    assert_equal "NoMethodError", failure.error
+    assert_equal "app/models/thing.rb", failure.file
+    assert_equal 7, failure.line
   end
 end

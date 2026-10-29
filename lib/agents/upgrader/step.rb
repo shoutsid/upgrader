@@ -32,12 +32,27 @@ module Agents
       # executes the *first* rung towards it. — one minor release at a time, never skipped.
       DEFAULT_SUITE_TIMEOUT = 1800
 
+      # **A browser that has stopped making progress is a hang, not a slow suite.** The project's
+      # resolved `suite_hang` class chooses the bound; the step takes the smaller of it and its own
+      # timeout, so a project can tighten the bound and cannot turn a kill into a pass. `ask` and
+      # `deny` leave the deployment's timeout alone.
+      SUITE_HANG_SECONDS = {
+        "stop_after_15m" => 15 * 60,
+        "stop_after_30m" => 30 * 60,
+        "stop_after_60m" => 60 * 60
+      }.freeze
+
       # What a scan will carry. The service bounds a request body and an application's
       # source is not a payload, so the walk sends the files a plan is about — and says
       # in the record when it stopped, rather than sending a slice and calling it done.
       SCAN_SUFFIXES = %w[.rb .rake .erb .yml .ru].freeze
       SCAN_SKIP = %w[.git vendor node_modules tmp log public/assets storage coverage].freeze
-      MAX_SCAN_FILES = 240
+      # **The scan route's own file bound, not a larger one of this client's.** `POST /api/rails/scan`
+      # refuses more than `Upgrade::Scanner::MAX_FILES` (200) before it reads the body, and a step
+      # that sent 232 files for a 19wu rung received a 422 at the scan stage — the run was never
+      # recorded, so a passing move looked like a client crash. The byte bound is below the route's
+      # 512 KiB for the same reason: a request this client builds must be one the route accepts.
+      MAX_SCAN_FILES = 200
       MAX_SCAN_BYTES = 262_144
 
       # Which machine executes this step's application-level commands. `docker` means the
@@ -72,6 +87,13 @@ module Agents
       PINNED_BROWSER = "/opt/agents-browser/chrome-linux64/chrome"
       PINNED_LAUNCHER = "/usr/local/bin/agents-browser"
       PINNED_DRIVER = "/opt/agents-browser/chromedriver"
+
+      # **The headless browser an old poltergeist suite selects by itself.** The image installs it
+      # (see `images/Dockerfile`); the application's own `spec_helper` looks for this executable
+      # and chooses `:poltergeist` when it is on PATH. 19wu is the measured case: without it the
+      # suite falls back to Firefox, and 27 `:js` examples fail with `Could not find Firefox
+      # binary` before the move is measured.
+      PHANTOMJS_BINARY = "/usr/local/bin/phantomjs"
 
 
       # How many new framework defaults one step may try. **Off unless a number says otherwise**,
@@ -171,6 +193,13 @@ module Agents
         # environment *names* the suite reads and the stack; the entry points that have a
         # declaration pass it (the design notes call this the adapter).
         @project = project
+        # **The account/project policy the service resolved for this walk.** A declaration written
+        # before the field existed is empty, which leaves the deployment's own behaviour; the only
+        # values this build acts on are the suite-hang bound and the browser driver, and both are
+        # bounded by the class vocabulary the service publishes.
+        @decision_policy = project&.decision_policy || {}
+        hang = SUITE_HANG_SECONDS[@decision_policy["suite_hang"].to_s]
+        @suite_timeout = [@suite_timeout.to_i, hang].min if hang
         # **The operator's stop switch, checked at every command boundary.** `nil` is a hand-run
         # step, which no deployment switch controls — a stop on the site admin is about the walk,
         # not about a person asking what a move costs — and `serve` always passes one.
@@ -431,7 +460,14 @@ module Agents
         # reason, and repairing the suite would be measuring a tree that never booted. The loop's
         # premise — a green baseline before, a red subject after — is unchanged; only the subject
         # is the boot command rather than the suite.
+        stale_lock(stages)
         repair(stages, step, subject: @boot, rerun: -> { @boot = boot(stages) })
+        # **The repair's own boot can be the first one that reaches the stale lock.** Measured on
+        # 19wu's 4.1.16 rung: the first boot died on polyamorous, the repair fixed that, and the
+        # second boot answered `Could not find gem 'ransack (~> 1.4.1)'` — after the one
+        # `stale_lock` call had already run. The rule has to run on the boot the repair produced as
+        # well, or the move goes to the suite with a Gemfile line the lock never installed.
+        stale_lock(stages)
         missing_gems(stages)
         @suite = suite(stages)
 
@@ -864,7 +900,7 @@ module Agents
         declared = @lockfile.declared_ruby.to_s[/\d+(?:\.\d+)*/]
         @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
           ruby: step["requires_ruby"] || @lockfile.locked_ruby || declared,
-          rails: rung_of(step))
+          rails: rung_of(step), decision_policy: @decision_policy)
         result = @preflight.run
         # **What the preflight could not do because the Gemfile and the pin did not agree yet.**
         # A rung-scoped entry — a declaration *or* a rewrite of a line the application already
@@ -1007,6 +1043,7 @@ module Agents
         checkpoint("pin Rails #{@to}")
 
         @boot = boot(stages)
+        stale_lock(stages)
         missing_gems(stages)
         @suite = suite(stages)
         mechanical_repairs(stages)
@@ -1315,8 +1352,26 @@ module Agents
       # examples failed on 156 and none on 120 — so the machine offers both and the declaration
       # chooses.
       def prepare_browser(stages, machine)
-        choice = @project&.toolchain&.browser.to_s
+        # **The lockfile overrides the stored declaration when it names poltergeist.** A project
+        # connected before this rule existed carries `chrome` in its toolchain, while its own
+        # `spec_helper` is written to choose `:poltergeist` the moment `phantomjs` exists. The
+        # lock is the fact the suite will read; the stored declaration is a hint from an earlier
+        # detection.
+        choice = phantomjs_locked? ? "phantomjs" : @project&.toolchain&.browser.to_s
         return if choice.empty?
+
+        if choice == "phantomjs"
+          return unless machine.respond_to?(:command)
+
+          @out&.puts("  browser: phantomjs — the application's own spec_helper selects poltergeist " \
+                     "when this executable is on PATH") if @out
+          stage = command(Record::BROWSER, ["sh", "-lc", "#{PHANTOMJS_BINARY} --version"],
+            chdir: @worktree.root, machine: machine, display: ["phantomjs", "--version"])
+          stages << stage
+          @browser_prepared = true if stage.ok?
+          return
+        end
+
         return unless machine.respond_to?(:root_command) && machine.respond_to?(:browser_cache)
 
         @out&.puts("  browser: #{choice} — installed where the image has none, sandbox off, " \
@@ -1348,6 +1403,17 @@ module Agents
       # asks both executables because a half-installed pair is the failure this has to survive: a
       # browser without its driver is a `session not created` the step would otherwise report as the
       # application's.
+      # **A lockfile with poltergeist is a suite that selects PhantomJS without being told.** The
+      # application's `spec_helper` checks for the executable itself; the lock proves which driver
+      # gem it will require. A project that names `phantomjs` in the lock directly is the same fact
+      # in the other spelling.
+      def phantomjs_locked?
+        specs = @lockfile&.specs
+        return false if specs.nil?
+
+        specs.key?("poltergeist") || specs.key?("phantomjs")
+      end
+
       def browser_install_command
         <<~SH
           if [ ! -x #{BROWSER_BINARY} ] || [ ! -x #{SYSTEM_DRIVER} ]; then
@@ -1999,7 +2065,26 @@ module Agents
       # application on top. One method, so a command cannot be added with two of the three.
       def application_env
         @tests.machine_test_env(@stack).merge(bundle_env(@machine))
-          .merge(database_env).merge(project_env).merge(@suite_env).merge(browser_env)
+          .merge(database_env).merge(project_env).merge(service_env)
+          .merge(@suite_env).merge(browser_env)
+      end
+
+      # **A declared service is an address, and the step container runs it on the application's
+      # own port.** Redis is started unconditionally by `agents-services`, but an application
+      # that reads `ENV["REDIS_URL"]` sees nothing unless this names it. Measured on limestone's
+      # 6.1 baseline: its Flipper initializer read `ENV["REDIS_BASE_URL"]`, interpolated nil into
+      # `"#{nil}flipper"`, and `Redis.new` raised `invalid uri scheme ''` before the first
+      # example. `REDIS_BASE_URL` keeps its trailing slash because that initializer appends a key
+      # namespace to it; `REDIS_URL` is the name the cache store and Sidekiq read. Both are the
+      # machine's statement about where its own service is, not a rewrite of the application.
+      def service_env
+        names = Array(@project&.services).map(&:to_s)
+        return {} unless names.include?("redis") || @lockfile&.specs&.key?("redis")
+
+        {
+          "REDIS_URL" => "redis://127.0.0.1:6379",
+          "REDIS_BASE_URL" => "redis://127.0.0.1:6379/"
+        }
       end
 
       # **A `database.yml` that names only `DATABASE_URL` still needs the database named.**
@@ -2026,9 +2111,36 @@ module Agents
       # nothing, so an application that downloads its own driver behaves as it does on a
       # developer's machine.
       def browser_env
-        return {} unless @browser_prepared && @machine.respond_to?(:browser_cache)
+        env = {}
+        if @browser_prepared && @machine.respond_to?(:browser_cache)
+          env["WD_INSTALL_DIR"] = @machine.browser_cache
+        end
+        env.merge(decision_browser_env)
+      end
 
-        { "WD_INSTALL_DIR" => @machine.browser_cache }
+      # **The driver the project chose, not a second driver selection.** The application's own
+      # spec_helper reads `SELENIUM_BROWSER`; phantomjs is the era binary and the default, while
+      # chrome/firefox name the image's browser. `stop`/`ask`/`deny` leave the application's own
+      # choice alone, which is what a project with no browser declaration sees.
+      def decision_browser_env
+        return {} unless browser_suite?
+
+        case @decision_policy["browser_driver"].to_s
+        when "phantomjs-1.9.8" then { "SELENIUM_BROWSER" => "phantomjs" }
+        when "chrome" then { "SELENIUM_BROWSER" => "chrome" }
+        when "firefox" then { "SELENIUM_BROWSER" => "firefox" }
+        else {}
+        end
+      end
+
+      # A policy default must not put `SELENIUM_BROWSER` into every Rails suite. The lock's own
+      # browser gem is the fact that says this application drives one; a project declaration that
+      # names a browser is the same fact in the declaration.
+      def browser_suite?
+        return true if @project&.toolchain&.browser.to_s != ""
+
+        %w[poltergeist selenium-webdriver webdrivers cuprite ferrum]
+          .any? { |name| @lockfile&.specs&.key?(name) }
       end
 
       # **The bundle's own groups, detected rather than assumed.** The tool's path settings are
@@ -2243,19 +2355,57 @@ module Agents
       def run_suite(stages, stage)
         @control&.check!
         announce(stage, @suite_plan.command)
-        result = @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
-          env: application_env, machine: @machine)
+        result = run_suite_once
+        # **A browser that died at startup is not a finding about the move.** Measured on 19wu's
+        # 4.0 baseline: the only failure was `Capybara::Poltergeist::DeadClient` at the first
+        # `:js` example's `visit`, and the same example passed in the suite after the move. A
+        # retry is still the suite deciding, and a real crash fails it a second time; the record
+        # says the first run was repeated and why.
+        retried = browser_retry_allowed? && dead_client_only?(result)
+        if retried
+          @out&.puts("  #{stage}: the only failure was a dead PhantomJS client; rerunning once")
+          result = run_suite_once
+        end
         # **The repair reads this, the record reads `output_tail`.** The two bounds are different
         # because the two readers are: a failure list longer than the record's excerpt is still a
         # list a repair can answer, and reading the record's tail instead lost every block before
         # the cut (see `Tests::SUITE_ANALYSIS_BYTES`).
         @suite_output = result.output
+        tail = result.output_tail.to_s
+        if retried
+          tail = "#{tail}\n(the first run's only failure was " \
+                 "Capybara::Poltergeist::DeadClient; the suite was rerun)"
+        end
         stages << Record::Command.new(stage: stage, command: @suite_plan.command, ran: result.ran,
-          exit_code: result.exit_code, seconds: result.seconds,
-          output_tail: result.output_tail)
+          exit_code: result.exit_code, seconds: result.seconds, output_tail: tail)
         @progress.finish(stage: stage, status: status_for(result),
           exit_code: result.exit_code, duration_ms: milliseconds(result))
         stages.last
+      end
+
+      def run_suite_once
+        @tests.run(@worktree.root, @suite_plan, timeout: @suite_timeout, stack: @stack,
+          env: application_env, machine: @machine)
+      end
+
+      # An empty policy is the deployment's old behaviour; `retry_once` is the platform default and
+      # `deny` makes a dead client a red stage rather than a rerun.
+      def browser_retry_allowed?
+        value = @decision_policy["browser_retry"].to_s
+        value.empty? || value == "retry_once"
+      end
+
+      # One failure, and it is the browser process rather than an assertion. Two failures are not
+      # this rule's: a dead client beside a real failure would hide the real one behind a rerun.
+      def dead_client_only?(result)
+        return false if result.nil? || result.exit_code.to_i.zero?
+
+        text = result.output.to_s
+        text = result.output_tail.to_s if text.empty?
+        failures = SuiteFailures.parse(text)
+        failures.size == 1 && failures.first.error.to_s == "Capybara::Poltergeist::DeadClient"
+      rescue StandardError
+        false
       end
 
       # **The suite's mechanical failures, repaired from the application's own route table.**
@@ -2296,6 +2446,7 @@ module Agents
           failures = SuiteFailures.parse(
             @suite_output.to_s.empty? ? @suite.output_tail : @suite_output
           )
+          @out&.puts("  repair: #{failures.size} failure(s) parsed for mechanical repair")
           break if failures.empty?
 
           # **The schema's answer first, and it needs no router.** A missing column is a failure the
@@ -2333,6 +2484,7 @@ module Agents
           # as a label and then raises. The repair keeps the `href:` the spec already names, which
           # is the half that identifies the link. No boot and no router are read for it either.
           edits = Associations.for(root: @worktree.root, failures: failures)
+          edits += SqlFragments.for(root: @worktree.root, failures: failures)
           edits += RedirectBodies.for(root: @worktree.root, failures: failures)
           edits += ResponseContentTypes.for(root: @worktree.root, failures: failures)
           edits += TranslationSettings.for(root: @worktree.root, failures: failures)
@@ -3559,8 +3711,31 @@ module Agents
       # from a component list kept here, because such a list would have to be extended by hand
       # for every Rails release that adds one (`actioncable`, `activestorage`, `actiontext`)
       # and would be silently wrong for the release this tool has not met yet.
+      # **A component the target release no longer ships is not a component to update.** Rails
+      # 4.0 extracted ActiveResource, so a 3.2 lock's `activeresource (3.2.22.5)` is pinned at the
+      # starting version and `pin_gems` named it alongside `rails (= 4.0.13)`. Bundler then asked
+      # for a release that satisfies both, and no activeresource release does: 4.0.0 asks
+      # `activesupport (= 4.0.0)` and the last 4.x is 4.1.0, which asks 4.1. The message was
+      # `Could not find gem 'activeresource'` — a component that had left the framework, not a
+      # missing gem. The map names the release that retired each component, and a lock below that
+      # release keeps its line for the rung that still has the component.
+      RETIRED_FRAMEWORK_COMPONENTS = { "activeresource" => "4.0" }.freeze
+
       def pin_gems
-        ["rails", *@lockfile.pinned_at(@from)].uniq
+        components = @lockfile.pinned_at(@from).reject { |name| retired_framework_component?(name) }
+        ["rails", *components].uniq
+      end
+
+      def retired_framework_component?(name)
+        retired = RETIRED_FRAMEWORK_COMPONENTS[name.to_s]
+        return false if retired.nil?
+
+        target = Gem::Version.new(rung_to.to_s[/\d+(?:\.\d+)*/].to_s)
+        target >= Gem::Version.new(retired)
+      rescue ArgumentError
+        # An unreadable target is not evidence that the component left; the pin keeps the line
+        # it found, which is the safe answer for a release this build cannot place.
+        false
       end
 
       # Pure, and its own method, because it is the one thing that rewrites a line of
@@ -3968,6 +4143,36 @@ module Agents
       # restore a fact rather than introduce one.
       MAX_MISSING_GEM_ROUNDS = 3
 
+      # **A Gemfile line this step moved, whose lock the pin did not follow.** A declaration can
+      # rewrite `gem 'ransack'` to `~> 1.4.1` after the pin's `bundle update` list was built, so the
+      # lock still holds 1.0.0 and the boot answers `Could not find gem 'ransack (~> 1.4.1)'`.
+      # Measured on 19wu's 4.1.16 rung: the first boot failed on ransack 1.0.0's adapter, the
+      # declaration moved the line, and the second boot could not find the release the lock never
+      # installed. Bundler's own sentence names the gem, and the conservative update is the pin's
+      # own mechanism; the boot is the gate.
+      MAX_STALE_LOCK_ROUNDS = 3
+      STALE_LOCK = /Could not find gem '([A-Za-z0-9_.-]+)/
+
+      def stale_lock(stages)
+        return if @boot.nil? || @boot.ok?
+
+        rounds = 0
+        while rounds < MAX_STALE_LOCK_ROUNDS && @boot && !@boot.ok?
+          name = @boot.output_tail.to_s[STALE_LOCK, 1]
+          break if name.nil?
+
+          @control&.check!
+          @out&.puts("  repair: the Gemfile asks for #{name} and the lock does not have it; " \
+                     "bundle update #{name}")
+          attempt = conservative_update(stages, [name], stage: Record::PIN)
+          break unless attempt.ok?
+
+          rounds += 1
+          checkpoint("move #{name} to the line the Gemfile asks for")
+          @boot = boot(stages)
+        end
+      end
+
       def missing_gems(stages)
         return if @boot.nil? || @boot.ok?
 
@@ -4284,6 +4489,12 @@ module Agents
         # last stage for ever — a stalled-looking panel that is really a finished step is the same
         # lie in the other direction as a working loop that looks idle.
         @progress.clear
+        # **The service records the run before the ledger does.** Its answer can lower the verdict
+        # — a passed suite whose patch moved a test file is `unverified` until the project allows
+        # that edit — and a ledger written from the local verdict would settle a rung the corpus
+        # did not accept. `contribute` rescues its own unreachable/refused cases, so a service that
+        # is briefly away still leaves the local record and the ledger it would have had.
+        contribute(record) if @contribute
         # A refusal is settled too, and it must be: re-deriving it reaches the same
         # refusal. What is *not* recorded is a move whose starting release could not be
         # read — "unknown -> 7.1.0" is not a key about anything, and a ledger entry
@@ -4294,7 +4505,6 @@ module Agents
             verdict: record.verdict, baseline: record.baseline&.exit_code,
             image: record.image, machine: record.machine, era: record.era, note: record.why)
         end
-        contribute(record) if @contribute
         @out.puts(record.to_s) if @out
         print_failure_evidence(record) if @out
         record.write(@record_dir) if @record_dir
@@ -4359,6 +4569,19 @@ module Agents
         # service's answer, so it is written onto the record after the answer arrives rather than
         # invented before the request.
         record.run_id = run["id"] if run.is_a?(Hash) && run["id"]
+        # **The service's verdict can be lower than the local one.** The local verdict says the
+        # suite was green; the service also asks whether the run's own patch moved a test file and
+        # the project allowed that edit. A walk that kept its own "passed" here committed the
+        # moved tree, rewound to the origin on the next cycle, and re-walked delivered rungs —
+        # measured on sample-legacy-rails-app, whose 4.2.11.3 run edited one obsolete performance
+        # test. The local record now carries the verdict the corpus will use, so `settle` resets
+        # to the rung's base and nothing is published.
+        if run.is_a?(Hash) && !run["verdict"].to_s.empty? && run["verdict"].to_s != record.verdict.to_s
+          recorded = run["verdict"].to_s
+          @out.puts("  the service recorded this run as #{recorded}, not #{record.verdict}: " \
+                    "#{run["note"]}") if @out
+          record.reconcile!(verdict: recorded, note: run["note"])
+        end
         @out.puts("  recorded: run #{run && run["id"]} (#{record.verdict})") if @out
 
         # **A stop becomes a question the corpus keeps.** Only a step that neither passed nor

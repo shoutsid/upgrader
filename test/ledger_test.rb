@@ -112,30 +112,54 @@ class LedgerTest < Minitest::Test
     end
   end
 
-  # **The trap this rule was written for.** `unverified` means the suite could not run — a fact about
-  # the environment rather than about the move — so an environment that is fixed has to be able to
-  # measure the move again. Measured on the live walk: 4.0.0 -> 4.1.0 was recorded `unverified` three
-  # times because the deployment had not supplied `RAILS_SECRET_TOKEN`, the ceiling then settled the
-  # move for ever, and the loop slept while the queue still asked for it — the corpus publishing
-  # "will be attempted again" and the ledger refusing to.
-  def test_an_unverified_step_is_retried_however_many_times_it_has_run
+  # **An unverified move is retried, but the environment is asked a bounded number of times.**
+  # Measured on the live walk: four applications reached 45-49 `unverified` runs because this
+  # ledger re-opened the move every cycle. Three tries distinguish a transient machine from an
+  # application whose own suite is red; after that a person requeues deliberately. The run still
+  # does not spend one of the move's failure attempts — the two ceilings are separate facts.
+  def test_an_unverified_step_is_retried_to_its_own_ceiling_and_then_settled
     Dir.mktmpdir do |dir|
       ledger = ledger_at(File.join(dir, "ledger.json"))
-      ceiling = Agents::Upgrader::Ledger::MAX_ATTEMPTS
+      ceiling = Agents::Upgrader::Ledger::MAX_UNVERIFIED_ATTEMPTS
 
-      (ceiling + 2).times do |attempt|
+      ceiling.times do |attempt|
         record(ledger, verdict: Agents::Upgrader::Ledger::UNVERIFIED)
+        settled = ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
 
-        refute ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
-          "attempt #{attempt + 1} left the move settled although nothing was established"
+        if attempt + 1 < ceiling
+          refute settled, "attempt #{attempt + 1} of #{ceiling} is still worth retrying"
+        else
+          assert settled, "the environment was asked #{ceiling} times; the move is settled"
+        end
         assert_equal 0, ledger.attempts(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
-          "an unverified run counted toward the ceiling"
+          "an unverified run counted toward the failure ceiling"
       end
 
-      # And the ceiling still bounds a move that *fails*, which is the case it exists for.
-      ceiling.times { record(ledger, verdict: Agents::Upgrader::Ledger::FAILED) }
-      assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO),
-        "a move that failed at the ceiling is still retried for ever"
+      # A failed move still uses the original ceiling and is unaffected by the new counter.
+      Agents::Upgrader::Ledger::MAX_ATTEMPTS.times do
+        record(ledger, verdict: Agents::Upgrader::Ledger::FAILED)
+      end
+      assert ledger.settled?(repo: REPO, commit: COMMIT, from_version: FROM, to_version: TO)
+    end
+  end
+
+  # **The ceiling is about the move, not one commit.** A step that fails before the baseline
+  # commits its preflight, and the next attempt starts from the base commit, so every unverified
+  # record can have a different commit and a fresh per-entry counter. Measured on caturday_api:
+  # 48 runs because each entry counted itself once. The count is over the move's unverified
+  # entries, so the fourth commit is already settled.
+  def test_an_unverified_ceiling_counts_the_move_across_its_commits
+    Dir.mktmpdir do |dir|
+      ledger = ledger_at(File.join(dir, "ledger.json"))
+      ceiling = Agents::Upgrader::Ledger::MAX_UNVERIFIED_ATTEMPTS
+
+      ceiling.times do |index|
+        record(ledger, verdict: Agents::Upgrader::Ledger::UNVERIFIED,
+          commit: format("%040d", index))
+      end
+
+      assert ledger.settled?(repo: REPO, commit: "f" * 40, from_version: FROM, to_version: TO),
+        "a fourth commit of the same move was handed out again"
     end
   end
 

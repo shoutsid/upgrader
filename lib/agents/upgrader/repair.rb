@@ -5,6 +5,7 @@ require "json"
 require "open3"
 require "timeout"
 
+require_relative "model_limits"
 require_relative "sealed"
 
 module Agents
@@ -69,8 +70,9 @@ module Agents
       # minutes and was recorded as "did not run", which stopped the loop before the suite ever
       # looked at what it had changed. An attempt that timed out is measured like any other.
       Attempt = Struct.new(:number, :command, :ran, :timed_out, :exit_code, :seconds, :output_tail,
-        :changed, keyword_init: true) do
+        :changed, :limited, :limit_until, keyword_init: true) do
         def ok? = ran && !timed_out && !exit_code.nil? && exit_code.zero?
+        def limited? = limited == true
       end
 
       # **What a repair did, kept while it is still knowable.** The record is written from the final
@@ -271,17 +273,59 @@ module Agents
         # is also where a credential belongs: a token in an image layer is a token in
         # every container that image starts.
         @home = home.to_s
+        # **A limited model is removed before the first attempt.** The provider's reset is a
+        # fact about the next step as much as this one, and `ModelLimits` keeps it in the
+        # client's home. A chain of `free,paid` therefore starts at `paid` while the free tier
+        # is spent, and returns to `free` when the recorded time has passed.
+        @limits = ModelLimits.new(home: @home, env: @env)
+        @model_index = 0
+        @skipped_models = []
+        @models = @models.reject do |model|
+          deadline = @limits.limited_until(model)
+          next false if deadline.nil?
+
+          @skipped_models << [model, deadline]
+          @out.puts("  repair: #{model} is limited until #{deadline.utc.iso8601}; " \
+                    "using the next model") if @out
+          true
+        end
       end
 
       def run
+        # **Every model being limited is not an attempt.** The next step's reset is a clock, and
+        # spending a model call to re-learn it is the cost this record exists to avoid. The
+        # earliest reset is named so an operator can see when the free tier returns.
+        if @models.empty? && @skipped_models.any?
+          earliest = @skipped_models.min_by { |_model, deadline| deadline }.last
+          @out.puts("  repair: every model is limited (earliest reset " \
+                    "#{earliest.utc.iso8601}); no attempt") if @out
+          return Result.new(attempts: [], repaired: false)
+        end
+
         attempts = []
         failure = @evidence[:output_tail].to_s
         repaired = false
         @attempts.times do |index|
-          attempt = attempt(index + 1, failure)
+          model = model_for
+          break if model.nil?
+
+          attempt = attempt(index + 1, failure, model)
           attempts << attempt
           @on_attempt&.call(attempt)
           @out.puts("  repair: attempt #{attempt.number} — #{describe(attempt)}") if @out
+          # **A limited model is evidence about the provider, not about the application.** It
+          # changes no file, so the suite is not run against it; the next model gets the same
+          # failure the free one was asked about.
+          if attempt.limited?
+            @models.delete_at(@model_index) if @models[@model_index] == model
+            if @models.empty?
+              @out.puts("  repair: no model is left; the earliest reset is " \
+                        "#{attempt.limit_until.utc.iso8601}") if @out
+              break
+            end
+            next
+          end
+          advance_model
           # **Only a start that never happened ends the loop.** A timed-out attempt ran; the
           # suite measures its patch like any other attempt's, and the next one is briefed with
           # what the suite said about it.
@@ -301,28 +345,47 @@ module Agents
 
       private
 
-      def attempt(number, failure)
+      def attempt(number, failure, model)
         prompt = prompt_for(failure)
-        model = model_for(number)
         before = changed_files
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         exit_code, output, outcome = run_agent(prompt, model)
+        # **A failed call is read for the provider's own sentence.** A successful call's answer
+        # is about the application, even if it happens to mention a rate limit in prose.
+        limit = if model.to_s.empty? || (exit_code.to_i.zero? && outcome != :timed_out)
+          nil
+        else
+          @limits.record(model: model, output: output, timed_out: outcome == :timed_out,
+            exit_code: exit_code)
+        end
+        if limit
+          output = "#{output}\n[repair] #{model} limited until #{limit.until_time.utc.iso8601}: " \
+                   "#{limit.reason}"
+          @out.puts("  repair: #{model} is limited until #{limit.until_time.utc.iso8601} " \
+                    "(#{limit.reason}); switching to the next model") if @out
+        end
         Attempt.new(
           number: number, command: command_label(prompt, model), ran: outcome != :not_started,
           timed_out: outcome == :timed_out, exit_code: exit_code,
           seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
-          output_tail: tail(output), changed: changed_files - before
+          output_tail: tail(output), changed: changed_files - before,
+          limited: !limit.nil?, limit_until: limit&.until_time
         )
       end
 
-      # **The Nth model for the Nth attempt, and the last one for everything after it.** A chain
+      # **The current model in the chain, and the last one for everything after it.** A chain
       # shorter than the budget repeats its final model rather than running with none: an attempt
       # with no model is opencode's own default, which is the model this environment turned out
-      # not to have a key for.
-      def model_for(number)
-        return "" if @models.empty?
+      # not to have a key for. `nil` means the chain was spent by limits, not that it was empty.
+      def model_for
+        return "" if @models.empty? && @skipped_models.empty?
+        return nil if @models.empty?
 
-        @models[[number - 1, @models.size - 1].min]
+        @models[[@model_index, @models.size - 1].min]
+      end
+
+      def advance_model
+        @model_index = [@model_index + 1, @models.size - 1].min
       end
 
       # The document, written once per attempt (the model may be pinned per run, so it is not
@@ -380,16 +443,19 @@ module Agents
       def collect(argv, env)
         output = +""
         status = nil
-        Open3.popen2e(env, *argv, chdir: @root) do |stdin, stream, wait|
+        # **The process gets its own group, because the agent is a process tree.** A bare
+        # `opencode` call spawns a node child that owns the model connection and the file handles;
+        # a TERM to the parent alone left the group alive and the suite's block still reading its
+        # pipe, which is how one repair attempt held a walk for more than ten minutes after its
+        # deadline. `pgroup: true` makes the child the group leader, and the timeout kills the
+        # group rather than hoping the parent forwards it.
+        Open3.popen2e(env, *argv, chdir: @root, pgroup: true) do |stdin, stream, wait|
           stdin.close
           begin
             Timeout.timeout(@timeout) { stream.each_line { |line| output << line } }
           rescue Timeout::Error
-            begin
-              Process.kill("TERM", wait.pid)
-            rescue Errno::ESRCH
-              nil
-            end
+            terminate(wait.pid)
+            stream.close
             return [nil, output + "\nthe repair agent was killed after #{@timeout}s", :timed_out]
           end
           status = wait.value
@@ -397,6 +463,23 @@ module Agents
         [status.exitstatus, output, :ran]
       rescue Errno::ENOENT => e
         [nil, "the repair agent could not be started: #{e.message}", :not_started]
+      end
+
+      # **A polite signal and then a hard one.** The agent may ignore TERM while it is in a model
+      # call; the KILL is what guarantees the deadline is a deadline. Both target the negative pid,
+      # which is the process group `pgroup: true` created.
+      def terminate(pid)
+        begin
+          Process.kill("TERM", -pid)
+        rescue Errno::ESRCH
+          nil
+        end
+        sleep 0.5
+        begin
+          Process.kill("KILL", -pid)
+        rescue Errno::ESRCH
+          nil
+        end
       end
 
       def command_label(prompt, model)
@@ -407,6 +490,10 @@ module Agents
 
       def describe(attempt)
         return "did not run (#{attempt.output_tail.lines.first.to_s.strip})" unless attempt.ran
+        if attempt.limited?
+          return "limited until #{attempt.limit_until.utc.iso8601} — " \
+                 "#{attempt.output_tail.lines.last.to_s.strip}"
+        end
         return "timed out after #{attempt.seconds.round(1)}s" if attempt.timed_out
 
         "exit #{attempt.exit_code} in #{attempt.seconds.round(1)}s" \

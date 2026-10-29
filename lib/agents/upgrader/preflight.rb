@@ -165,10 +165,11 @@ module Agents
       # choice is itself a `bundle install`, so the Gemfile has to be installable first). It is
       # what a digest entry's `when` is evaluated against, and a caller that cannot name one is
       # told which entries it therefore could not apply rather than being served them silently.
-      def initialize(root:, corpus: nil, ruby: nil, rails: nil)
+      def initialize(root:, corpus: nil, ruby: nil, rails: nil, decision_policy: {})
         @root = File.expand_path(root)
         @corpus = corpus
         @ruby = ruby.to_s.strip
+        @decision_policy = decision_policy.is_a?(Hash) ? decision_policy : {}
         # The release the move *ends at*, which is what makes an entry rung-scoped. Nil in the
         # standalone `preflight` mode, which is asked about a repository rather than about a move —
         # and a rung condition this cannot evaluate is a note at the call site, not a guess.
@@ -183,13 +184,21 @@ module Agents
         end
 
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
-          framework_removal_repairs
+          framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
+          magic_encoding_repairs + autoload_namespace_repairs + mongo_mapper_xml_repairs +
+          bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs
         decisions = []
         notes = []
         deferred = []
         digest(notes).each do |entry|
           digest_repair(entry, repairs, decisions, notes, deferred)
         end
+        # **A test gem's own ceiling is a fact the digest does not know.** volunteer_portal carries
+        # `maxitest 3.6.0`, whose gemspec caps minitest below 5.14; the 7.1 digest declares
+        # `~> 5.25.0` for the interpreter, and the two cannot resolve. The added line is withdrawn
+        # here, after the digest has written it, leaving the application's own lock at 5.13 —
+        # which satisfies Rails 7.1's `minitest >= 5.1` and maxitest's ceiling both.
+        withdraw_minitest_declaration(repairs, notes)
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: deferred)
       end
 
@@ -228,6 +237,9 @@ module Agents
         # 4.0-era line at the install stage; adding it there made every era fail to resolve.
         # After the pin, the devise line is the rung's line and the pair resolves.
         repairs.concat(devise_token_repairs)
+        # The rung-scoped minitest declaration is written here, after the pin, so the maxitest
+        # ceiling is checked here too; `run` checks the non-deferred case.
+        withdraw_minitest_declaration(repairs, notes)
         Result.new(repairs: repairs, decisions: decisions, notes: notes, deferred: [])
       end
 
@@ -269,6 +281,383 @@ module Agents
                 "the module, and the boot dies on the missing constant without it")]
       rescue SystemCallError
         []
+      end
+
+      # **Devise's confirmation mailer needs a host, and a test environment has no request to
+      # take one from.** Measured on rails-devise-graphql's 6.0.3.3 baseline: the first factory
+      # that created a confirmable user called `confirmation_url`, Devise's mailer view raised
+      # `Missing host to link to!`, and every later GraphQL/User example failed behind it. This is
+      # a test-environment setting rather than a production default — `localhost` is the host the
+      # suite's own requests use — and it is written before the baseline because a red baseline is
+      # not a failure the repair agent is allowed to touch. The trigger is Devise's own initializer
+      # or Gemfile line, so an application that never renders a Devise URL keeps its file unchanged.
+      def mailer_host_repairs
+        return [] unless devise_application?
+
+        path = File.join(@root, "config", "environments", "test.rb")
+        return [] unless File.file?(path)
+
+        text = File.binread(path)
+        return [] if text.match?(/default_url_options/)
+
+        match = text.match(/^(\s*)Rails\.application\.configure do\s*$/)
+        return [] if match.nil?
+
+        indent = match[1]
+        line = "#{indent}  config.action_mailer.default_url_options = { host: \"localhost\" }"
+        File.binwrite(path, text.sub(match[0], "#{match[0]}\n#{line}"))
+        [Repair.new(path: "config/environments/test.rb", line: nil, text: nil, after: line.strip,
+          subject: "action_mailer.default_url_options",
+          note: "Devise's mailer builds confirmation_url, and the test environment has no request " \
+                "to take a host from; localhost is the host the suite's own requests use")]
+      rescue SystemCallError
+        []
+      end
+
+      # **Rails 5.0 removed `ActiveModel::Serializers::Xml`, and MongoMapper still includes it.**
+      # Measured on caturday_api's 5.0.7.2 boot: `mongo_mapper-0.13.1` loads its Active Model
+      # plugin, which names the removed module, and the application dies before the first example
+      # with `uninitialized constant ActiveModel::Serializers::Xml`. The module was extracted to
+      # `activemodel-serializers-xml`; declaring it makes Bundler require it before MongoMapper's
+      # plugin runs. The trigger is the lockfile's own MongoMapper, not a guess about the app.
+      def mongo_mapper_xml_repairs
+        return [] unless rails_at_least?("5.0")
+
+        gemfile = File.join(@root, "Gemfile")
+        lockfile = File.join(@root, "Gemfile.lock")
+        return [] unless File.file?(gemfile) && File.file?(lockfile)
+        return [] unless File.binread(lockfile).match?(/\bmongo_mapper \(/)
+
+        text = File.binread(gemfile)
+        return [] if text.include?("activemodel-serializers-xml")
+
+        line = %(gem "activemodel-serializers-xml", "~> 1.0")
+        separator = text.empty? || text.end_with?("\n") ? "" : "\n"
+        File.binwrite(gemfile, "#{text}#{separator}#{line}\n")
+        [Repair.new(path: "Gemfile", line: nil, text: nil, after: line,
+          subject: "activemodel-serializers-xml",
+          note: "Rails 5.0 removed ActiveModel::Serializers::Xml; MongoMapper 0.13.1 still includes " \
+                "it, and the boot dies on the missing constant without the extracted gem")]
+      rescue SystemCallError
+        []
+      end
+
+      def devise_application?
+        return true if File.file?(File.join(@root, "config", "initializers", "devise.rb"))
+
+        gemfile = File.join(@root, "Gemfile")
+        File.file?(gemfile) && File.binread(gemfile).match?(/^\s*gem\s+["']devise["']/)
+      rescue SystemCallError
+        false
+      end
+
+      # **A squiggly heredoc is Ruby 2.3 syntax, and a test that evals one cannot run on 2.2.**
+      # Measured on brimir's 5.1 baseline: `eval <<~END` in a controller test is a parse error on
+      # the 2.2 era, before any example runs. The dedent is cosmetic for an `eval` whose body is
+      # Ruby source — indentation at the top level is not significant — so `<<-` is the same
+      # program on 2.2. Only the eval families are rewritten: a squiggly heredoc used as string
+      # content may depend on its dedent, and this rule has no evidence about that string.
+      EVAL_HEREDOC = /(\b(?:eval|class_eval|instance_eval|module_eval)\s*<<~)/
+
+      def squiggly_heredoc_repairs
+        return [] unless ruby_below?("2.3")
+
+        repairs = []
+        RUBY_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            name = full.sub("#{@root}/", "")
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              after = line.sub(EVAL_HEREDOC) { "#{Regexp.last_match(1).sub("<<~", "<<-")}" }
+              next if after == line
+
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+                subject: "eval heredoc",
+                note: "a squiggly heredoc is Ruby 2.3 syntax; an eval body is Ruby source, so " \
+                      "the dedent is cosmetic and <<- is the same program on this interpreter")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
+        end
+        repairs
+      end
+
+      # **A Ruby 1.9-era check that a UTF-8 comment must carry its encoding, and the repository's
+      # own fixer.** Measured on 19wu's 4.0 baseline: `spec/features/magic_encoding_spec.rb` calls
+      # the repository's `bin/magic_encoding_find`, which scans `app/`, `lib/` and `spec/` for a
+      # file with a non-ASCII byte and no `# encoding:` in its first two lines. The suite was red
+      # before the move, so the repair agent could not touch it; the repository ships the fixer
+      # (`bin/magic_encoding_fix`) and its own script is the rule. This is the same edit that
+      # script makes — the magic comment — applied before the baseline so the baseline measures
+      # the move rather than the repository's 2013 encoding hygiene.
+      MAGIC_ENCODING = /\A\s*#.*(?:-\*-\s*)?(?:en)?coding\s*:\s*([-a-z0-9_]*)\s*(?:;|-\*-|$)/
+      MAGIC_SOURCE_GLOBS = %w[app/**/*.rb lib/**/*.rb spec/**/*.rb].freeze
+
+      def magic_encoding_repairs
+        return [] unless File.file?(File.join(@root, "bin", "magic_encoding_find"))
+
+        repairs = []
+        MAGIC_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            content = File.binread(full)
+            next unless content.match?(/[^\0-\x7F]/n)
+            next if content.lines.first(2).any? { |line| line.match?(MAGIC_ENCODING) }
+
+            line = "# encoding: utf-8"
+            after =
+              if content.start_with?("#!")
+                first, rest = content.split("\n", 2)
+                "#{first}\n#{line}\n#{rest}"
+              else
+                "#{line}\n#{content}"
+              end
+            File.binwrite(full, after)
+            repairs << Repair.new(path: full.sub("#{@root}/", ""), line: 1, text: nil,
+              after: line, subject: "magic encoding",
+              note: "the repository's own magic_encoding_find requires this comment on a file " \
+                    "with a non-ASCII byte, and the spec is red before the move without it")
+          end
+        end
+        repairs
+      rescue SystemCallError
+        []
+      end
+
+      # **A lockfile's `BUNDLED WITH` is metadata, and a prerelease from another machine is not a
+      # dependency.** Measured on caturday_api's 5.0.7.2 rung: the lock says `2.0.0.pre.3`, every
+      # era tries `bundle _2.0.0.pre.3_ install`, and Rails 4.2 declares `bundler < 2.0`, so the
+      # newer eras' own Bundler refuses the resolve. Removing the line lets the era's Bundler write
+      # its own; the lock's specs are untouched. The class is `apply` by default and a project can
+      # choose `ask`/`deny`.
+      BUNDLED_WITH = /^BUNDLED WITH\n\s+([^\n]+)\n?/
+
+      def bundler_lock_repairs
+        policy = @decision_policy["lockfile_metadata"].to_s
+        return [] if !policy.empty? && policy != "apply"
+
+        path = File.join(@root, "Gemfile.lock")
+        return [] unless File.file?(path)
+
+        text = File.binread(path)
+        version = text[BUNDLED_WITH, 1]
+        return [] if version.nil?
+
+        rails = text[/^\s{4}rails \(([^)]+)\)/, 1]
+        return [] unless rails.to_s.start_with?("4.")
+        # **A prerelease is the measured case.** A normal 2.x line is left alone: the era's
+        # Bundler may still install it, and a broad rule would rewrite every Rails 4 lock in the
+        # corpus. `2.0.0.pre.3` is the one no era's Bundler has, and the one Rails 4.2 refuses.
+        return [] unless version.match?(/[A-Za-z]/)
+
+        match = text.match(BUNDLED_WITH)
+        line = text[0...match.begin(0)].count("\n") + 1
+        File.binwrite(path, text.sub(BUNDLED_WITH, ""))
+        [Repair.new(path: "Gemfile.lock", line: line, text: match[0].strip, after: "",
+          subject: "BUNDLED WITH",
+          note: "the lock names Bundler #{version}, which Rails 4.x cannot use; removing the line " \
+                "lets the era's Bundler write its own without changing a gem")]
+      rescue SystemCallError, ArgumentError
+        []
+      end
+
+      # **A test-only gem and the framework's test adapter can have an empty minitest window.**
+      # Measured on volunteer_portal's 7.1.6 pin: `minitest-rails 7.1.1` requires minitest
+      # `~> 5.20`, while `maxitest 3.6.0` caps minitest below 5.14. The project can allow the
+      # walker to remove the auxiliary gem; the suite is still the gate. The default is ask.
+      def test_gem_removal_repairs
+        return [] unless @decision_policy["test_gem_removal"].to_s == "allow"
+
+        gemfile = File.join(@root, "Gemfile")
+        lockfile = File.join(@root, "Gemfile.lock")
+        return [] unless File.file?(gemfile) && File.file?(lockfile)
+
+        lock = File.binread(lockfile)
+        ceiling = lock[/^\s{4}maxitest \([^)]+\)\n\s+minitest \([^)]*<\s*([0-9.]+)\)/, 1]
+        floor = lock[/^\s{4}minitest-rails \([^)]+\)\n\s+minitest \(([^)]*)\)/, 1].to_s[/~>\s*([0-9.]+)/, 1]
+        return [] if ceiling.nil? || floor.nil?
+        # **The lock can still name the adapter the previous rung used.** At Rails 7.1 the pin
+        # resolves minitest-rails 7.1, whose minitest floor is 5.20, while the lock may still say
+        # 7.0.1 and `~> 5.10`; the project's `allow` is the permission and the rung's own adapter
+        # is the floor the resolver will see. Measured on volunteer_portal's 7.1.6 pin.
+        if rails_at_least?("7.1") && Gem::Version.new(floor) < Gem::Version.new("5.20")
+          floor = "5.20"
+        end
+        return [] if Gem::Version.new(floor) < Gem::Version.new(ceiling)
+
+        lines = File.binread(gemfile).lines
+        index = lines.index { |line| line.match?(/^\s*gem\s+["']maxitest["']/) }
+        return [] if index.nil?
+
+        removed = lines.delete_at(index)
+        File.binwrite(gemfile, lines.join)
+        [Repair.new(path: "Gemfile", line: index + 1, text: removed, after: "",
+          subject: "maxitest",
+          note: "maxitest caps minitest below #{ceiling} while minitest-rails asks #{floor}; " \
+                "the project allowed the auxiliary test gem to be removed, and the suite decides")]
+      rescue SystemCallError, ArgumentError
+        []
+      end
+
+      # **Rails 4.1 deleted Active Record's mass-assignment whitelist.** Measured on the 3.2
+      # sample's 4.1.16 boot: `config.active_record.whitelist_attributes` in
+      # `config/application.rb` makes the railtie call a method that no longer exists, and the boot
+      # dies before the suite. The setting is a fact about the 3.2 application, not about the move;
+      # removing the line is the repair.
+      WHITELIST_ATTRIBUTES = /^(\s*)config\.active_record\.whitelist_attributes\s*=.*$/
+
+      def whitelist_attributes_repairs
+        return [] unless rails_at_least?("4.1")
+
+        repairs = []
+        Dir[File.join(@root, "config", "**", "*.rb")].sort.each do |full|
+          lines = File.binread(full).split("\n", -1)
+          changed = false
+          lines.each_with_index do |line, index|
+            next unless line.match?(WHITELIST_ATTRIBUTES)
+
+            after = "#{Regexp.last_match(1)}# removed: Rails 4.1 deleted Active Record's " \
+                    "whitelist_attributes"
+            lines[index] = after
+            changed = true
+            repairs << Repair.new(path: full.sub("#{@root}/", ""), line: index + 1, text: line,
+              after: after, subject: "whitelist_attributes",
+              note: "Rails 4.1 removed the mass-assignment whitelist; the setting is a 3.2 fact, " \
+                    "and the boot dies on the missing method before the suite")
+          end
+          File.binwrite(full, lines.join("\n")) if changed
+        end
+        repairs
+      rescue SystemCallError
+        []
+      end
+
+      # **Rails 7's Zeitwerk already manages every `app/*` directory, so an explicit autoload root
+      # for a *namespace* one hides the namespace the files define.** Measured on volunteer_portal's
+      # 7.0.10 suite: `config/application.rb` named `app/graphql/types` as a root, every file there
+      # defines `module Types`, and the test that names `Types::SensitiveObject` died with
+      # `uninitialized constant Types` — the nested root shadows the implicit `Types` namespace
+      # that `app/graphql` itself provides. The sibling `loaders` and `resolvers` entries stay:
+      # their files define top-level constants (`AssociationLoader`, `EventResolver`), so those
+      # directories really are roots. The guard is the files, not the directory name.
+      AUTOLOAD_BLOCK_START = /^([ \t]*)config\.autoload_paths\.concat\s*\[\s*$/
+      AUTOLOAD_ENTRY = /\A([ \t]*)Rails\.root\.join\(\s*(["'])([^"']+)\2\s*\)\s*,?\s*\z/
+
+      def autoload_namespace_repairs
+        return [] unless rails_at_least?("7.0")
+
+        path = File.join(@root, "config", "application.rb")
+        return [] unless File.file?(path)
+
+        lines = File.binread(path).split("\n", -1)
+        repairs = []
+        indent = nil
+        lines.each_with_index do |line, index|
+          if indent.nil?
+            match = AUTOLOAD_BLOCK_START.match(line)
+            indent = match[1] unless match.nil?
+            next
+          end
+          if line.match?(/\A#{Regexp.escape(indent)}\]/)
+            indent = nil
+            next
+          end
+
+          match = AUTOLOAD_ENTRY.match(line)
+          next if match.nil?
+
+          entry_indent, _quote, relative = match.captures
+          next unless relative.start_with?("app/")
+
+          top, _, rest = relative.delete_prefix("app/").partition("/")
+          next if top.empty? || rest.empty?
+          next unless File.directory?(File.join(@root, "app", top))
+
+          namespace = camelize(rest.split("/").last)
+          next unless defines_namespace?(File.join(@root, relative), namespace)
+
+          after = "#{entry_indent}# removed: #{relative} is the #{namespace} namespace under " \
+                  "app/#{top}; Rails 7's Zeitwerk manages app/#{top}, and a nested root hides it"
+          lines[index] = after
+          repairs << Repair.new(path: "config/application.rb", line: index + 1, text: line,
+            after: after, subject: "nested autoload path",
+            note: "the files in #{relative} define #{namespace}:: constants, so the directory is a " \
+                  "namespace under app/#{top}; naming it as an autoload root makes its files " \
+                  "top-level and the namespace constant is never defined")
+        end
+        File.binwrite(path, lines.join("\n")) unless repairs.empty?
+        repairs
+      rescue SystemCallError
+        []
+      end
+
+      # The namespace a directory owns, from its own name: `types` -> `Types`, `event_types` ->
+      # `EventTypes`. A directory whose files define something else is a root, not a namespace.
+      def defines_namespace?(directory, namespace)
+        Dir[File.join(directory, "**", "*.rb")].any? do |file|
+          text = File.read(file, encoding: "utf-8")
+          text.match?(/^\s*(?:module|class)\s+#{Regexp.escape(namespace)}\b/) ||
+            text.match?(/^\s*#{Regexp.escape(namespace)}::/)
+        rescue SystemCallError, ArgumentError
+          false
+        end
+      end
+
+      def camelize(name)
+        name.split("_").map { |part| part.empty? ? part : part[0].upcase + part[1..] }.join
+      end
+
+      # A `maxitest` dependency line in the lock, with its minitest ceiling.
+      MAXITEST_CAP = /^\s+maxitest \([^)]*\)\n\s+minitest \([^)]*<\s*([0-9.]+)\)/
+
+      def withdraw_minitest_declaration(repairs, notes)
+        added = repairs.find do |repair|
+          repair.subject.to_s == "minitest" && repair.path == "Gemfile" && repair.text.nil?
+        end
+        return if added.nil?
+
+        lockfile = File.join(@root, "Gemfile.lock")
+        return unless File.file?(lockfile)
+
+        cap = File.binread(lockfile)[MAXITEST_CAP, 1]
+        return if cap.nil?
+
+        line = added.after.to_s
+        version = line[/~>\s*([0-9.]+)/, 1]
+        return if version.nil? || Gem::Version.new(version) < Gem::Version.new(cap)
+
+        gemfile = File.join(@root, "Gemfile")
+        text = File.binread(gemfile)
+        return unless text.include?(line)
+
+        File.binwrite(gemfile, text.sub(/^#{Regexp.escape(line)}\n?/, ""))
+        repairs.delete(added)
+        notes << "the digest's `#{line}` was withheld: maxitest caps minitest below #{cap}, so the " \
+                 "lock's own line is the one that resolves"
+      rescue SystemCallError, ArgumentError
+        nil
+      end
+
+      def ruby_below?(version)
+        return false if @ruby.to_s.empty?
+
+        Gem::Version.new(@ruby.to_s[/\d+(?:\.\d+)*/].to_s) < Gem::Version.new(version)
+      rescue ArgumentError
+        false
+      end
+
+      def rails_at_least?(version)
+        return false if @rails.to_s.empty?
+
+        Gem::Version.new(@rails.to_s[/\d+(?:\.\d+)*/].to_s) >= Gem::Version.new(version)
+      rescue ArgumentError
+        false
       end
 
       def rails_between?(from, to)

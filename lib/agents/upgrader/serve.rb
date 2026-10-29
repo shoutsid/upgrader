@@ -867,6 +867,22 @@ module Agents
           return nil
         end
 
+        # **A run that starts behind the project's `from` is not a checkpoint.** A kept tree can
+        # be left behind after a run the service did not advance, and walking it forward would
+        # deliver a rung the project has already passed — measured on sample-legacy-rails-app,
+        # whose 4.1.0 base was published as a second 4.1.0 branch and a new stack after the
+        # service had kept the project at 4.1.16. The service refuses to move the target
+        # backwards; the walker must not publish the run either. It is recorded as unverified
+        # here so `settle` puts the tree back at its base and the loop stops rather than
+        # stacking another checkpoint on a history that is already wrong.
+        if behind_project?(record, project)
+          note = "the run starts at #{record.from_version}, behind the project's " \
+                 "#{project.from}; it is not a new checkpoint, so the tree is reset and " \
+                 "nothing is published"
+          @out.puts("serve: #{repository} — #{note}") if @out
+          record.reconcile!(verdict: "unverified", note: note)
+        end
+
         @out.puts("serve: #{repository} -> #{record.verdict} (#{record.to_version})")
         settle(record)
         record
@@ -942,6 +958,20 @@ module Agents
 
 
       private
+
+      # **A version comparison, not a string one.** The project's `from` is the release the service
+      # has settled; a tree behind it has lost a rung the corpus already recorded, and walking it
+      # forward would deliver that rung again. An unparseable release is not behind — the same
+      # direction the service's own `moves_backwards?` takes.
+      def behind_project?(record, project)
+        declared = project&.from.to_s
+        from = record.from_version.to_s
+        return false if declared.empty? || from.empty?
+
+        Gem::Version.new(from) < Gem::Version.new(declared)
+      rescue ArgumentError
+        false
+      end
 
       # The healthcheck's file. Written every cycle, whatever the cycle did.
       def touch

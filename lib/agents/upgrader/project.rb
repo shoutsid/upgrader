@@ -23,7 +23,21 @@ module Agents
       # believes is in force is the failure this class exists to prevent.
       FIELDS = %w[slug repo base_ref from to path_policy next_checkpoint stack suite services
         env_names eras delivery decisions brief_decisions source_roots checks toolchain style
-        app_update repair].freeze
+        app_update repair decision_policy].freeze
+
+      # The walker's half of `Upgrade::DecisionPolicy::KEYS`. A class the walker does not know is a
+      # setting that would silently do nothing, so it is refused like any other unknown field; the
+      # service/client contract test holds the two lists together.
+      DECISION_KEYS = %w[lockfile_metadata suite_hang browser_retry browser_driver
+        test_gem_removal terminal_rung].freeze
+      DECISION_OPTIONS = {
+        "lockfile_metadata" => %w[apply ask deny],
+        "suite_hang" => %w[stop_after_15m stop_after_30m stop_after_60m ask deny],
+        "browser_retry" => %w[retry_once ask deny],
+        "browser_driver" => %w[phantomjs-1.9.8 chrome firefox stop ask deny],
+        "test_gem_removal" => %w[allow ask deny],
+        "terminal_rung" => %w[ask deny]
+      }.freeze
 
       # **The account's permission for a model repair, published with the project.** The service's
       # feed carries it on every row because it is the account's setting applied to this project;
@@ -305,6 +319,7 @@ module Agents
         @style = read_style(fields["style"])
         @repair = read_repair(fields["repair"])
         @app_update = read_app_update(fields["app_update"])
+        @decision_policy = read_decision_policy(fields["decision_policy"])
       end
 
       # The declaration as it would be written back — what the site admin edits and what a record quotes.
@@ -318,9 +333,13 @@ module Agents
           "source_roots" => source_roots,
           "checks" => checks.map(&:to_h), "toolchain" => toolchain&.to_h,
           "style" => style&.to_h, "app_update" => app_update.to_h,
-          "repair" => repair&.to_h
+          "repair" => repair&.to_h, "decision_policy" => decision_policy
         }.compact
       end
+
+      # The effective defaults the service resolved for this project. A declaration written before
+      # the field existed is empty, which means the walker's own conservative defaults.
+      attr_reader :decision_policy
 
       # Where the walk starts: the named ref when the declaration has one, the repository's own
       # default branch otherwise. Said as a sentence rather than a nil so the record can quote it.
@@ -633,6 +652,31 @@ module Agents
 
         Repair.new(policy: policy,
           models: value["model"].to_s.split(/[,\s]+/).reject(&:empty?))
+      end
+
+      # **The resolved defaults, not a second policy engine.** The service has already applied
+      # platform → account → project; the walker validates the vocabulary it was handed and refuses
+      # a class or value this build does not implement, so a typo cannot silently do nothing.
+      def read_decision_policy(value)
+        return {} if value.nil?
+
+        raise Invalid, "decision_policy must be an object, not #{value.class}" unless value.is_a?(Hash)
+
+        unknown = value.keys.map(&:to_s) - DECISION_KEYS
+        raise Invalid, "unknown decision_policy class(es): #{unknown.sort.join(", ")}" unless unknown.empty?
+
+        value.each_with_object({}) do |(key, choice), result|
+          key = key.to_s
+          choice = choice.to_s
+          next if choice.empty?
+
+          unless DECISION_OPTIONS.fetch(key).include?(choice)
+            raise Invalid, "decision_policy.#{key} is #{choice.inspect}; this build knows " \
+                           "#{DECISION_OPTIONS.fetch(key).join(", ")}"
+          end
+
+          result[key] = choice
+        end
       end
 
       def read_style(value)

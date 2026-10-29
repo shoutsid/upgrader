@@ -487,6 +487,21 @@ module Agents
       def refused? = @verdict == REFUSED
       def unverified? = @verdict == UNVERIFIED
 
+      # **The service's verdict is the one the walk settles on.** The local verdict says what the
+      # suite did; the service adds the warrant — a passed suite whose patch moved a test file is
+      # not a measurement until the project allows that edit. A walk that settled on its own
+      # verdict committed the moved tree, reset to the origin on the next cycle, and re-walked
+      # rungs it had already delivered. The note is kept beside the sentence that made the local
+      # verdict so a reader can see both.
+      def reconcile!(verdict:, note: nil)
+        recorded = verdict.to_s
+        return self if recorded.empty? || recorded == @verdict
+
+        @verdict = recorded
+        @why = [@why, note.to_s.strip].reject(&:empty?).join(" — ")
+        self
+      end
+
       def to_h
         {
           "repository" => @repository,

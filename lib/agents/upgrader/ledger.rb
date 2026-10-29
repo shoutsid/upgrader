@@ -42,6 +42,15 @@ module Agents
       # the redo this module exists to prevent.
       MAX_ATTEMPTS = 3
 
+      # **An unverified run is retried, but not for ever.** The comment below is right that a fixed
+      # environment should be able to measure a move again; it is wrong that the retry has no
+      # ceiling. Measured on the live walk: pong, limestone, rails-devise-graphql and rails-4-api
+      # reached 45-49 runs, every one `unverified`, because the ledger re-opened the move on every
+      # cycle and the service kept it queued. Three tries is enough to distinguish a transient
+      # environment from an application whose own suite is red; after that the move is settled and a
+      # person who fixes the environment requeues the target deliberately.
+      MAX_UNVERIFIED_ATTEMPTS = 3
+
       # The four words a step can end in, spelled once. `Verdict` in the coordinator's
       # `record.rb` is the one place they are *chosen*; they are repeated here because
       # the ledger has to recognise a word it wrote in a previous process — a second
@@ -51,19 +60,12 @@ module Agents
       FAILED = "failed"
       REFUSED = "refused"
 
-      # Which verdicts are final on arrival. `failed` is deliberately absent: it is
-      # settled by the attempt ceiling instead, which `settled?` folds in. **`unverified` is
-      # deliberately absent too, and it is not merely retried — it never counts toward the ceiling
-      # either.** It means *nothing was established*: the suite could not run, or there was no suite,
-      # which is a fact about the environment rather than about the move (the first real walk's
-      # 4.0.0 -> 4.1.0 came out `unverified` on every attempt because a fresh clone cannot boot its
-      # suite without `RAILS_SECRET_TOKEN`, and the deployment had not supplied it). So re-deriving it
-      # is not the wasted work this ceiling exists to prevent, and a run of it must not spend the
-      # move's attempts: three environment failures would otherwise settle a move for ever, which is
-      # what happened here — the corpus published "`unverified` rather than passed, so the target stays
-      # queued and will be attempted again" while the ledger refused to try. A word this version does
-      # not know is treated as not settled, which is the safe direction — the work is redone rather
-      # than assumed done.
+      # Which verdicts are final on arrival. `failed` is deliberately absent: it is settled by the
+      # attempt ceiling instead, which `settled?` folds in. **`unverified` has its own ceiling**: it
+      # means *nothing was established*, so it does not spend one of the move's `MAX_ATTEMPTS`, but
+      # `MAX_UNVERIFIED_ATTEMPTS` bounds how many times the environment is asked. A word this version
+      # does not know is treated as not settled, which is the safe direction — the work is redone
+      # rather than assumed done.
       SETTLED_VERDICTS = [PASSED, REFUSED].freeze
 
       # **Delivery is a fact about a passed rung, and it is not the verdict.** A rung can pass and
@@ -76,8 +78,8 @@ module Agents
       # never re-published by guessing.
       Entry = Struct.new(
         :repo, :commit, :from_version, :to_version,
-        :verdict, :baseline, :image, :machine, :era, :attempts, :note, :recorded_at,
-        :delivery, keyword_init: true
+        :verdict, :baseline, :image, :machine, :era, :attempts, :unverified_attempts,
+        :note, :recorded_at, :delivery, keyword_init: true
       )
 
       # The ledger at `path`, with an unreadable file set aside rather than raising.
@@ -169,15 +171,34 @@ module Agents
       # cannot speak for, and comparing the wrong two stamps settles work that would be
       # re-derived (or, worse, re-opens every cycle).
       def settled?(repo:, commit:, from_version:, to_version:, machine: nil)
+        stamp = machine.nil? ? @machine : machine
         entry = find(repo: repo, commit: commit, from_version: from_version, to_version: to_version)
-        return false if entry.nil?
-        return false unless same_machine?(entry.machine, machine.nil? ? @machine : machine)
-        # **Nothing established is not work done**, so an `unverified` move is re-opened whatever the
-        # ceiling says — including an entry written by the version that counted these attempts, which
-        # is why this is checked rather than left to `SETTLED_VERDICTS` alone.
-        return false if entry.verdict.to_s == UNVERIFIED
+        # **The unverified ceiling belongs to the move, not to one commit.** A step that fails before
+        # the baseline commits its preflight, and the next attempt starts from the base commit again,
+        # so the next unverified record has a different commit and a fresh per-entry counter. Counting
+        # the unverified entries for `(repo, from, to)` is what makes the ceiling hold; measured on
+        # caturday_api, the per-entry count never reached 2 while the target reached 48 runs.
+        if entry.nil?
+          return unverified_runs(repo: repo, from_version: from_version, to_version: to_version,
+            machine: stamp) >= MAX_UNVERIFIED_ATTEMPTS
+        end
+        return false unless same_machine?(entry.machine, stamp)
+        if entry.verdict.to_s == UNVERIFIED
+          return unverified_runs(repo: repo, from_version: from_version, to_version: to_version,
+            machine: stamp) >= MAX_UNVERIFIED_ATTEMPTS
+        end
 
         SETTLED_VERDICTS.include?(entry.verdict) || entry.attempts.to_i >= MAX_ATTEMPTS
+      end
+
+      def unverified_runs(repo:, from_version:, to_version:, machine:)
+        @entries.values.sum do |entry|
+          next 0 unless entry.repo == repo && entry.from_version == from_version &&
+                        entry.to_version == to_version && entry.verdict.to_s == UNVERIFIED &&
+                        same_machine?(entry.machine, machine)
+
+          entry.unverified_attempts.to_i
+        end
       end
 
       # **A run that established nothing does not spend one of the move's attempts.** `passed`,
@@ -211,6 +232,8 @@ module Agents
           machine: machine.to_s.empty? ? @machine : machine,
           era: era,
           attempts: (previous.nil? ? 0 : previous.attempts.to_i) + (spends_an_attempt?(verdict) ? 1 : 0),
+          unverified_attempts: (previous.nil? ? 0 : previous.unverified_attempts.to_i) +
+                               (verdict.to_s == UNVERIFIED ? 1 : 0),
           note: note.to_s,
           recorded_at: Time.now.utc.iso8601,
           # A new attempt at the move invalidates any delivery of the old one: the commit and the
@@ -298,6 +321,7 @@ module Agents
           machine: entry["machine"].to_s,
           era: entry["era"].to_s,
           attempts: entry["attempts"].to_i,
+          unverified_attempts: entry["unverified_attempts"].to_i,
           note: entry["note"].to_s,
           recorded_at: entry["recorded_at"].to_s,
           delivery: entry["delivery"].is_a?(Hash) ? entry["delivery"] : nil
@@ -354,6 +378,7 @@ module Agents
           "machine" => entry.machine,
           "era" => entry.era,
           "attempts" => entry.attempts,
+          "unverified_attempts" => entry.unverified_attempts,
           "note" => entry.note,
           "recorded_at" => entry.recorded_at,
           "delivery" => entry.delivery

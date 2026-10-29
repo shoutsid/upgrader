@@ -48,6 +48,32 @@ class RecordTest < Minitest::Test
     assert_includes why, "green before this step and green after it"
   end
 
+  # **The corpus can lower a local pass, and the walk must settle on the lower verdict.** A green
+  # suite whose patch moved a test file is not a measurement until the project allows that edit;
+  # the local record said passed, the service answered `unverified`, and a walk that kept its own
+  # verdict committed the moved tree and re-walked rungs it had already delivered.
+  def test_the_service_verdict_can_lower_a_local_pass_and_keeps_both_reasons
+    record = Agents::Upgrader::Record.new(repository: "acme/storefront", from_version: "4.1.16",
+      to_version: "4.2.11.3", verdict: "passed", why: "the suite was green after it",
+      baseline: suite, suite: suite)
+
+    record.reconcile!(verdict: "unverified", note: "the test tree changed during the move")
+
+    assert record.unverified?
+    refute record.passed?
+    assert_includes record.why, "the suite was green after it"
+    assert_includes record.why, "the test tree changed during the move"
+  end
+
+  def test_reconciling_to_the_same_verdict_leaves_the_record_alone
+    record = Agents::Upgrader::Record.new(repository: "acme/storefront", from_version: "4.1.16",
+      to_version: "4.2.11.3", verdict: "passed", why: "the suite was green after it",
+      baseline: suite, suite: suite)
+
+    assert_same record, record.reconcile!(verdict: "passed", note: "nothing to add")
+    assert_equal "the suite was green after it", record.why
+  end
+
   # **A stage that ran more than once is judged by its last attempt.** The pin retries with the
   # gems bundler named it could not leave alone, and a walk whose pin succeeded on the second
   # round is a walk whose pin succeeded — the first round's exit 6 is evidence, not a verdict.

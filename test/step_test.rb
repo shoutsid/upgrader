@@ -372,6 +372,17 @@ class StepTest < Minitest::Test
     end
   end
 
+  # **A corpus that lowers a local pass, the way the service does when the run's patch moved a
+  # test file.** The client still sends what it measured; the service's answer is the warrant.
+  class LoweringRecordingCorpus < RecordingCorpus
+    def record_run(payload)
+      super
+      { "run" => { "id" => "33333333-3333-3333-3333-333333333333",
+                   "verdict" => "unverified",
+                   "note" => "the test tree changed during the move" } }
+    end
+  end
+
   # **A corpus that is briefly unreachable, which is what a restarting service looks like.** The
   # refusal is the client's own `Unreachable`, and the successful attempt is the ordinary recorder's.
   class FlakyRecordingCorpus < RecordingCorpus
@@ -474,6 +485,54 @@ class StepTest < Minitest::Test
           return Command.new(stage: kwargs[:stage], command: argv.join(" "), ran: true,
             exit_code: 1, seconds: 0.0,
             output_tail: "NameError: uninitialized constant Widget")
+        end
+      end
+      super
+    end
+  end
+
+  # The lock lags the Gemfile by one line the step itself moved: Bundler names the gem in its own
+  # `Could not find gem` sentence, and the conservative update is the repair.
+  class StaleLockRunner < FakeRunner
+    def initialize
+      super()
+      @boots = 0
+    end
+
+    def run(argv, **kwargs)
+      if argv.join(" ").include?("runner puts Rails.version")
+        @boots += 1
+        if @boots == 1
+          return Command.new(stage: kwargs[:stage], command: argv.join(" "), ran: true,
+            exit_code: 1, seconds: 0.0,
+            output_tail: "Could not find gem 'ransack (~> 1.4.1)' in any of the gem sources " \
+                         "listed in your Gemfile. (Bundler::GemNotFound)")
+        end
+      end
+      super
+    end
+  end
+
+  # The stale lock appears on the boot **after** the repair, which is the 19wu 4.1.16 shape: the
+  # first boot died on polyamorous, the repair fixed that, and the next boot could not find ransack.
+  class StaleLockAfterRepairRunner < FakeRunner
+    def initialize
+      super()
+      @boots = 0
+    end
+
+    def run(argv, **kwargs)
+      if argv.join(" ").include?("runner puts Rails.version")
+        @boots += 1
+        if @boots == 1
+          return Command.new(stage: kwargs[:stage], command: argv.join(" "), ran: true,
+            exit_code: 1, seconds: 0.0,
+            output_tail: "NameError: uninitialized constant Widget")
+        elsif @boots == 2
+          return Command.new(stage: kwargs[:stage], command: argv.join(" "), ran: true,
+            exit_code: 1, seconds: 0.0,
+            output_tail: "Could not find gem 'ransack (~> 1.4.1)' in any of the gem sources " \
+                         "listed in your Gemfile. (Bundler::GemNotFound)")
         end
       end
       super
@@ -1278,6 +1337,34 @@ class StepTest < Minitest::Test
       "the boot must be run again after the attempt"
   end
 
+  # **A Gemfile line the step moved, whose lock the pin did not follow.** Bundler's own sentence
+  # names the gem; the conservative update is the pin's mechanism and the boot is the gate.
+  # Measured on 19wu's 4.1.16 rung: the boot found ransack 1.0.0 in the lock while the Gemfile
+  # asked `~> 1.4.1`, and two agent attempts did not turn that into an installed release.
+  def test_a_boot_whose_lock_lags_the_gemfile_updates_the_gem_bundler_names
+    dir = track(app)
+    record = step(dir, runner: StaleLockRunner.new).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_includes record.stages.map(&:command), "bundle update ransack --conservative"
+    assert_equal 2, record.stages.count { |stage| stage.stage == "boot" },
+      "the boot must be measured again after the gem moves"
+  end
+
+  # **The boot the repair produced is another boot.** 19wu's first boot died on polyamorous, the
+  # repair fixed that, and the second boot answered the ransack lock error after `stale_lock` had
+  # already run once. The rule must run on the repaired boot too.
+  def test_a_stale_lock_on_the_boot_after_a_repair_is_updated_before_the_suite
+    dir = track(app)
+    record = step(dir, runner: StaleLockAfterRepairRunner.new, repair: FakeRepair,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_includes record.stages.map(&:command), "bundle update ransack --conservative"
+    assert_equal 3, record.stages.count { |stage| stage.stage == "boot" },
+      "the repaired boot's stale lock was not measured again"
+  end
+
   # **What a repair did is captured while it is knowable, and filed as knowledge.** The record is
   # written from the final state, where the suite is green: the failure the repair answered, and the
   # files it changed to do so, exist only while the loop runs. Both travel in the record, and the
@@ -1336,6 +1423,38 @@ class StepTest < Minitest::Test
       "the baseline's repair must come before the move"
     assert_includes record.why, "the baseline was red when the step arrived"
     assert_includes record.why, "before anything was moved"
+  end
+
+  # **The project's suite-hang class tightens the deployment's timeout; it never turns a kill into
+  # a pass.** The browser class is the application's own `SELENIUM_BROWSER` choice, not a second
+  # driver registry.
+  def test_a_projects_decision_policy_tightens_the_suite_timeout_and_names_the_browser
+    project = Agents::Upgrader::Project.new({
+      "slug" => "policy-app", "repo" => "acme/policy-app", "from" => "4.0.0", "to" => "6.0.0",
+      "toolchain" => { "chrome" => "pinned" },
+      "decision_policy" => { "suite_hang" => "stop_after_15m", "browser_driver" => "chrome" }
+    })
+    dir = track(app)
+
+    subject = step(dir, project: project, to: "6.0.0")
+
+    assert_equal 900, subject.instance_variable_get(:@suite_timeout)
+    assert_equal({ "SELENIUM_BROWSER" => "chrome" }, subject.send(:decision_browser_env))
+  end
+
+  # **A dead browser client is a flake, not a red baseline.** 19wu's 1.9.8 baseline printed one
+  # `Capybara::Poltergeist::DeadClient` at the first `:js` example and the same example passed in
+  # the post-move suite, so the step reruns the stage once rather than spending a rung on it. The
+  # record keeps the sentence, because a green stage that was reached on the second run is still
+  # a fact a reader needs.
+  def test_a_baseline_whose_only_failure_is_a_dead_browser_client_is_rerun_once
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [dead_client, green, green])).run
+
+    baseline = record.stages.find { |stage| stage.stage == "baseline" }
+    assert_equal 0, baseline.exit_code
+    assert_includes baseline.output_tail, "the suite was rerun"
+    assert_equal "passed", record.verdict, record.why
   end
 
   # The account's permission is what the production walk uses, and the record carries it as a
@@ -2124,6 +2243,23 @@ class StepTest < Minitest::Test
     assert_empty corpus.calls_of(:precheck), "a passing step was prechecked"
   end
 
+  # **The service's answer is the verdict the walk settles on.** The local suite was green, but the
+  # service lowered the run because its patch moved a test file. The record must carry the lower
+  # verdict so `Serve#settle` resets to the rung's base rather than committing and publishing a
+  # checkpoint the corpus did not accept.
+  def test_a_service_verdict_that_lowers_the_local_pass_is_the_one_the_record_carries
+    dir = track(app)
+    corpus = LoweringRecordingCorpus.new(payload: plan)
+
+    record = step(dir, corpus: corpus, contribute: true).run
+
+    assert record.unverified?, record.why
+    refute record.passed?
+    assert_includes record.why, "the test tree changed during the move"
+    assert_equal "passed", corpus.calls_of(:record_run).first["verdict"],
+      "the client should still tell the service what its own suite measured"
+  end
+
   # **A run is not lost to a restart beside the walk.** The corpus is a remote; measured on this
   # deployment, `5.1.0 -> 5.2.0` passed while `service:8001` was being recreated, the client logged
   # `not recorded: … ECONNREFUSED`, and the rung — settled, never revisited — kept no run at all. The
@@ -2380,6 +2516,27 @@ class StepTest < Minitest::Test
     Agents::Upgrader::Tests::Result.new(
       command: "bundle exec rspec", ran: true, passed: false, exit_code: 1, seconds: 0.2,
       output_tail: "1 examples, 1 failure", timed_out: false
+    )
+  end
+
+  # The one failure is the browser process dying at a `visit`, not an expectation. 19wu's 1.9.8
+  # baseline printed exactly this block and the same example passed in the suite after the move.
+  def dead_client
+    Agents::Upgrader::Tests::Result.new(
+      command: "bundle exec rspec", ran: true, passed: false, exit_code: 1, seconds: 0.2,
+      output_tail: <<~OUT, timed_out: false
+        Failures:
+
+          1) group collaborators as a group creator sign in with a collaborator I see the collaborator
+             Failure/Error: before { sign_in user }
+             Capybara::Poltergeist::DeadClient:
+               PhantomJS client died while processing {"name":"visit","args":["http://127.0.0.1:38217/users/sign_in"]}
+             # ./spec/support/devise.rb:33:in `sign_in'
+             # ./spec/features/group_collaborators_spec.rb:10:in `block (3 levels) in <top (required)>'
+
+        Finished in 3 minutes 35.1 seconds
+        393 examples, 1 failure, 1 pending
+      OUT
     )
   end
 
@@ -3504,5 +3661,64 @@ class StepTest < Minitest::Test
     refute_nil stage, "the update task never ran"
     assert_equal "ruby bin/rails app:update", stage.command
     assert_equal "bin/rails app:update", stage.display
+  end
+
+  # **A component the target release retired is not asked to move with it.** Rails 4.0 extracted
+  # ActiveResource, whose last 4.x release asks `activesupport (= 4.1.0)`; naming it beside
+  # `rails (= 4.0.13)` made bundler answer `Could not find gem 'activeresource'`. The lock still
+  # pins it at the starting release, so `pinned_at` sees it and the component has to be filtered.
+  def test_the_pin_does_not_name_a_component_the_target_release_retired
+    lock = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          activeresource (3.2.22.5)
+          activesupport (3.2.22.5)
+          rails (3.2.22.5)
+
+      DEPENDENCIES
+        rails (= 3.2.22.5)
+    LOCK
+    dir = track(app(lockfile: lock))
+    s = step(dir, to: "4.0.13")
+    s.instance_variable_set(:@lockfile, Lockfile.read(dir))
+    s.instance_variable_set(:@from, "3.2.22.5")
+    s.instance_variable_set(:@rung_to, "4.0.13")
+
+    named = s.send(:pin_gems)
+
+    refute_includes named, "activeresource",
+      "Rails 4.0 no longer ships ActiveResource, and no 4.x release can sit beside 4.0.13"
+    assert_includes named, "activesupport", "the framework's own components still move together"
+
+    s.instance_variable_set(:@rung_to, "3.2.22.5")
+    assert_includes s.send(:pin_gems), "activeresource",
+      "the release that still ships the component keeps its line"
+  end
+
+  # **A poltergeist lock is a headless browser the suite selects itself.** The stored toolchain
+  # on a project connected before this rule can say `chrome`; the lock is the fact the suite reads,
+  # and the era image carries the pinned PhantomJS binary.
+  def test_a_poltergeist_lock_selects_phantomjs_even_when_the_project_says_chrome
+    s = step(Dir.tmpdir)
+    s.instance_variable_set(:@lockfile, Struct.new(:specs).new({ "poltergeist" => "1.3.0" }))
+
+    assert s.send(:phantomjs_locked?)
+
+    s.instance_variable_set(:@lockfile, Struct.new(:specs).new({ "selenium-webdriver" => "4.0.3" }))
+    refute s.send(:phantomjs_locked?)
+  end
+
+  # **Redis runs inside the step's container, and the application's suite has to be told where.**
+  # Limestone's Flipper initializer reads `REDIS_BASE_URL`; with no value it interpolated nil into
+  # `"flipper"` and `Redis.new` raised `invalid uri scheme ''` before the first example.
+  def test_a_declared_redis_service_is_named_to_the_application
+    s = step(Dir.tmpdir)
+    s.instance_variable_set(:@project, Struct.new(:services).new(["postgres", "redis"]))
+
+    assert_equal({
+      "REDIS_URL" => "redis://127.0.0.1:6379",
+      "REDIS_BASE_URL" => "redis://127.0.0.1:6379/"
+    }, s.send(:service_env))
   end
 end

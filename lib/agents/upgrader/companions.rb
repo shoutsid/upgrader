@@ -421,7 +421,7 @@ module Agents
       # upstream; this companion carries that line into the application's own file.
       LOGGER = Entry.new(
         gem: "logger",
-        requirement: "~> 1.4",
+        requirement: "~> 1.4.0",
         subject: "logger",
         note: "Rails 7.0's activesupport names Logger while it loads; concurrent-ruby 1.3.4 stopped " \
               "requiring it, and the application's Bundler.require runs after `require \"rails\"`, " \

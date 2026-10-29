@@ -324,6 +324,27 @@ class ProjectTest < Minitest::Test
     assert_includes error.message, "has no `id`"
   end
 
+  # **The resolved policy is data the walker validates, not a second policy engine.** A class or
+  # value this build does not implement is refused so a typo cannot silently do nothing.
+  def test_a_decision_policy_is_read_and_its_vocabulary_is_refused_when_unknown
+    project = PROJECT.parse(minimal.merge("decision_policy" => {
+      "suite_hang" => "stop_after_15m", "browser_driver" => "chrome"
+    }).to_json)
+
+    assert_equal({ "suite_hang" => "stop_after_15m", "browser_driver" => "chrome" },
+      project.decision_policy)
+
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("decision_policy" => { "browser_driver" => "safari" }).to_json)
+    end
+    assert_includes error.message, "decision_policy.browser_driver"
+
+    error = assert_raises(PROJECT::Invalid) do
+      PROJECT.parse(minimal.merge("decision_policy" => { "unknown" => "apply" }).to_json)
+    end
+    assert_includes error.message, "unknown decision_policy class"
+  end
+
   # **A typo is not a comment.** A key the engine does not know is a setting that would silently do
   # nothing, which is the failure mode the class exists to prevent.
   def test_an_unknown_field_is_refused_rather_than_ignored

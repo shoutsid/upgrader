@@ -269,6 +269,38 @@ class PreflightTest < Minitest::Test
   # nokogiri this Ruby can install provides — measured, the 4.2 rung's `rails:update` died on
   # `uninitialized constant Nokogiri::HTML4`. So the digest's answer is a line to *add*, and the
   # record renders it as one rather than quoting a line that does not exist.
+  # **A test gem's ceiling is a fact the digest does not hold.** volunteer_portal's maxitest 3.6.0
+  # caps minitest below 5.14, while the 7.1 digest declares `~> 5.25.0` for the interpreter. The
+  # added line is withdrawn after the digest writes it, leaving the lock's own 5.13 — which
+  # satisfies both Rails 7.1's `minitest >= 5.1` and maxitest's ceiling.
+  def test_a_digest_minitest_line_is_withdrawn_when_maxitest_caps_it
+    lock = <<~LOCK
+      GEM
+        specs:
+          maxitest (3.6.0)
+            minitest (>= 5.0.0, < 5.14.0)
+          minitest (5.13.0)
+          rails (7.1.0)
+    LOCK
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.1.0"\ngem "maxitest"\n),
+      lockfile: lock)
+    corpus = FakeCorpus.new(entries: [entry(gem: "minitest", kind: "declared",
+      requirement: "~> 5.25.0",
+      condition: { "rails_at_least" => "7.1", "rails_below" => "7.2", "ruby_below" => "3.1" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+    deferred = result.deferred
+    refute_empty deferred, "the rung-scoped minitest declaration should wait for the pin"
+
+    declared = Preflight.new(root: dir, corpus: corpus, ruby: "2.7", rails: "7.1.6")
+      .declare_deferred(deferred)
+
+    refute_includes read(dir, "Gemfile"), "minitest"
+    assert_empty declared.repairs.select { |repair| repair.subject == "minitest" }
+    assert declared.notes.any? { |note| note.include?("maxitest caps minitest") },
+      "the record must say why the digest's line was withheld: #{declared.notes.inspect}"
+  end
+
   def test_a_declared_entry_adds_the_line_when_its_condition_holds
     dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
     corpus = FakeCorpus.new(entries: [entry(gem: "loofah", kind: "declared",
@@ -466,7 +498,7 @@ class PreflightTest < Minitest::Test
     File.write(File.join(dir, "config", "application.rb"),
       "require_relative \"boot\"\n\nrequire \"rails\"\n")
     corpus = FakeCorpus.new(entries: [
-      entry(gem: "logger", kind: "declared", requirement: "~> 1.4",
+      entry(gem: "logger", kind: "declared", requirement: "~> 1.4.0",
         condition: { "rails_at_least" => "7.0" })
     ])
 
@@ -1389,5 +1421,288 @@ class PreflightTest < Minitest::Test
       "it { expect(x).to be_successful_now }"
     ], read(dir, "spec/a_spec.rb").lines.map(&:chomp),
       "a line the application had already migrated was rewritten again"
+  end
+
+  # **A Devise mailer needs a host before the baseline can run.** Measured on
+  # rails-devise-graphql's 6.0.3.3 baseline: creating a confirmable user called
+  # `confirmation_url`, the mailer raised `Missing host to link to!`, and the rest of the
+  # GraphQL/User examples failed behind it. The repair is in the test environment because that
+  # is where the suite runs, and it is written by the preflight because a red baseline is not
+  # a suite the repair agent is allowed to touch.
+  def test_a_devise_test_environment_without_a_mailer_host_gets_one_before_the_baseline
+    gemfile = <<~GEM
+      source "https://rubygems.org"
+      gem "rails", "4.2.11"
+      gem "devise", "~> 3.5"
+    GEM
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config", "environments"))
+    File.write(File.join(dir, "config", "environments", "test.rb"), <<~RUBY)
+      Rails.application.configure do
+        config.cache_classes = true
+      end
+    RUBY
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "4.2.11").run
+
+    host = result.repairs.find { |repair| repair.subject == "action_mailer.default_url_options" }
+    refute_nil host, "the Devise baseline would still raise Missing host"
+    assert_equal "config/environments/test.rb", host.path
+    assert_includes read(dir, "config/environments/test.rb"),
+      "config.action_mailer.default_url_options = { host: \"localhost\" }"
+
+    # A second pass is not a second line: the setting is already there.
+    again = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "4.2.11").run
+    assert_empty again.repairs.select { |repair| repair.subject == "action_mailer.default_url_options" }
+  end
+
+  # **A repository's own magic-encoding check is a baseline fact, not a move's.** 19wu's spec calls
+  # `bin/magic_encoding_find`, which reports every app/lib/spec file with a non-ASCII byte and no
+  # `# encoding:` in its first two lines. The repository also ships `bin/magic_encoding_fix`; this
+  # rule writes the same comment before the baseline so the move is measured against a green suite.
+  def test_a_repository_magic_encoding_check_gets_its_comment_before_the_baseline
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "bin"))
+    File.write(File.join(dir, "bin", "magic_encoding_find"), "#!/usr/bin/env ruby\n")
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "thing.rb"), "# 中文\nclass Thing; end\n")
+    File.write(File.join(dir, "app", "models", "plain.rb"), "class Plain; end\n")
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.0.0").run
+
+    repaired = result.repairs.select { |repair| repair.subject == "magic encoding" }
+    assert_equal ["app/models/thing.rb"], repaired.map(&:path)
+    assert_includes read(dir, "app/models/thing.rb"), "# encoding: utf-8\n# 中文"
+    refute_includes read(dir, "app/models/plain.rb"), "# encoding: utf-8"
+
+    # A second pass does not add a second comment.
+    again = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.0.0").run
+    assert_empty again.repairs.select { |repair| repair.subject == "magic encoding" }
+  end
+
+  # **Rails 4.1 deleted Active Record's mass-assignment whitelist.** The 3.2 sample's boot dies
+  # on the missing method before the suite; the line is the 3.2 fact, not the move.
+  def test_a_rails_4_1_boot_removes_the_deleted_whitelist_attributes_setting
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    path = File.join(dir, "config", "application.rb")
+    File.write(path, <<~RUBY)
+      module Sample
+        class Application < Rails::Application
+          config.active_record.whitelist_attributes = true
+        end
+      end
+    RUBY
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "1.9.3", rails: "4.1.16").run
+
+    repair = result.repairs.find { |each| each.subject == "whitelist_attributes" }
+    refute_nil repair
+    refute_includes read(dir, "config/application.rb"), "config.active_record.whitelist_attributes = true"
+    assert_includes read(dir, "config/application.rb"), "removed: Rails 4.1"
+  end
+
+  # **A test-only gem and the framework's test adapter can have an empty minitest window.** The
+  # project's `test_gem_removal` class is the permission; the suite is still the gate.
+  def test_maxitest_is_removed_only_when_the_project_allows_it
+    lock = <<~LOCK
+      GEM
+        specs:
+          maxitest (3.6.0)
+            minitest (>= 5.0.0, < 5.14.0)
+          minitest-rails (7.1.1)
+            minitest (~> 5.20)
+          rails (7.1.0)
+    LOCK
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "7.1.0"\ngem "maxitest", require: false\n)
+    dir = app(gemfile: gemfile, lockfile: lock)
+
+    denied = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6",
+      decision_policy: { "test_gem_removal" => "ask" }).run
+    assert_empty denied.repairs.select { |repair| repair.subject == "maxitest" }
+    assert_includes read(dir, "Gemfile"), "maxitest"
+
+    allowed = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6",
+      decision_policy: { "test_gem_removal" => "allow" }).run
+    repair = allowed.repairs.find { |each| each.subject == "maxitest" }
+    refute_nil repair
+    refute_includes read(dir, "Gemfile"), "maxitest"
+  end
+
+  # **The lock can still name the adapter the previous rung used.** volunteer_portal's 7.1.6 pin
+  # resolves minitest-rails 7.1 (minitest ~> 5.20) while the lock still says 7.0.1 (minitest
+  # ~> 5.10), and maxitest caps minitest below 5.14. The project allowed the removal, so the rung's
+  # adapter is the floor rather than the stale lock's.
+  def test_maxitest_is_removed_at_rails_7_1_when_the_lock_still_names_the_7_0_adapter
+    lock = <<~LOCK
+      GEM
+        specs:
+          maxitest (3.6.0)
+            minitest (>= 5.0.0, < 5.14.0)
+          minitest-rails (7.0.1)
+            minitest (~> 5.10)
+          rails (7.0.8)
+    LOCK
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "7.0.8"\ngem "minitest-rails", "~> 7.0.1"\ngem "maxitest", require: false\n)
+    dir = app(gemfile: gemfile, lockfile: lock)
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6",
+      decision_policy: { "test_gem_removal" => "allow" }).run
+
+    repair = result.repairs.find { |each| each.subject == "maxitest" }
+    refute_nil repair, "the 7.1 adapter's minitest floor was read from the stale lock"
+    refute_includes read(dir, "Gemfile"), "maxitest"
+    assert_includes repair.note, "minitest-rails asks 5.20"
+  end
+
+  # **A lockfile's BUNDLED WITH is metadata, and a prerelease from another machine is not a gem.**
+  # caturday_api's lock says 2.0.0.pre.3; Rails 4.2 declares `bundler < 2.0`, so every era tries a
+  # Bundler that is not there. Removing the line lets the era's Bundler write its own.
+  def test_a_rails_4_lockfile_with_a_bundler_2_prerelease_has_the_line_removed
+    lock = "GEM\n  specs:\n    rails (4.2.11.3)\nBUNDLED WITH\n   2.0.0.pre.3\n"
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.0.7.2").run
+
+    repair = result.repairs.find { |each| each.subject == "BUNDLED WITH" }
+    refute_nil repair, "the lock's prerelease was left for every era to fail on"
+    refute_includes read(dir, "Gemfile.lock"), "BUNDLED WITH"
+    assert_includes repair.note, "Rails 4.x"
+  end
+
+  def test_the_lockfile_metadata_class_can_be_denied
+    lock = "GEM\n  specs:\n    rails (4.2.11.3)\nBUNDLED WITH\n   2.0.0.pre.3\n"
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.0.7.2",
+      decision_policy: { "lockfile_metadata" => "deny" }).run
+
+    assert_empty result.repairs.select { |each| each.subject == "BUNDLED WITH" }
+    assert_includes read(dir, "Gemfile.lock"), "BUNDLED WITH"
+  end
+
+  # **Rails 5.0 removed ActiveModel::Serializers::Xml, and MongoMapper still includes it.**
+  # Measured on caturday_api's 5.0.7.2 boot: the application dies before the first example with
+  # `uninitialized constant ActiveModel::Serializers::Xml`; the extracted gem is the declaration.
+  def test_a_mongo_mapper_app_gets_the_extracted_xml_serializer_at_rails_5
+    lock = "#{PLAIN_LOCKFILE}    mongo_mapper (0.13.1)\n"
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.0.7.2").run
+
+    refute_nil result.repairs.find { |repair| repair.subject == "activemodel-serializers-xml" }
+    assert_includes read(dir, "Gemfile"),
+      'gem "activemodel-serializers-xml", "~> 1.0"'
+
+    older = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
+    older_result = Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.2.11").run
+    assert_empty older_result.repairs.select { |repair| repair.subject == "activemodel-serializers-xml" },
+      "the module is still in Active Model on Rails 4.2"
+  end
+
+  # **A Rails 7 application can name a namespace directory as an autoload root and hide the
+  # namespace it defines.** volunteer_portal's `config/application.rb` does exactly this for
+  # `app/graphql/types`: the files say `module Types`, and the suite's `Types::SensitiveObject`
+  # dies with `uninitialized constant Types`. The sibling roots are kept because their files
+  # define top-level constants, which is what a root means.
+  APPLICATION_WITH_AUTOLOAD_ROOTS = <<~RUBY
+    module Portal
+      class Application < Rails::Application
+        config.autoload_paths.concat [
+          Rails.root.join('app/graphql/types'),
+          Rails.root.join('app/graphql/loaders'),
+          Rails.root.join('app/graphql/resolvers')
+        ]
+      end
+    end
+  RUBY
+
+  def test_a_nested_namespace_autoload_root_is_removed_for_rails_7
+    dir = autoload_app
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "types"))
+    File.write(File.join(dir, "app", "graphql", "types", "sensitive_object.rb"),
+      "module Types\n  class SensitiveObject; end\nend\n")
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.0.10").run
+
+    repaired = result.repairs.select { |repair| repair.subject == "nested autoload path" }
+    assert_equal ["config/application.rb"], repaired.map(&:path)
+    text = read(dir, "config/application.rb")
+    refute_includes text, "Rails.root.join('app/graphql/types')"
+    assert_includes text, "Rails.root.join('app/graphql/loaders')",
+      "the loaders directory defines AssociationLoader, so it really is a root"
+    assert_includes text, "Types namespace under app/graphql"
+    assert_empty Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.0.10").run
+      .repairs.select { |repair| repair.subject == "nested autoload path" },
+      "a second pass finds nothing left to do"
+  end
+
+  def test_a_nested_autoload_root_is_kept_when_its_files_are_top_level
+    dir = autoload_app
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "types"))
+    File.write(File.join(dir, "app", "graphql", "types", "sensitive_object.rb"),
+      "class SensitiveObject; end\n")
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.0.10").run
+
+    assert_empty result.repairs.select { |repair| repair.subject == "nested autoload path" }
+    assert_includes read(dir, "config/application.rb"), "Rails.root.join('app/graphql/types')"
+  end
+
+  def test_the_nested_autoload_rule_does_not_run_before_rails_7
+    dir = autoload_app
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "types"))
+    File.write(File.join(dir, "app", "graphql", "types", "sensitive_object.rb"),
+      "module Types\n  class SensitiveObject; end\nend\n")
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "6.1.7.10").run
+
+    assert_empty result.repairs.select { |repair| repair.subject == "nested autoload path" }
+    assert_includes read(dir, "config/application.rb"), "Rails.root.join('app/graphql/types')"
+  end
+
+  def autoload_app
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "config"))
+    File.write(File.join(dir, "config", "application.rb"), APPLICATION_WITH_AUTOLOAD_ROOTS)
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "loaders"))
+    File.write(File.join(dir, "app", "graphql", "loaders", "record_loader.rb"),
+      "class RecordLoader; end\n")
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "resolvers"))
+    File.write(File.join(dir, "app", "graphql", "resolvers", "event_resolver.rb"),
+      "module EventResolver; end\n")
+    dir
+  end
+
+  # **A squiggly heredoc in an eval is Ruby 2.3 syntax, and the body is still Ruby.** Measured on
+  # brimir's 5.1 baseline: `eval <<~END` in a controller test is a parse error on the 2.2 era,
+  # before the first example. `<<-` is the same program for an eval body — indentation at the top
+  # level is not significant — and only the eval families are rewritten, because a squiggly heredoc
+  # used as string content may depend on its dedent.
+  def test_a_squiggly_heredoc_in_an_eval_is_rewritten_for_a_ruby_below_2_3
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "test", "controllers"))
+    path = File.join(dir, "test", "controllers", "tickets_controller_test.rb")
+    File.write(path, <<~RUBY)
+      test "a fixture class" do
+        eval <<~END
+          class RestClient::Resource
+          end
+        END
+      end
+    RUBY
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2.9", rails: "5.1.6").run
+
+    repaired = result.repairs.find { |repair| repair.subject == "eval heredoc" }
+    refute_nil repaired, "the 2.2 baseline still cannot parse the test"
+    assert_includes read(dir, "test/controllers/tickets_controller_test.rb"), "eval <<-END"
+    refute_includes read(dir, "test/controllers/tickets_controller_test.rb"), "eval <<~END"
+
+    # The same file on an interpreter that understands the syntax is left alone.
+    File.write(path, "eval <<~END\n  class RestClient::Resource\n  end\nEND\n")
+    above = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.5.9", rails: "5.1.6").run
+    assert_empty above.repairs.select { |repair| repair.subject == "eval heredoc" }
+    assert_includes read(dir, "test/controllers/tickets_controller_test.rb"), "eval <<~END"
   end
 end

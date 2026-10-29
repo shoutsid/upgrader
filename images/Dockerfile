@@ -61,6 +61,24 @@ ARG RUBY_SOURCE_SHA256=
 # package, and a `chromedriver` that is the same release as the browser it drives.
 ARG CHROME_VERSION=120.0.6099.109
 
+# **PhantomJS is the browser an old Capybara/poltergeist suite chooses for itself.** The
+# application's `spec_helper` looks for a `phantomjs` executable and uses `:poltergeist` when it
+# finds one; without it, 19wu's suite falls back to Firefox, which no era container has. The
+# binary is statically linked, so it runs on jessie and every later era; the version is pinned
+# because the project is archived, and the digest is the integrity check for a download from a
+# host that is no longer the project's main one. `bzip2` is the tarball's decompressor and is not
+# in the base image's package list.
+#
+# **The line is 1.9.8, because 2.1.1 hangs this application's suite rather than driving it.**
+# Measured twice on 19wu's 4.0 baseline: poltergeist 1.3.0 starts PhantomJS 2.1.1, reaches the
+# first `:js` example, and then both processes sit idle — the browser is alive, the runner has
+# been in `visit` for more than fifteen minutes, and no example completes. The 1.9.8 line runs
+# the same 393 examples in about three and a half minutes; its one `DeadClient` on
+# `group_collaborators_spec` is a startup flake, and the suite after the move passed through the
+# same example. Poltergeist 1.3.0 is written for the 1.9 line; the binary is the driver's own.
+ARG PHANTOMJS_VERSION=1.9.8
+ARG PHANTOMJS_SHA256=a1d9628118e270f26c4ddd1d7f3502a93b48ede334b8585d11c1c3ae7bc7163a
+
 # **Which Debian release this base is, and how to reach its packages, is read out of the
 # image rather than passed in.** It was build arguments once, and two of them were wrong the
 # first time they were exercised: `ruby:2.5` is a *buster* base (its `VERSION_CODENAME` says
@@ -100,6 +118,12 @@ ARG CHROME_VERSION=120.0.6099.109
 #   Era-matched by the distribution the image turned out to be: 9.4 on jessie, 11 on buster,
 #   13 on bullseye, 17 on trixie.
 # * `redis-server` — Resque, Sidekiq and cache stores, and the same localhost argument.
+# * `mongodb-server` and `mongodb-clients` — MongoMapper, Mongoid and the `mongo` driver, and the
+#   same localhost argument again. Debian removed MongoDB after stretch (the SSPL), so the package
+#   is installed only where the archive still serves it; `agents-services` starts it only when the
+#   application's own lockfile names a Mongo client. Measured on caturday_api: the boot died on
+#   `Mongo::ConnectionFailure: Failed to connect to a master node at 127.0.0.1:27017` before the
+#   first example, with the application asking for exactly the localhost a step container owns.
 # * `imagemagick`, `libmagickwand-dev` — `rmagick` and ImageMagick-backed uploaders. The
 #   distro's own version, which is the version the era's gems were written against (IM6 on
 #   every base here).
@@ -149,7 +173,7 @@ RUN set -eux; \
     packages="build-essential pkg-config cmake libpq-dev libyaml-dev libssl-dev zlib1g-dev \
       libreadline-dev libsqlite3-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev \
       postgresql postgresql-client redis-server imagemagick libmagickwand-dev libidn-dev \
-      nodejs npm ca-certificates curl unzip"; \
+      nodejs npm ca-certificates curl unzip bzip2"; \
     # **The distribution's browser is installed here for every era, and for a live one it is not
     # the browser a step uses.** A project's declaration names `chromium` (the package a suite that
     # drives a browser needs), and installing it in the image rather than in the step is what stops
@@ -157,6 +181,13 @@ RUN set -eux; \
     # frozen with the repository — and on a live one it is what a project that says
     # `toolchain.chrome: "distro"` is measured on.
     if [ "$archived" = "0" ]; then packages="$packages chromium chromium-driver"; fi; \
+    # **MongoDB is a package only while Debian still serves it.** jessie and stretch carry the
+    # 2.4/3.2 server; the SSPL removed it from buster onward, and an application whose lock names
+    # a Mongo client on a later era gets a loud refusal from `agents-services` rather than a boot
+    # that fails for a reason nobody can see.
+    if [ "$codename" = "jessie" ] || [ "$codename" = "stretch" ]; then \
+      packages="$packages mongodb-server mongodb-clients"; \
+    fi; \
     apt-get install -y --no-install-recommends $packages || \
       apt-get install -y --no-install-recommends $(echo "$packages" | sed 's/libidn-dev/libidn11-dev/'); \
     if [ "$codename" = "trixie" ]; then \
@@ -202,6 +233,17 @@ RUN set -eux; \
       chmod +x /usr/local/bin/agents-browser /opt/agents-browser/chromedriver; \
       printf '%s\n' "$CHROME_VERSION" > /opt/agents-browser/VERSION; \
     fi; \
+    # **The headless browser an old poltergeist suite runs itself.** The URL is the archived
+    # project's own download host, and the digest is the pin because that host is no longer the
+    # one a current project would use. A failed download is a build failure rather than an image
+    # that silently falls back to Firefox (which is not installed).
+    curl -fsSL -o /tmp/phantomjs.tar.bz2 \
+      "https://bitbucket.org/ariya/phantomjs/downloads/phantomjs-${PHANTOMJS_VERSION}-linux-x86_64.tar.bz2"; \
+    echo "${PHANTOMJS_SHA256}  /tmp/phantomjs.tar.bz2" | sha256sum -c -; \
+    mkdir -p /opt/agents-phantomjs; \
+    tar -xjf /tmp/phantomjs.tar.bz2 -C /opt/agents-phantomjs --strip-components=1; \
+    ln -sf /opt/agents-phantomjs/bin/phantomjs /usr/local/bin/phantomjs; \
+    rm -f /tmp/phantomjs.tar.bz2; \
     rm -rf /var/lib/apt/lists/*; \
     npm install -g yarn@1.22.22
 
@@ -232,7 +274,11 @@ RUN set -eux; \
       tar -xzf /tmp/ruby.tar.gz -C /usr/src/ruby --strip-components=1; \
       cd /usr/src/ruby; \
       ./configure --disable-install-doc --enable-shared; \
-      make -j"$(nproc)"; \
+      # **A 2013 interpreter does not need every core, and the Docker VM has less memory than
+      # the host.** `-j$(nproc)` on a 20-core host built the 1.9.3 extensions until the linker
+      # failed in `dl/callback.so`; the same build at four jobs succeeds. The bound is a fact
+      # about the build's memory, not about the interpreter's support.
+      make -j4; \
       make install; \
       rm -rf /usr/src/ruby /tmp/ruby.tar.gz; \
       ruby -v; \

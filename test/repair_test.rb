@@ -17,6 +17,7 @@ require "agents/upgrader"
 # the evidence (the agent's words and the files it touched, per attempt).
 class RepairTest < Minitest::Test
   Repair = Agents::Upgrader::Repair
+  Limits = Agents::Upgrader::ModelLimits
 
   class FakeSuite
     def initialize(ok:, output: "")
@@ -98,12 +99,12 @@ class RepairTest < Minitest::Test
   end
 
   def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil, models: nil,
-             home: nil)
+             home: nil, out: nil)
     reruns = suites.dup
     Repair.new(
       root: @root, evidence: evidence,
       budget: (models ? budget(attempts: attempts, models: models) : budget(attempts: attempts)),
-      env: env, out: nil, runner: agent, config_dir: config_dir, home: home,
+      env: env, out: out, runner: agent, config_dir: config_dir, home: home,
       rerun: -> { reruns.shift || FakeSuite.new(ok: false, output: "still red") },
       on_attempt: on_attempt
     )
@@ -165,6 +166,104 @@ class RepairTest < Minitest::Test
       "the chain is per attempt and the last model carries the rest: #{agent.calls.map { |c| c[:argv] }.inspect}"
     assert(result.attempts.all? { |attempt| attempt.command.include?("--model") },
       "the record's command has to name the model each attempt ran: #{result.attempts.map(&:command).inspect}")
+  end
+
+  # **A free limit is a reason to start the paid model, not a reason to wait.** The provider's
+  # reset is read out of its own sentence, stored beside the ledger, and the next model gets the
+  # same failure the free one was asked about. The attempt is in the record with the reset time,
+  # so a reviewer can see why the paid model was used.
+  def test_a_free_model_limit_switches_to_paid_and_names_the_reset
+    home = temp_home
+    agent = FakeAgent.new do |argv, chdir, _n|
+      model = argv[argv.index("--model") + 1]
+      if model.include?("free")
+        [1, "Rate limit exceeded. Resets at 2099-01-01T00:00:00Z", :ran]
+      else
+        File.write(File.join(chdir, "fixed.rb"), "x\n")
+        [0, "fixed\n"]
+      end
+    end
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      models: ["opencode/free-model", "opencode-go/paid-model"], home: home).run
+
+    assert result.repaired, result.to_s
+    assert_equal ["opencode/free-model", "opencode-go/paid-model"],
+      agent.calls.map { |call| call[:argv][call[:argv].index("--model") + 1] }
+    first = result.attempts.first
+    assert first.limited?, "the free attempt was not marked as limited"
+    assert_equal Time.utc(2099, 1, 1), first.limit_until
+    assert_includes first.output_tail, "limited until 2099-01-01T00:00:00Z"
+    state = JSON.parse(File.read(File.join(home, Limits::FILE)))
+    assert_equal "2099-01-01T00:00:00Z", state.dig("models", "opencode/free-model", "until")
+  end
+
+  # **The next step starts at the paid model while the free reset is ahead.** This is the whole
+  # point of writing the deadline down: the walker is a new process on the next rung, and it must
+  # not spend the free deadline again.
+  def test_a_recorded_free_limit_is_skipped_by_the_next_repair
+    home = temp_home
+    Limits.new(home: home, now: -> { Time.utc(2026, 10, 29, 12) }).record(
+      model: "opencode/free-model", exit_code: 1,
+      output: "Rate limit exceeded. Resets at 2099-01-01T00:00:00Z"
+    )
+    agent = FakeAgent.new do |_argv, chdir, _n|
+      File.write(File.join(chdir, "fixed.rb"), "x\n")
+      [0, "fixed\n"]
+    end
+    out = StringIO.new
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      models: ["opencode/free-model", "opencode-go/paid-model"], home: home, out: out).run
+
+    assert result.repaired, result.to_s
+    assert_equal ["opencode-go/paid-model"],
+      agent.calls.map { |call| call[:argv][call[:argv].index("--model") + 1] }
+    assert_includes out.string, "opencode/free-model is limited until 2099-01-01T00:00:00Z"
+  end
+
+  # **A free model that never answers is treated as unavailable, and the record says why.** The
+  # live tier timed out at the attempt deadline with no provider sentence; waiting the same
+  # deadline on every later step is the cost without the sentence. A paid model's timeout is not
+  # read this way because a paid model may be slow because it is working.
+  def test_a_free_timeout_switches_to_paid_and_says_no_reset_was_reported
+    home = temp_home
+    agent = FakeAgent.new do |argv, chdir, _n|
+      model = argv[argv.index("--model") + 1]
+      if model.include?("free")
+        [nil, "the repair agent was killed after 300s", :timed_out]
+      else
+        File.write(File.join(chdir, "fixed.rb"), "x\n")
+        [0, "fixed\n"]
+      end
+    end
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      models: ["opencode/free-model", "opencode-go/paid-model"], home: home).run
+
+    assert result.repaired, result.to_s
+    first = result.attempts.first
+    assert first.limited?
+    assert_includes first.output_tail, "no reset was reported"
+    assert_equal 2, agent.calls.length
+  end
+
+  def test_every_limited_model_makes_no_attempt_and_names_the_earliest_reset
+    home = temp_home
+    limits = Limits.new(home: home, now: -> { Time.utc(2026, 10, 29, 12) })
+    limits.record(model: "free", exit_code: 1, output: "rate limit. resets at 2099-01-01T00:00:00Z")
+    limits.record(model: "paid", exit_code: 1, output: "rate limit. resets at 2098-01-01T00:00:00Z")
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "should not run"] }
+    out = StringIO.new
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      models: ["free", "paid"], home: home, out: out).run
+
+    refute result.repaired
+    assert_empty result.attempts
+    assert_empty agent.calls
+    assert_includes out.string, "every model is limited"
+    assert_includes out.string, "2098-01-01T00:00:00Z"
   end
 
   # --- the capability set -----------------------------------------------------------------
@@ -301,6 +400,23 @@ class RepairTest < Minitest::Test
 
   # The sentence a reader gets, because "did not run" for an agent that ran fifteen minutes is
   # a lie a reviewer would believe.
+  # **The deadline kills the agent's process group, not only its parent.** The live repair agent
+  # spawns a node child; a TERM to the parent left the group and the pipe alive, and one attempt
+  # held a walk for more than ten minutes after its deadline.
+  def test_a_timed_out_agent_process_group_is_killed
+    repair = Repair.new(root: @root, evidence: nil, budget: budget(attempts: 1, timeout: 1),
+      env: {})
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    exit_code, output, outcome = repair.send(:collect, ["sh", "-c", "sleep 60"], {})
+
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    assert_equal :timed_out, outcome
+    assert_nil exit_code
+    assert_operator elapsed, :<, 10, "the timeout waited for the child instead of killing it"
+    assert_includes output, "the repair agent was killed after 1s"
+  end
+
   def test_a_timed_out_attempt_says_so_rather_than_claiming_it_never_ran
     out = StringIO.new
     agent = FakeAgent.new { |_argv, _chdir, _n| [nil, "the repair agent was killed after 900s", :timed_out] }

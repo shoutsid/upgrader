@@ -24,7 +24,10 @@ module Agents
       # (`expected "" to match "error=invalid_scope"`), because that is all the failure is.
       Failure = Struct.new(:name, :source, :error, :message, :caused_by, :caused_by_message,
         :frames, keyword_init: true) do
-        def frame = frames.find { |path, _line| path.start_with?("./") }
+        # **RSpec prefixes an application frame with `./`; Minitest does not.** The two dialects
+        # print the same fact in two spellings, and a repair's file is the application's either
+        # way. A gem frame (`.../gems/...`) is still not this walk's to write.
+        def frame = frames.find { |path, _line| path.start_with?("./", "app/", "test/") }
 
         def file = frame && frame.first.delete_prefix("./")
 
@@ -48,8 +51,10 @@ module Agents
       # only knew `Error`/`Exception`/`Failure` left its class and its message unread. **`Data` is
       # the third**, measured on ohana-api's 7.1.6 rung: `I18n::MissingTranslationData` is the class
       # Rails 7.1 raises when a spec calls `I18n.t` on an undefined key, and without the suffix the
-      # failure read as an anonymous block whose message was the source excerpt.
-      CLASS_LINE = /\A\s+(?:#\s+)?([A-Z][\w:]*(?:Error|Exception|Failure|Class|Data)):\s*\z/
+      # failure read as an anonymous block whose message was the source excerpt. **`Client` is the
+      # fourth**, measured on 19wu: `Capybara::Poltergeist::DeadClient` is the browser process
+      # dying, and the step reruns a stage whose only failure is that class.
+      CLASS_LINE = /\A\s+(?:#\s+)?([A-Z][\w:]*(?:Error|Exception|Failure|Class|Data|Reference|Client)):\s*\z/
 
       # `     # ./app/views/bids/edit.html.erb:5:in ...` — only the application's own frames are
       # kept; a gem's frame names a library, not a file this walk may write.
@@ -57,8 +62,68 @@ module Agents
 
       SOURCE = /\A\s+Failure\/Error:\s?(.*)\z/
 
+      # **Two dialects, because the applications use two suites.** RSpec prints `Failure/Error:`
+      # and a numbered block; Minitest prints `Error:`/`Failure:`, the test's name, the exception
+      # and an unnumbered stack. The parser already knew RSpec; the 6.1 rung of volunteer_portal
+      # is Minitest, and its `UnknownAttributeReference` failures reached the mechanical repairs
+      # with no file, no line and no message because this method saw no `Failure/Error:`.
       def self.parse(text)
-        blocks(text.to_s).filter_map { |lines| parse_block(lines) }
+        # **The suite's own colors are not part of its grammar.** Minitest and RSpec colorize
+        # `Error:`/`Failure/Error:` when the output is a terminal, and a parser that matched only
+        # the plain spelling saw no failures at all from the step container while the record's
+        # stripped tail looked parseable. The escape sequences are removed before either dialect
+        # is read.
+        text = text.to_s.gsub(/\e\[[0-9;]*m/, "")
+        # **Both dialects are read, rather than choosing one from a string in the output.** A
+        # Minitest suite can print an application log line containing `Failure/Error:` (a GraphQL
+        # error, a rescued exception), and choosing RSpec because of it made the real Minitest
+        # failures invisible to the mechanical repairs. The two parsers return different blocks,
+        # and the duplicate key is the name and frame a repair would act on.
+        rspec = blocks(text).filter_map { |lines| parse_block(lines) }
+        (rspec + minitest(text)).uniq { |failure| [failure.name, failure.file, failure.line] }
+      end
+
+      MINITEST_HEADER = /\A(?:Error|Failure):\s*\z/
+      MINITEST_CLASS = /\A\s*([A-Z][\w:]*(?:Error|Exception|Failure|Class|Data|Reference)):\s*(.*)\z/
+      MINITEST_FRAME = /\A\s+(\S+):(\d+):in /
+
+      def self.minitest(text)
+        groups = []
+        current = nil
+        text.each_line do |line|
+          if line.match?(MINITEST_HEADER)
+            groups << current unless current.nil?
+            current = [line]
+          elsif !current.nil?
+            current << line
+          end
+        end
+        groups << current unless current.nil?
+        groups.filter_map { |lines| parse_minitest(lines) }
+      end
+
+      def self.parse_minitest(lines)
+        name = lines[1].to_s.chomp.delete_suffix(":").strip
+        return nil if name.empty?
+
+        error = message = nil
+        frames = []
+        lines[2..].to_a.each do |raw|
+          line = raw.chomp
+          if (found = line.match(MINITEST_CLASS))
+            error = found[1]
+            message = found[2].strip unless found[2].to_s.strip.empty?
+          elsif (found = line.match(MINITEST_FRAME))
+            path = found[1]
+            frames << [path, found[2].to_i] if path.start_with?("app/", "test/", "./")
+          end
+        end
+        # A Minitest assertion has no exception class: its first explanatory line (`Expected:`
+        # or the assertion's own sentence) is the message a repair can read.
+        message ||= lines[2].to_s.strip unless error
+
+        Failure.new(name: name, source: nil, error: error, message: message,
+          caused_by: nil, caused_by_message: nil, frames: frames)
       end
 
       def self.blocks(text)

@@ -145,6 +145,63 @@ start_redis() {
     echo "agents-services: Redis ${version:-unknown} on 127.0.0.1:6379"
 }
 
+# **MongoDB runs here for the same localhost reason as PostgreSQL.** MongoMapper and Mongoid
+# default to `127.0.0.1:27017`, and an application whose `mongoid.yml` says `localhost` cannot
+# reach a service on a Docker network. Measured on caturday_api's 4.1 boot: the railties
+# initializer raised `Mongo::ConnectionFailure: Failed to connect to a master node at
+# 127.0.0.1:27017` before the first example.
+#
+# The trigger is the application's own lockfile, not the project's service list: a lock that names
+# `mongo`, `mongo_mapper` or `mongoid` is an application that will open a Mongo connection, and a
+# lock that names none is not handed a server it never uses. The image installs the server only on
+# jessie and stretch, where Debian still serves it; a later era says so rather than letting the
+# boot fail for a reason nobody can see.
+MONGO_DIR="/tmp/agents-mongo"
+MONGO_PORT=27017
+
+start_mongo() {
+    if ! grep -qE '^    (mongo|mongo_mapper|mongoid) ' Gemfile.lock 2>/dev/null; then
+        return 0
+    fi
+    if ! command -v mongod >/dev/null 2>&1; then
+        echo "agents-services: Gemfile.lock names a MongoDB client and this image has no mongod to start" >&2
+        return 1
+    fi
+
+    mkdir -p "$MONGO_DIR"
+    # **The 2.4 options are not the 3.2 options.** jessie's server understands
+    # `--nojournal --smallfiles`; stretch's 3.2 does not, so the first start falls back to the
+    # options every release shares. A lock left by a killed server is removed only after the
+    # ping below has failed, so a live server is never disturbed.
+    if ! mongod --dbpath "$MONGO_DIR" --bind_ip 127.0.0.1 --port "$MONGO_PORT" \
+        --fork --logpath "$MONGO_DIR/mongod.log" --nojournal --smallfiles >/dev/null 2>&1; then
+        rm -f "$MONGO_DIR/mongod.lock"
+        if ! mongod --dbpath "$MONGO_DIR" --bind_ip 127.0.0.1 --port "$MONGO_PORT" \
+            --fork --logpath "$MONGO_DIR/mongod.log" >/dev/null 2>&1; then
+            echo "agents-services: mongod could not start; see $MONGO_DIR/mongod.log" >&2
+            return 1
+        fi
+    fi
+
+    # **`--fork` returns before the server answers, and a 2.4 server is still allocating its
+    # data files.** Measured on the 2.2 era with MongoDB 2.4.10: the first ping ran while
+    # `local.ns` and `local.0` were being zero-filled, the step declared "accepted no connection"
+    # ten milliseconds before the server was ready, and caturday's services stage failed every
+    # time. The wait is bounded and the failure sentence still names the port.
+    attempts=0
+    until mongo --quiet --host 127.0.0.1 --port "$MONGO_PORT" \
+        --eval 'db.runCommand({ping: 1}).ok' >/dev/null 2>&1; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 80 ]; then
+            echo "agents-services: MongoDB accepted no connection on 127.0.0.1:$MONGO_PORT after starting" >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+    version="$(mongod --version 2>/dev/null | sed -n 's/^db version v//p' | head -n1)"
+    echo "agents-services: MongoDB ${version:-unknown} on 127.0.0.1:$MONGO_PORT"
+}
+
 adapter=""
 host=""
 database=""
@@ -162,8 +219,10 @@ fi
 # Redis first and unconditionally: it is cheap, most suites that use it use it only when
 # they touch a queue, and a PostgreSQL failure must not leave the rest of the application's
 # services unstarted — the record's job is to say which one failed, not to stop at the
-# first.
+# first. MongoDB follows the same rule: its trigger is the lockfile, and a failed start is a
+# failure rather than a warning.
 start_redis
+start_mongo || exit 1
 
 case "$adapter" in
     postgresql | postgis)
