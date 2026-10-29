@@ -1398,6 +1398,37 @@ class PreflightTest < Minitest::Test
     assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
   end
 
+  # **Rails 7.1 removed the format argument from `to_s`, and the successor is `to_fs`.** Measured
+  # on volunteer-portal's 7.1.6 suite: three errors are `ArgumentError: wrong number of arguments
+  # (given 1, expected 0)` at `timestamp.to_s(:db)`, in the resolver and in the tests that compare
+  # its answer. The rule is narrow on purpose: only a literal symbol argument is the removed API;
+  # `to_s` with no argument is Ruby's own method and is left alone. The rung below owed nothing.
+  def test_a_time_format_call_moves_to_to_fs_at_the_7_1_rung
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.1.6"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "models"))
+    File.write(File.join(dir, "app", "models", "user.rb"),
+      "class User\n  def stamp\n    updated_at.to_s(:db)\n  end\nend\n" \
+      "created_at.to_formatted_s(:short)\nupdated_at.to_s\n")
+
+    at_the_rung = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.1.6")
+      .send(:time_format_repairs)
+    body = read(dir, "app/models/user.rb")
+
+    assert_equal 2, at_the_rung.size, "the two formatted calls were not repaired"
+    assert_includes body, "updated_at.to_fs(:db)"
+    assert_includes body, "created_at.to_fs(:short)"
+    assert_includes body, "updated_at.to_s\n", "a bare `to_s` is not the removed method"
+
+    File.write(File.join(dir, "app", "models", "user.rb"),
+      "updated_at.to_s(:db)\ncreated_at.to_formatted_s(:short)\nupdated_at.to_s\n")
+    below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.7", rails: "7.0.10")
+      .send(:time_format_repairs)
+
+    assert_empty below, "a rung below the removal repaired it: #{below.map(&:path).inspect}"
+    assert_includes read(dir, "app/models/user.rb"), "updated_at.to_s(:db)"
+  end
+
   # **A removal name is rewritten only where it *ends*, because one of these names is a prefix of
   # another.** `be_success` is a prefix of `be_successful`, so a plain `gsub` turns a line the
   # application had already migrated into `be_successfulful` — and a rewrite that has to run before

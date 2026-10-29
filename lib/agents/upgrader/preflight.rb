@@ -184,9 +184,10 @@ module Agents
         end
 
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
-          framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
-          magic_encoding_repairs + autoload_namespace_repairs + mongo_mapper_xml_repairs +
-          bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs
+          framework_removal_repairs + time_format_repairs + mailer_host_repairs +
+          squiggly_heredoc_repairs + magic_encoding_repairs + autoload_namespace_repairs +
+          mongo_mapper_xml_repairs + bundler_lock_repairs + test_gem_removal_repairs +
+          whitelist_attributes_repairs
         decisions = []
         notes = []
         deferred = []
@@ -784,6 +785,43 @@ module Agents
           "when" => { "rails_at_least" => "6.0" }
         }
       ].freeze
+
+      # **Rails 7.1 removed the format argument from `to_s` (and its `to_formatted_s` alias).**
+      # The successor is `to_fs`, and the change is not a matter of taste: measured on
+      # volunteer-portal's 7.1.6 suite, three errors are `ArgumentError: wrong number of arguments
+      # (given 1, expected 0)` at `timestamp.to_s(:db)`, in the application's resolver and in the
+      # tests that compare its answer. Only a literal symbol argument is rewritten; `to_s` with no
+      # argument is Ruby's own method and is left alone. The rule is rung-scoped because a 7.0
+      # application's `to_s(:db)` is still the release's API.
+      TIME_FORMAT_CALL = /\.(to_s|to_formatted_s)\(\s*(:[A-Za-z_][A-Za-z0-9_]*)\s*\)/
+
+      def time_format_repairs
+        return [] unless clause_holds?("rails_at_least", "7.1")
+
+        repairs = []
+        RUBY_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            name = full.sub("#{@root}/", "")
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              after = line.gsub(TIME_FORMAT_CALL) { ".to_fs(#{$2})" }
+              next if after == line
+
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+                subject: "to_fs",
+                note: "Rails 7.1 removed the format argument from `to_s` and `to_formatted_s`; " \
+                      "`to_fs` is the successor the release names, and it returns the same string")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
+        end
+        repairs
+      end
 
       # The application's own Ruby, which is what a rung can be blamed for. `vendor` and
       # `node_modules` are somebody else's code and are not walked.
