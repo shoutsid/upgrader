@@ -239,6 +239,7 @@ module Agents
         # pin, where the rung's release is the one the suite will run on.
         repairs.concat(time_format_repairs)
         repairs.concat(deprecation_silenced_repairs)
+        repairs.concat(deprecation_warn_repairs)
         # **The extracted devise module waits for the pin with the devise line it belongs to.**
         # The token gem requires devise ~> 3.5, and the application's Gemfile still names the
         # 4.0-era line at the install stage; adding it there made every era fail to resolve.
@@ -869,6 +870,41 @@ module Agents
                 note: "Rails 7.2 removed the class-level `silenced=` and `behavior=` setters; the " \
                       "application setting is `config.active_support.deprecation = :silence` " \
                       "(and `:stderr` is the default)")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
+        end
+        repairs
+      end
+
+      # **Rails 7.2 made the class-level deprecation `warn` private.** The shared deprecator is
+      # `ActiveSupport::Deprecation._instance`; measured on volunteer-portal's 7.2.4 suite as
+      # `NoMethodError: private method 'warn' called for ActiveSupport::Deprecation:Class` at
+      # `app/graphql/types/signup_graph_type.rb:6`. The rule waits for the pin, because the 7.1.6
+      # baseline still calls the public class method.
+      DEPRECATION_WARN = /\bActiveSupport::Deprecation\.warn\b/
+
+      def deprecation_warn_repairs
+        return [] unless clause_holds?("rails_at_least", "7.2")
+
+        repairs = []
+        RUBY_SOURCE_GLOBS.each do |glob|
+          Dir.glob(File.join(@root, glob)).sort.each do |full|
+            next unless File.file?(full)
+
+            name = full.sub("#{@root}/", "")
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              after = line.gsub(DEPRECATION_WARN) { "ActiveSupport::Deprecation._instance.warn" }
+              next if after == line
+
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
+                subject: "ActiveSupport::Deprecation.warn",
+                note: "Rails 7.2 made the class-level `warn` private; the shared deprecator is " \
+                      "`ActiveSupport::Deprecation._instance`, and its `warn` keeps the same arguments")
             end
             File.binwrite(full, lines.join("\n")) if changed
           end

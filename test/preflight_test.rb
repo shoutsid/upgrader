@@ -1474,6 +1474,36 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "config/application.rb"), "silenced = true"
   end
 
+  # **Rails 7.2 made the class-level deprecation `warn` private.** Measured on volunteer-portal's
+  # 7.2.4 suite: `NoMethodError: private method 'warn' called for ActiveSupport::Deprecation:Class`
+  # at `signup_graph_type.rb:6`. The shared deprecator is `_instance`, and the rule waits for the
+  # pin because the 7.1.6 baseline calls the public class method.
+  def test_a_class_level_deprecation_warn_moves_to_the_instance_at_the_7_2_rung
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.2.4"\n),
+      lockfile: PLAIN_LOCKFILE)
+    FileUtils.mkdir_p(File.join(dir, "app", "graphql", "types"))
+    File.write(File.join(dir, "app", "graphql", "types", "signup_graph_type.rb"),
+      "ActiveSupport::Deprecation.warn(message)\n")
+
+    preflight = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.2.4")
+    started = preflight.run
+    assert_empty started.repairs.select { |repair| repair.subject == "ActiveSupport::Deprecation.warn" },
+      "the deprecation-warn rule ran before the baseline"
+
+    applied = preflight.declare_deferred([]).repairs
+      .select { |repair| repair.subject == "ActiveSupport::Deprecation.warn" }
+    assert_equal 1, applied.size, "the class-level warn was not repaired"
+    assert_includes read(dir, "app/graphql/types/signup_graph_type.rb"),
+      "ActiveSupport::Deprecation._instance.warn(message)"
+
+    File.write(File.join(dir, "app", "graphql", "types", "signup_graph_type.rb"),
+      "ActiveSupport::Deprecation.warn(message)\n")
+    below = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.1.6")
+      .declare_deferred([]).repairs
+      .select { |repair| repair.subject == "ActiveSupport::Deprecation.warn" }
+    assert_empty below, "a rung below the change repaired it: #{below.map(&:path).inspect}"
+  end
+
   # **A removal name is rewritten only where it *ends*, because one of these names is a prefix of
   # another.** `be_success` is a prefix of `be_successful`, so a plain `gsub` turns a line the
   # application had already migrated into `be_successfulful` — and a rewrite that has to run before
