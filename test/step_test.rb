@@ -716,6 +716,39 @@ class StepTest < Minitest::Test
   # assertion is on the Gemfile the suite was handed rather than on a runner's call
   # list, because `Tests.run` spawns the suite itself: an injected runner never sees it,
   # so the call list could only ever have shown the *absence* of a suite that did run.
+  # **A repair that changed the Gemfile has not been measured until the bundle is installed.**
+  # Measured on volunteer-portal: the model moved mocha to 2.1 and updated the test helper, and
+  # the rerun still loaded mocha 1.13 from the installed bundle, so the same NameError came back.
+  # The digest of the two resolve inputs makes the install conditional: a repair that only edits
+  # code still pays nothing, and a repair that edits the Gemfile gets an install stage before the
+  # suite that reads it.
+  def test_a_repaired_gemfile_is_installed_before_the_suite_runs
+    dir = track(app)
+    runner = FakeRunner.new
+    step = step(dir, runner: runner, env: {})
+    step.instance_variable_set(:@worktree, @source)
+    machine = Struct.new(:unused) do
+      def command(argv, chdir:, env:) = [argv, env]
+      def era = "2.7"
+    end.new
+    step.instance_variable_set(:@machine, machine)
+    step.instance_variable_set(:@bundle_digest, step.send(:bundle_digest))
+
+    File.write(File.join(dir, "Gemfile"),
+      %(source "https://rubygems.org"\ngem "rails", "4.2.11"\ngem "mocha", "~> 2.1"\n))
+    stages = []
+    step.send(:install_after_repair, stages)
+
+    assert(runner.calls.any? { |call| call.include?("bundle install") },
+      "the changed Gemfile was not installed: #{runner.calls.inspect}")
+    assert(stages.any? { |stage| stage.stage == Agents::Upgrader::Record::BUNDLE },
+      "the install is not in the record: #{stages.inspect}")
+
+    before = runner.calls.size
+    step.send(:install_after_repair, [])
+    assert_equal before, runner.calls.size, "an unchanged bundle was installed again"
+  end
+
   # The preflight is the step's first move, and the order is the reason: the machine choice
   # *is* a `bundle install`, so a Gemfile that cannot be installed as it stands has to be
   # repaired before an interpreter is picked — otherwise every era is rejected for the

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "open3"
 require "shellwords"
@@ -413,7 +414,7 @@ module Agents
         # made it green; then the move", in that order.
         if @baseline && !@baseline.ok?
           repaired = repair(stages, step, subject: @baseline, before_the_move: true,
-            rerun: -> { @baseline = run_suite(stages, Record::BASELINE) })
+            rerun: -> { install_after_repair(stages); @baseline = run_suite(stages, Record::BASELINE) })
           @baseline = repaired || @baseline
           checkpoint("repair the baseline") if repaired
         end
@@ -461,7 +462,8 @@ module Agents
         # premise — a green baseline before, a red subject after — is unchanged; only the subject
         # is the boot command rather than the suite.
         stale_lock(stages)
-        repair(stages, step, subject: @boot, rerun: -> { @boot = boot(stages) })
+        repair(stages, step, subject: @boot,
+          rerun: -> { install_after_repair(stages); @boot = boot(stages) })
         # **The repair's own boot can be the first one that reaches the stale lock.** Measured on
         # 19wu's 4.1.16 rung: the first boot died on polyamorous, the repair fixed that, and the
         # second boot answered `Could not find gem 'ransack (~> 1.4.1)'` — after the one
@@ -494,7 +496,8 @@ module Agents
         # loaded — the boot's own attempt already had its chance. A patch rung has no boot
         # stage at all, and the suite is the only subject there is.
         if @boot.nil? || @boot.ok?
-          repair(stages, step, subject: @suite, rerun: -> { @suite = run_suite(stages, Record::SUITE) })
+          repair(stages, step, subject: @suite,
+            rerun: -> { install_after_repair(stages); @suite = run_suite(stages, Record::SUITE) })
         end
 
         # **The rest of the gate, after the suite and the repairs it needed.** A check that ran
@@ -768,6 +771,13 @@ module Agents
           @out&.puts("  repair: not attempted — no budget (UPGRADER_REPAIR_ATTEMPTS) or the account permits no repair")
           return nil
         end
+
+        # **A repair that changes the Gemfile has not been measured until the bundle is installed.**
+        # The loop's `rerun` is the suite, and the suite runs the installed bundle: on
+        # volunteer-portal the model correctly moved mocha to 2.1 and updated the test helper, then
+        # the rerun still loaded mocha 1.13 from the old bundle and the same NameError came back.
+        # The digest of the two files is the trigger, so a repair that only edits code pays nothing.
+        @bundle_digest = bundle_digest
 
         result = repairer.new(
           root: @worktree.root,
@@ -1229,6 +1239,32 @@ module Agents
       # baseline needs, and resolving a *new* Rails is the pin stage's business. It is also
       # the interpreter probe (`choose_machine`), which is why it takes the machine rather
       # than defaulting to the one the step settled on.
+      # **What the installed bundle is, as the two files a resolve reads.** A repair's edit to
+      # either means the machine is running something else than the tree says; the digest is the
+      # fact that makes the install conditional rather than a tax on every attempt.
+      def bundle_digest
+        %w[Gemfile Gemfile.lock].map do |name|
+          path = File.join(@worktree.root, name)
+          File.file?(path) ? Digest::SHA256.file(path).hexdigest : "-"
+        end.join(":")
+      end
+
+      # The install a repair's Gemfile or lock edit owes the suite. The install is a recorded stage
+      # of its own, before the suite that measures it. A failed install does not end the loop: the
+      # suite still runs, fails with the resolver's own sentence, and the next attempt is briefed
+      # with that rather than with a silence.
+      def install_after_repair(stages)
+        return if @machine.nil? || bundle_digest == @bundle_digest
+
+        @out&.puts("  repair: the bundle changed; installing it before the suite") if @out
+        install = install_bundle(stages, @machine)
+        @bundle_digest = bundle_digest
+        return if install.ok?
+
+        @out&.puts("  repair: the repaired bundle did not install: " \
+                   "#{Record.first_line(install.output_tail)}") if @out
+      end
+
       def install_bundle(stages, machine = @machine)
         install_packages(stages, machine)
         drop_unrunnable_bundler(machine, stages)
