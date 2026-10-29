@@ -414,7 +414,10 @@ module Agents
         # made it green; then the move", in that order.
         if @baseline && !@baseline.ok?
           repaired = repair(stages, step, subject: @baseline, before_the_move: true,
-            rerun: -> { install_after_repair(stages); @baseline = run_suite(stages, Record::BASELINE) })
+            rerun: -> {
+              install_after_repair(stages)
+              @baseline = run_suite(stages, Record::BASELINE)
+            })
           @baseline = repaired || @baseline
           checkpoint("repair the baseline") if repaired
         end
@@ -463,7 +466,10 @@ module Agents
         # is the boot command rather than the suite.
         stale_lock(stages)
         repair(stages, step, subject: @boot,
-          rerun: -> { install_after_repair(stages); @boot = boot(stages) })
+          rerun: -> {
+            install_after_repair(stages)
+            @boot = boot(stages)
+          })
         # **The repair's own boot can be the first one that reaches the stale lock.** Measured on
         # 19wu's 4.1.16 rung: the first boot died on polyamorous, the repair fixed that, and the
         # second boot answered `Could not find gem 'ransack (~> 1.4.1)'` — after the one
@@ -497,7 +503,10 @@ module Agents
         # stage at all, and the suite is the only subject there is.
         if @boot.nil? || @boot.ok?
           repair(stages, step, subject: @suite,
-            rerun: -> { install_after_repair(stages); @suite = run_suite(stages, Record::SUITE) })
+            rerun: -> {
+              install_after_repair(stages)
+              @suite = run_suite(stages, Record::SUITE)
+            })
         end
 
         # **The rest of the gate, after the suite and the repairs it needed.** A check that ran
