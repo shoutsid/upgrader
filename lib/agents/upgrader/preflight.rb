@@ -829,11 +829,12 @@ module Agents
         repairs
       end
 
-      # **Rails 7.2 removed `ActiveSupport::Deprecation.silenced=`.** The global switch the release
-      # names is `behavior = :silence` (`:stderr` is the default). Measured on volunteer-portal's
-      # 7.2.4 boot: `config/application.rb:14` sets `ActiveSupport::Deprecation.silenced = true`,
-      # and every command dies at boot with `undefined method 'silenced='`. The line is applied
-      # after the baseline and the pin, because the 7.1.6 baseline still has the old setter.
+      # **Rails 7.2 removed the class-level `silenced=` and `behavior=` setters.** The setting
+      # that remains is the application's `config.active_support.deprecation` (`:silence`, or
+      # `:stderr` for the default). Measured twice on volunteer-portal: the 7.2.4 boot first died
+      # with `undefined method 'silenced='`, then with `undefined method 'behavior='` when this
+      # rule wrote the deprecator's instance API onto the class. The line is applied after the
+      # baseline and the pin, because the 7.1.6 baseline still runs the old setter.
       DEPRECATION_SILENCED = /ActiveSupport::Deprecation\.silenced\s*=\s*(true|false)/
 
       def deprecation_silenced_repairs
@@ -849,8 +850,15 @@ module Agents
             changed = false
             lines.each_with_index do |line, index|
               after = line.gsub(DEPRECATION_SILENCED) do
-                "ActiveSupport::Deprecation.behavior = " \
-                  "#{Regexp.last_match(1) == "true" ? ":silence" : ":stderr"}"
+                setting = Regexp.last_match(1) == "true" ? ":silence" : ":stderr"
+                # `config` is in scope in the application class and the environment blocks; an
+                # initializer needs the application object named in full.
+                prefix = if name == "config/application.rb" || name.start_with?("config/environments/")
+                  "config"
+                else
+                  "Rails.application.config"
+                end
+                "#{prefix}.active_support.deprecation = #{setting}"
               end
               next if after == line
 
@@ -858,8 +866,9 @@ module Agents
               changed = true
               repairs << Repair.new(path: name, line: index + 1, text: line, after: after,
                 subject: "ActiveSupport::Deprecation",
-                note: "Rails 7.2 removed `ActiveSupport::Deprecation.silenced=`; the release's " \
-                      "global switch is `behavior = :silence`, and `:stderr` is the default")
+                note: "Rails 7.2 removed the class-level `silenced=` and `behavior=` setters; the " \
+                      "application setting is `config.active_support.deprecation = :silence` " \
+                      "(and `:stderr` is the default)")
             end
             File.binwrite(full, lines.join("\n")) if changed
           end

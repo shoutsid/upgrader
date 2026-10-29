@@ -1457,13 +1457,13 @@ class PreflightTest < Minitest::Test
     applied = preflight.declare_deferred([]).repairs
       .select { |repair| repair.subject == "ActiveSupport::Deprecation" }
     assert_equal 1, applied.size, "the silenced setter was not repaired"
-    assert_includes read(dir, "config/application.rb"), "ActiveSupport::Deprecation.behavior = :silence"
+    assert_includes read(dir, "config/application.rb"), "config.active_support.deprecation = :silence"
 
     File.write(File.join(dir, "config", "application.rb"),
       "ActiveSupport::Deprecation.silenced = false\n")
     Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "3.1", rails: "7.2.4")
       .declare_deferred([])
-    assert_includes read(dir, "config/application.rb"), "ActiveSupport::Deprecation.behavior = :stderr"
+    assert_includes read(dir, "config/application.rb"), "config.active_support.deprecation = :stderr"
 
     File.write(File.join(dir, "config", "application.rb"),
       "ActiveSupport::Deprecation.silenced = true\n")
