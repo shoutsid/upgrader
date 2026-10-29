@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
 require "agents/upgrader"
 
 # The one place a child process is spawned.
@@ -37,6 +39,21 @@ class ShellTest < Minitest::Test
 
   # **A command killed at its bound established nothing**, which is the same third answer a missing program
   # is — and the record has to say which of the two happened, because a reader acts differently on each.
+  # **The excerpt is the record; the stream is the command.** A boot exception can sit at the
+  # head with a stack at the tail, and the 4KB two-ended excerpt drops the middle. The file is
+  # written as the output arrives, and the record's tail names it.
+  def test_a_command_can_keep_its_full_output_beside_the_excerpt
+    dir = Dir.mktmpdir
+    path = File.join(dir, "logs", "probe.log")
+    record = Shell.run(["sh", "-c", "echo hello; echo world"], stage: "probe", chdir: Dir.pwd,
+      stream: path)
+
+    assert_equal "hello\nworld\n", File.read(path)
+    assert_includes record.output_tail, "[full output: #{path}]"
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+  end
+
   def test_a_command_that_exceeds_its_bound_is_killed_and_says_which_bound_it_hit
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     record = Shell.run(["sh", "-c", "echo working; sleep 30"], stage: "probe", chdir: Dir.pwd, timeout: 0.3)

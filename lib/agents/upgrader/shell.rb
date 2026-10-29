@@ -94,17 +94,26 @@ module Agents
       # its bound established nothing about the application, which is the same third answer a missing
       # program is — so it is reported the way `Tests` reports a killed suite rather than as a failure.
       def self.run(argv, stage:, chdir:, env: {}, stdin: File::NULL, timeout: nil,
-                   excerpt_bytes: TAIL_BYTES, display: nil)
+                   excerpt_bytes: TAIL_BYTES, display: nil, stream: nil)
         started = clock
+        # **The record keeps an excerpt; the stream keeps the whole command.** The boot that
+        # dies at `config/application.rb` prints its exception at the head and a stack at the
+        # tail, and a 4KB two-ended excerpt can lose the one line that names the cause. When the
+        # caller names a file the output is written there as it arrives, and the record carries
+        # the path so a reader can finish the command rather than guess at it.
+        file = open_stream(stream)
         status, text, timed_out = spawn_with_deadline(
           argv, chdir: chdir, env: env, stdin: stdin, timeout: timeout,
-          excerpt: Excerpt.new(bytes: excerpt_bytes)
+          excerpt: Excerpt.new(bytes: excerpt_bytes), stream: file
         )
+        output = timed_out ? killed_at_the_bound(argv, timeout, text) : text
+        file&.flush
+        output = "#{output}\n[full output: #{stream}]" if file && File.size(stream).positive?
         Record::Command.new(
           stage: stage, command: argv.join(" "), display: (display || argv).join(" "),
           ran: !timed_out,
           exit_code: status && status.exitstatus, seconds: elapsed(started),
-          output_tail: timed_out ? killed_at_the_bound(argv, timeout, text) : text
+          output_tail: output
         )
       rescue Errno::ENOENT => e
         # The program itself is missing — no `bundle`, no `bin/rails`. Nothing was
@@ -114,6 +123,26 @@ module Agents
           ran: false, exit_code: nil,
           seconds: elapsed(started), output_tail: "#{e.class}: #{e.message}"
         )
+      ensure
+        close(file) if file
+      end
+
+      # A stream path the caller named, or nil when the command keeps only its excerpt. A file
+      # that cannot be opened is not a command failure; the excerpt still travels.
+      def self.open_stream(path)
+        return nil if path.to_s.empty?
+
+        require "fileutils"
+        FileUtils.mkdir_p(File.dirname(path))
+        File.open(path, "wb")
+      rescue SystemCallError
+        nil
+      end
+
+      # The interface the step uses when it has a full-output path. A test runner that does not
+      # know the argument still answers `run`, so the double does not have to grow it.
+      def self.run_with_stream(argv, stream:, **keywords)
+        run(argv, stream: stream, **keywords)
       end
 
       # How long a killed child's process group gets to shut down before the group is killed outright.
@@ -137,13 +166,13 @@ module Agents
       # than record it — a suite's failure list is longer than the record's bound, and the two
       # readers want different answers from the same stream.
       def self.spawn_with_deadline(argv, chdir:, env: {}, stdin: File::NULL, timeout: nil, excerpt: nil,
-                                   analysis: nil)
+                                   analysis: nil, stream: nil)
         excerpt ||= Excerpt.new
         reader, writer = IO.pipe
         pid = Process.spawn(env, *argv, chdir: chdir, pgroup: true, in: stdin, out: writer, err: writer)
         writer.close
 
-        reading = Thread.new { drain(reader, excerpt, analysis) }
+        reading = Thread.new { drain(reader, excerpt, analysis, stream) }
         waiting = Thread.new { Process.waitpid2(pid) }
         if waiting.join(timeout)
           reading.join(2)
@@ -161,10 +190,15 @@ module Agents
       # Reads the child's output on a thread of its own and keeps only the two ends of it. Both halves are
       # load-bearing: a pipe holds 64 KB, so a command that prints more than that blocks for ever waiting for
       # a reader that only arrives after it exits; and the excerpt is bounded because this text is recorded.
-      def self.drain(reader, excerpt, analysis = nil)
+      def self.drain(reader, excerpt, analysis = nil, stream = nil)
         while (chunk = reader.read(65_536))
           excerpt << chunk
           analysis << chunk unless analysis.nil?
+          begin
+            stream&.write(chunk)
+          rescue IOError, SystemCallError
+            stream = nil
+          end
         end
       rescue IOError, Errno::EBADF
         # The pipe was closed under this thread, which is what happens when a run is killed and nothing is

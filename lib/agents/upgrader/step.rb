@@ -4475,8 +4475,20 @@ module Agents
           end
         end
         announce(stage, display.join(" "))
-        result = @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
-          timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
+        # **Every command keeps its whole output beside its excerpt.** The record's two-ended
+        # bound is a record, not a reader: a boot exception at the head and a stack at the tail
+        # can leave the cause in the dropped middle. The file is named by the run and the stage
+        # and carried in the command's tail; a runner that does not know the interface still
+        # answers `run`, so the test doubles keep working.
+        @command_stream_seq = (@command_stream_seq || 0) + 1
+        stream = File.join(@home, "logs", "#{run_id}-#{@command_stream_seq}-#{stage}.log")
+        result = if @runner.respond_to?(:run_with_stream)
+          @runner.run_with_stream(argv, stream: stream, stage: stage, chdir: chdir, env: env,
+            stdin: stdin, timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
+        else
+          @runner.run(argv, stage: stage, chdir: chdir, env: env, stdin: stdin,
+            timeout: command_timeout, excerpt_bytes: excerpt_bytes, display: display)
+        end
         @progress.finish(stage: stage, status: status_for(result),
           exit_code: result.exit_code, duration_ms: milliseconds(result))
         result
