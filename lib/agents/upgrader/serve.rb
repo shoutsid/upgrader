@@ -215,6 +215,27 @@ module Agents
         "the work list comes from the service's queue"
       end
 
+      # Why no target should be leased this cycle, or nil when at least one model is usable.
+      # **The deployment's chain is the gate.** A project may narrow the chain, but pricing
+      # every project before every cycle would ask the service for each of them; the outage
+      # this guards is deployment-wide, and a project that overrides while the deployment is
+      # held is the rarer case. A chain with no configured models is left to opencode's own
+      # choice, which is not a fact this file can read.
+      def models_waiting
+        budget = Repair.budget(@env)
+        return nil if budget.nil?
+
+        models = Array(budget[:models]).map(&:to_s).reject(&:empty?)
+        return nil if models.empty?
+
+        limits = ModelLimits.new(home: @home, env: @env)
+        limited = models.select { |model| limits.limited_until(model) }
+        return nil unless limited.size == models.size
+
+        "every repair model is limited (#{limited.join(", ")}); no target is leased until " \
+          "an operator clears the hold"
+      end
+
       # **A stop is answered between commands, and the loop then waits rather than exits.**
       # Exiting would hand the container to `restart: unless-stopped`, which starts it again into
       # the same stop — a crash loop that looks healthy from the outside. Waiting keeps one
@@ -268,6 +289,15 @@ module Agents
           @out.puts("serve: #{undelivered.uniq.join(", ")} still have an undelivered checkpoint; " \
                     "no path is walked until delivery succeeds")
           return :blocked
+        end
+        # **An exhausted model chain is weather, not a failed rung.** A step that ran would
+        # spend one of the move's three attempts before the repair lane could discover that
+        # every model is held; the lease is claimed inside `run_one`, so this is the last
+        # point that can decline without touching the target. Delivery retries above still
+        # run, because a passed rung's branch is owed whatever the model state is.
+        if available.any? && (waiting = models_waiting)
+          @out.puts("serve: #{waiting}")
+          return :idle
         end
 
         outcomes = available.map { |spec| walk_spec(spec) }

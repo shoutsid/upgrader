@@ -303,6 +303,32 @@ class ServeTest < Minitest::Test
     assert_equal 0, ledger.size, "a stopped step settled a rung it never measured"
   end
 
+  # **A month of refusals must not cost a move its attempts.** With every model held in the
+  # state file, the cycle reads the queue but leases nothing: the pause is above `run_one`,
+  # which is where the target lease is claimed, so the walk waits for an operator rather than
+  # spending a step against a provider. Delivery retries still run; this is only the walk.
+  def test_a_cycle_with_every_model_limited_leases_nothing
+    File.write(File.join(home, "repair_model_limits.json"), JSON.pretty_generate(
+      "models" => {
+        "free" => { "until" => nil, "reset_reported" => false,
+                    "reason" => "the provider reported a limit" },
+        "paid" => { "until" => nil, "reset_reported" => false,
+                    "reason" => "the operator reported the plan is out" }
+      }
+    ))
+    corpus = FakeCorpus.new(targets: [
+      { "repo_url" => "acme/app", "ref" => "main", "status" => "queued" }
+    ])
+    out = StringIO.new
+    serve(corpus: corpus, cycles: 1, out: out,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "3",
+             "UPGRADER_REPAIR_MODEL" => "free,paid" }).run
+
+    assert_empty FakeStep.calls, "a target was walked while every model was limited"
+    assert_includes out.string, "every repair model is limited"
+    assert_includes out.string, "free, paid"
+  end
+
   def test_a_stopped_loop_leaves_nothing_in_flight
     progress = Agents::Upgrader::Progress.new(home: home)
     progress.stage(repo: "https://example.test/app", from: "5.2.0", to: "6.0.0",
@@ -317,12 +343,13 @@ class ServeTest < Minitest::Test
 
   def serve(corpus: FakeCorpus.new, cycles: 1, interval: 0, repos: [], to: "7.1.0",
             ledger: nil, out: nil, walk: false, publish: false, rungs: nil, force: false, record: nil,
-            project: nil, publish_class: FakePublish, control: nil, step_class: FakeStep)
+            project: nil, publish_class: FakePublish, control: nil, step_class: FakeStep,
+            env: ENV)
     Serve.new(api: "http://api.test", home: home, heartbeat: File.join(home, "heartbeat"),
       to: to, repos: repos, interval: interval, out: out || StringIO.new,
       ledger: ledger, cycles: cycles, corpus: corpus, step_class: step_class,
       walk: walk, publish: publish, rungs: rungs, publish_class: publish_class, force: force,
-      record: record, project: project, environment: nil, control: control)
+      record: record, project: project, environment: nil, control: control, env: env)
   end
 
   # **The account project, not the deployment, decides the destination and suite.** The queue names
