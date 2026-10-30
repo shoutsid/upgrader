@@ -107,7 +107,7 @@ module Agents
         # indefinitely because the stream mentioned a 429 the model was reading, which then
         # blocked every later repair. Only a free model's silence is the availability fact.
         return nil if timed_out && !free
-        return nil unless text.match?(LIMIT)
+        return nil unless (timed_out && free) || text.match?(LIMIT)
 
         moment = (now || @now.call).utc
         reset = extract_reset(text, moment)
