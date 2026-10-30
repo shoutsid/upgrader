@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "rubygems"
+
 module Agents
   module Upgrader
     # **A failed resolve, as the constraints that cannot hold together.**
@@ -15,6 +17,16 @@ module Agents
     # `evidence.conflict` is the derivation, and `evidence.conflicts` keeps every block when the
     # resolve named more than one. A block with fewer than two distinct requirements is not an
     # incompatibility — it is a release nobody could find, and it stays an ordinary failure.
+    #
+    # **The set is the smallest one that cannot hold, and the sentence says which it is.** A branch
+    # Bundler printed is evidence, not necessarily a cause: `< 2.0` and `~> 1.6` are both satisfied
+    # by 1.6.x, so claiming they conflict would send a maintainer looking for a release that does
+    # not exist. Where the printed requirements are provably incompatible the derivation keeps the
+    # cardinality-minimal subset (`proven` true, `minimal` filled); where they are satisfiable
+    # together it keeps the whole set and says so, because the cause is then a release the resolver
+    # could not place rather than two constraints that exclude each other. That is decided by
+    # interval arithmetic over the clauses — a lower bound, an upper bound, exclusions — not by
+    # choosing a version, so this stays a reader of the resolver's answer.
     module Conflict
       # A resolve's message is a few kilobytes of nested branches. Bounding these keeps one
       # pathological output from turning a question's evidence into a second copy of the log.
@@ -88,11 +100,7 @@ module Agents
           # as a derivation would tell a maintainer a gem was incompatible with itself.
           return nil if requirements.map { |row| row["requirement"] }.uniq.length < 2
 
-          {
-            "gem" => gem,
-            "requirements" => requirements,
-            "summary" => summary(gem, requirements)
-          }
+          assembled(gem, requirements)
         end
 
         # **The other shape, and it has no "could not find compatible versions" header.** A
@@ -115,16 +123,119 @@ module Agents
             { "requirement" => requirement, "via" => ["the Gemfile"] },
             { "requirement" => "= #{locked[2]}", "via" => ["Gemfile.lock"] }
           ]
-          { "gem" => gem, "requirements" => requirements,
-            "summary" => summary(gem, requirements) }
+          assembled(gem, requirements)
         end
 
-        def summary(gem, requirements)
+        # One shape for both spellings, so a caller reads `minimal` whether Bundler wrote a
+        # conflict block or an instruction about the lock.
+        def assembled(gem, requirements)
+          smallest = minimal(requirements)
+          proven = !smallest.empty?
+          {
+            "gem" => gem,
+            "requirements" => requirements,
+            "proven" => proven,
+            "minimal" => smallest,
+            "summary" => summary(gem, proven ? smallest : requirements, proven: proven)
+          }
+        end
+
+        # **The smallest subset that cannot hold, by trying every subset from one row upward.**
+        # Eight rows at most, so the exhaustive search is 255 tests of a parse and a comparison
+        # and needs no cleverness; a smaller set is a better answer than a greedy one, and a row
+        # that holds alongside the rest is dropped rather than presented as a cause.
+        #
+        # Empty means "not proven", not "satisfiable": a requirement RubyGems cannot parse, or one
+        # whose exclusion can only be settled against a real candidate list, leaves the caller with
+        # every row Bundler named and the honest sentence that the resolver could not place one.
+        def minimal(requirements)
+          indices = (0...requirements.length).to_a
+          holds = {}
+          decision = lambda do |subset|
+            holds.fetch(subset) do
+              holds[subset] = satisfiable?(subset.map { |index| requirements[index]["requirement"] })
+            end
+          end
+          return [] unless decision.call(indices) == false
+
+          (1..indices.length).each do |size|
+            indices.combination(size) do |subset|
+              return subset.map { |index| requirements[index] } if decision.call(subset) == false
+            end
+          end
+          []
+        end
+
+        # **Whether these requirements can hold together, decided without choosing a release.**
+        # Each clause is a bound or an exclusion, so the conjunction is satisfiable when the
+        # tightest lower bound lies below the tightest upper bound, or on it with both inclusive
+        # and the point not excluded. `~>` is the same pair of bounds RubyGems reads it as.
+        #
+        # A prerelease is treated as comparable to its release line here, which makes the interval
+        # permissive rather than strict — the direction that can only withhold a conflict claim,
+        # never invent one.
+        def satisfiable?(texts)
+          parsed = texts.map { |text| parse_requirement(text) }
+          return nil if parsed.any?(&:nil?)
+
+          lowers = []
+          uppers = []
+          excluded = []
+          parsed.each do |requirement|
+            requirement.requirements.each do |operator, version|
+              case operator
+              when ">", ">=" then lowers << [version, operator == ">="]
+              when "<", "<=" then uppers << [version, operator == "<="]
+              when "="
+                lowers << [version, true]
+                uppers << [version, true]
+              when "~>"
+                lowers << [version, true]
+                uppers << [version.bump, false]
+              when "!=" then excluded << version
+              else return nil
+              end
+            end
+          end
+          interval_holds?(lowers, uppers, excluded)
+        end
+
+        def interval_holds?(lowers, uppers, excluded)
+          low, low_inclusive = edge(lowers, :max)
+          high, high_inclusive = edge(uppers, :min)
+          return true if low.nil? || high.nil?
+          return false if low > high
+          return true if low < high
+          return false unless low_inclusive && high_inclusive
+
+          excluded.none? { |version| version == low }
+        end
+
+        # The tightest bound, exclusive if either bound on that version is.
+        def edge(bounds, direction)
+          return [nil, false] if bounds.empty?
+
+          chosen = bounds.map(&:first).public_send(direction)
+          [chosen, bounds.select { |version, _| version == chosen }.all? { |_, inclusive| inclusive }]
+        end
+
+        def parse_requirement(text)
+          clauses = text.to_s.split(",").map(&:strip).reject(&:empty?)
+          return nil if clauses.empty?
+
+          Gem::Requirement.new(clauses)
+        rescue Gem::Requirement::BadRequirementError, ArgumentError
+          nil
+        end
+
+        def summary(gem, requirements, proven:)
           parts = requirements.first(3).map do |row|
             via = row["via"].empty? ? "the Gemfile" : row["via"].join(" -> ")
             "#{row['requirement']} (via #{via})"
           end
-          "#{gem} is required as #{parts.join(' and as ')}"[0, MAX_SUMMARY]
+          verdict = proven ? " — the smallest set that cannot hold together" :
+                             " — the resolver could not place a release against them"
+          "#{gem} is required as #{parts.join(' and as ')}#{verdict}"[0, MAX_SUMMARY]
         end
       end
     end

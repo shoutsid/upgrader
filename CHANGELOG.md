@@ -15,6 +15,15 @@ versioning for its command-line surface and record format.
 
 ### Added
 
+- **A pin conflict names the smallest set that cannot hold, and says when it cannot prove one.**
+  Bundler's report is read into the branch-level requirements as before, and the derivation now
+  decides by interval arithmetic over the clauses — a lower bound, an upper bound, exclusions —
+  whether the printed requirements actually exclude each other. When they do, `conflict.minimal`
+  is the cardinality-minimal subset (three branches where two contradict reduce to those two) and
+  the sentence says so; when they do not, as `< 2.0` beside `~> 1.6` does not, the whole set stays
+  the evidence and the sentence says the resolver could not place a release against it. No version
+  is chosen and no second resolver is written: a clause RubyGems cannot read leaves the question
+  unproven rather than guessed.
 - A delivered pull request can gain a model-written lead without a re-walk. `serve` requests a
   presentation after a GitHub delivery and applies it on a later cycle; the branch is untouched,
   the evidence sections stay the record's, and a body a person edited is never overwritten.
