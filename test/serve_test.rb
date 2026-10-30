@@ -187,15 +187,20 @@ class ServeTest < Minitest::Test
   class FakeCorpus
     attr_reader :asked, :ladder_reads, :presentation_requests
 
-    def initialize(targets: [], raises: nil, ladder: "8.1.0", ladder_raises: nil)
+    def initialize(targets: [], raises: nil, ladder: "8.1.0", ladder_raises: nil, projects: [])
       @targets = targets
       @raises = raises
       @ladder = ladder
       @ladder_raises = ladder_raises
+      @projects = projects
       @asked = []
       @ladder_reads = 0
       @presentation_requests = []
     end
+
+    # The account project feed. Its `repair.model` is the chain the service would hand this walk,
+    # which is why the model gate reads it rather than the deployment's variable.
+    def projects = { "projects" => @projects }
 
     def targets(limit:)
       @asked << limit
@@ -327,6 +332,36 @@ class ServeTest < Minitest::Test
     assert_empty FakeStep.calls, "a target was walked while every model was limited"
     assert_includes out.string, "every repair model is limited"
     assert_includes out.string, "free, paid"
+  end
+
+  # **A deployment's held chain must not stop an account that brought its own.** The feed names the
+  # chain the service actually delivers, so a walk whose account key is free is work this loop can
+  # do even while every model in `UPGRADER_REPAIR_MODEL` is held. Measured on this deployment: five
+  # queued rows, every held model belonging to a provider the vault had no key for, and the
+  # account's own chain free — the loop declined all five every cycle.
+  def test_an_account_chain_is_gated_instead_of_the_deployment_chain
+    File.write(File.join(home, "repair_model_limits.json"), JSON.pretty_generate(
+      "models" => {
+        "free" => { "until" => nil, "reset_reported" => false, "reason" => "held" },
+        "paid" => { "until" => nil, "reset_reported" => false, "reason" => "held" }
+      }
+    ))
+    corpus = FakeCorpus.new(
+      targets: [{ "repo_url" => "acme/app", "ref" => "main", "status" => "queued" }],
+      projects: [{ "slug" => "app", "repo" => "acme/app", "from" => "4.2.11",
+                   "to" => "5.0.0",
+                   "repair" => { "policy" => "fallback",
+                                 "model" => "nano-gpt/deepseek/deepseek-v4.1-flash" } }]
+    )
+    FakeStep.reset!(results: [Result.new(verdict: Agents::Upgrader::Record::PASSED,
+      to_version: "5.0.0")])
+    out = StringIO.new
+    serve(corpus: corpus, cycles: 1, out: out,
+      env: { "UPGRADER_REPAIR_ATTEMPTS" => "3",
+             "UPGRADER_REPAIR_MODEL" => "free,paid" }).run
+
+    refute_includes out.string, "every repair model is limited"
+    refute_empty FakeStep.calls, "the account's chain was free, so a target should have been walked"
   end
 
   def test_a_stopped_loop_leaves_nothing_in_flight

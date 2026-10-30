@@ -216,16 +216,18 @@ module Agents
       end
 
       # Why no target should be leased this cycle, or nil when at least one model is usable.
-      # **The deployment's chain is the gate.** A project may narrow the chain, but pricing
-      # every project before every cycle would ask the service for each of them; the outage
-      # this guards is deployment-wide, and a project that overrides while the deployment is
-      # held is the rarer case. A chain with no configured models is left to opencode's own
-      # choice, which is not a fact this file can read.
+      # **The chain the service would deliver is the gate.** It is the feed's `repair.model` — the
+      # account's chain, or a project's narrower one — because that row is what the walk applies;
+      # the deployment's `UPGRADER_REPAIR_MODEL` is the answer only for a row that names none.
+      # Reading the deployment's chain alone held work the account could do: measured on this
+      # deployment, where every held model belonged to a provider the vault had no key for and the
+      # account's own chain was free, so the loop declined five queued rows every cycle.
+      # A chain with no configured models is still left to opencode's own choice, which is not a
+      # fact this file can read.
       def models_waiting
-        budget = Repair.budget(@env)
-        return nil if budget.nil?
+        return nil if Repair.budget(@env).nil?
 
-        models = Array(budget[:models]).map(&:to_s).reject(&:empty?)
+        models = repair_models
         return nil if models.empty?
 
         limits = ModelLimits.new(home: @home, env: @env)
@@ -234,6 +236,17 @@ module Agents
 
         "every repair model is limited (#{limited.join(", ")}); no target is leased until " \
           "an operator clears the hold"
+      end
+
+      # **A project row's chain costs nothing to read here.** The feed is already loaded for
+      # `work`, so this asks the service nothing; the deployment's chain is used only when every
+      # row in hand leaves the choice to it.
+      def repair_models
+        declared = account_projects.filter_map { |project| project.repair&.models }
+          .flatten.map(&:to_s).reject(&:empty?)
+        return declared.uniq if declared.any?
+
+        Array(Repair.budget(@env)&.fetch(:models, [])).map(&:to_s).reject(&:empty?).uniq
       end
 
       # **A stop is answered between commands, and the loop then waits rather than exits.**
