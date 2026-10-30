@@ -39,9 +39,13 @@ module Agents
 
       class << self
         # Every conflict the message names that has more than one requirement, first four.
+        # Three spellings, because the resolver has three: the nested block older Bundler writes,
+        # the "You have requested" instruction against the lock, and the PubGrub sentence that
+        # Bundler 2.5 writes. A message is read by whichever applies; the shapes do not overlap.
         def derive(text)
           found = blocks(text).filter_map { |gem, lines| derivation(gem, lines) }
           found << requested_conflict(text)
+          found.concat(sentence(text))
           found.compact.first(MAX_CONFLICTS)
         end
 
@@ -124,6 +128,48 @@ module Agents
             { "requirement" => "= #{locked[2]}", "via" => ["Gemfile.lock"] }
           ]
           assembled(gem, requirements)
+        end
+
+        # **The shape Bundler 2.5 writes, captured from a real `bundle lock` failure.** It names
+        # the gem only inside two clauses — `Because sinatra >= 4.0.0 depends on rack >= 3.0.0, < 4`
+        # and `and Gemfile depends on rack < 1.0` — and has no header naming it. The parser read
+        # only the legacy block, so every resolve this host actually runs filed no conflict at all:
+        # the "blocked with no reason" this task exists to remove, still happening. The recording is
+        # `test/fixtures/bundler_conflict_rack_sinatra.txt`, verbatim.
+        #
+        # A legacy block is not read twice: its dependency lines put `depends on` at the end of the
+        # line, and this shape is recognised only by a line that begins with `Because`.
+        def sentence(text)
+          body = text.to_s
+          return [] unless body.match?(/^Because .+ depends on/m)
+
+          pairs = []
+          body.each_line do |line|
+            match = /depends on\s+([\w.\-]+)\s+(.+?)\s*,?\s*\z/.match(line)
+            next if match.nil?
+
+            subject = line.sub(/^.*?\b(?:Because|because|and)\s+/, "").split(" depends on").first.to_s.strip
+            requirement = match[2].strip.sub(/,\z/, "").strip
+            requirement = requirement.delete_prefix("(").delete_suffix(")").strip
+            next if requirement.empty?
+
+            pairs << { "gem" => match[1], "requirement" => requirement, "via" => [via(subject)] }
+          end
+
+          pairs.group_by { |row| row["gem"] }.filter_map do |gem, rows|
+            requirements = rows.map { |row| row.slice("requirement", "via") }
+              .uniq { |row| [row["requirement"], row["via"]] }.first(MAX_REQUIREMENTS)
+            next if requirements.map { |row| row["requirement"] }.uniq.length < 2
+
+            assembled(gem, requirements)
+          end
+        end
+
+        # The clause's subject, as a requirer a person reads: Bundler says `Gemfile` where the
+        # legacy block says `In Gemfile`, and both are the person's own requirement.
+        def via(subject)
+          text = subject.to_s.strip
+          text.empty? || text == "Gemfile" ? "the Gemfile" : text
         end
 
         # One shape for both spellings, so a caller reads `minimal` whether Bundler wrote a

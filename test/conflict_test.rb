@@ -151,6 +151,23 @@ class ConflictTest < Minitest::Test
     assert_equal 3, conflict["requirements"].length, "every named branch is still the evidence"
   end
 
+  # **The shape Bundler 2.5 writes, captured from a real `bundle lock` failure.** The parser read
+  # only the legacy block, so a resolve that failed this way filed no conflict at all — the walker
+  # said "blocked" with no derivation for exactly the resolves this host runs today. The file is
+  # `fixtures/bundler_conflict_rack_sinatra.txt`, verbatim, noise lines and all.
+  def test_the_pubgrub_sentence_shape_from_a_real_bundle_lock
+    text = File.read(File.expand_path("fixtures/bundler_conflict_rack_sinatra.txt", __dir__))
+    conflict = C.derive(text).first
+
+    refute_nil conflict, "a real Bundler 2.5 conflict produced no derivation"
+    assert_equal "rack", conflict["gem"]
+    assert_equal [">= 3.0.0, < 4", "< 1.0"],
+      conflict["requirements"].map { |row| row["requirement"] }
+    assert_equal [["sinatra >= 4.0.0"], ["the Gemfile"]],
+      conflict["requirements"].map { |row| row["via"] }
+    assert_equal true, conflict["proven"]
+  end
+
   # **A clause RubyGems cannot read makes the question undecidable rather than answered.** Saying
   # "not minimal" here is the honest answer; a partial parse that guessed would be a second
   # resolver whose disagreement with Bundler nobody could see.

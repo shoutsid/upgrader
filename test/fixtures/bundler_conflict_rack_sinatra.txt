@@ -1,0 +1,9 @@
+Fetching gem metadata from https://rubygems.org/....
+Resolving dependencies...
+Could not find compatible versions
+
+Because sinatra >= 4.0.0 depends on rack >= 3.0.0, < 4
+  and Gemfile depends on rack < 1.0,
+  sinatra >= 4.0.0 cannot be used.
+So, because Gemfile depends on sinatra ~> 4.0,
+  version solving has failed.
