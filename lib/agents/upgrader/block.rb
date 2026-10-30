@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "record"
+require_relative "conflict"
 
 module Agents
   module Upgrader
@@ -220,15 +221,25 @@ module Agents
           return nil if kind.nil?
 
           key, key_source = key_for(stage, record)
+          evidence = { "stage" => stage.stage.to_s, "command" => stage.command.to_s,
+                       "failure" => clipped(stage.output_tail),
+                       "exit_code" => stage.exit_code }
+          # **A pin failure's sentence is its derivation.** The resolve is where a version is
+          # chosen, and the block is the question a person answers; naming the branches that
+          # cannot hold together is what turns "could not find compatible versions" into work.
+          # Only the pin: every other stage's output is not a resolver's report.
+          if stage.stage.to_s == Record::PIN
+            conflicts = Conflict.derive(stage.output_tail)
+            evidence["conflict"] = conflicts.first if conflicts.any?
+            evidence["conflicts"] = conflicts if conflicts.length > 1
+          end
           block(
             record, project: project, target_id: target_id, run_id: run_id,
             block_kind: kind,
             subject: subject_for(stage, record),
             question: question_for(stage, record),
             context: { "stage" => stage.stage.to_s, "command" => stage.command.to_s },
-            evidence: { "stage" => stage.stage.to_s, "command" => stage.command.to_s,
-                        "failure" => clipped(stage.output_tail),
-                        "exit_code" => stage.exit_code },
+            evidence: evidence,
             change_key: key, change_key_source: key_source
           )
         end

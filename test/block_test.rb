@@ -161,6 +161,31 @@ class BlockTest < Minitest::Test
     assert_includes blocks.first["evidence"]["failure"], "version solving"
   end
 
+  # **The question names the constraints, not only the error.** A pin stop is where a version
+  # could not be chosen, and "could not find compatible versions" is the same sentence for every
+  # cause. The derivation travels in the evidence so the person answering sees the branches.
+  def test_a_pin_block_carries_the_conflicting_requirements
+    output = <<~OUTPUT
+      Bundler could not find compatible versions for gem "rack":
+        In Gemfile:
+          rails (= 4.2.11) was resolved to 4.2.11, which depends on
+            rack (< 2.0)
+
+          sinatra was resolved to 1.4.8, which depends on
+            rack (~> 1.6)
+    OUTPUT
+    record = record(stages: [command(stage: Agents::Upgrader::Record::PIN, output: output)])
+
+    block = Agents::Upgrader::Block.from_record(record, project: "storefront").first
+
+    assert_equal "pin", block["block_kind"]
+    assert_equal "rack", block["evidence"]["conflict"]["gem"]
+    assert_equal ["< 2.0", "~> 1.6"],
+      block["evidence"]["conflict"]["requirements"].map { |row| row["requirement"] }
+    assert_equal ["sinatra 1.4.8"],
+      block["evidence"]["conflict"]["requirements"].last["via"]
+  end
+
   def test_a_suite_failure_drops_the_manual_change_it_did_not_reach
     record = record(
       decisions: [decision(change_key: "ruby|rails|x")],
