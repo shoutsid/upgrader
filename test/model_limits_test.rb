@@ -25,6 +25,25 @@ class ModelLimitsTest < Minitest::Test
     Limits.new(home: @home, now: -> { now })
   end
 
+  # **A limit belongs to the credential that met it.** Two accounts sharing a walker home must not
+  # suppress each other's model; the namespace is the credential ids the service released.
+  def test_a_namespaced_limit_is_read_from_its_own_file
+    other = Dir.mktmpdir
+    begin
+      first = Limits.new(home: @home, now: -> { @now }, namespace: "cred-1")
+      second = Limits.new(home: other, now: -> { @now }, namespace: "cred-2")
+
+      first.record(model: "nano-gpt/free", exit_code: 1,
+        output: "Rate limit exceeded. Resets at 2026-10-29T18:00:00Z")
+
+      assert_includes first.path, "repair_model_limits."
+      refute_equal first.path, second.path
+      refute second.limited_until("nano-gpt/free")
+    ensure
+      FileUtils.remove_entry(other) if File.directory?(other)
+    end
+  end
+
   def test_a_reported_iso_reset_is_the_deadline
     entry = limits.record(model: "opencode/free", exit_code: 1,
       output: "Rate limit exceeded. Resets at 2026-10-29T18:00:00Z")

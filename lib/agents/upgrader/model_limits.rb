@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "json"
 require "time"
@@ -64,10 +65,15 @@ module Agents
         end
       end
 
-      def initialize(home:, env: {}, now: nil)
+      # **A limit belongs to the credential that met it.** The file was keyed by model alone, so
+      # one account's spent free tier suppressed the same model for every account sharing the
+      # walker's home. `namespace` is the credential ids the fragment named; the default keeps the
+      # old filename for a deployment that has not yet rolled out account keys.
+      def initialize(home:, env: {}, now: nil, namespace: nil)
         @home = home.to_s
         @env = env.to_h
         @now = now || -> { Time.now.utc }
+        @namespace = namespace.to_s
         @path = path_for
         @entries = load
       end
@@ -161,7 +167,10 @@ module Agents
         return explicit unless explicit.empty?
 
         base = @home.empty? ? Dir.tmpdir : @home
-        File.join(base, FILE)
+        return File.join(base, FILE) if @namespace.empty?
+
+        suffix = Digest::SHA256.hexdigest(@namespace)[0, 12]
+        File.join(base, "repair_model_limits.#{suffix}.json")
       end
 
       def load

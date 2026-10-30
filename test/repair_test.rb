@@ -99,14 +99,14 @@ class RepairTest < Minitest::Test
   end
 
   def repair(agent:, suites:, attempts: 2, on_attempt: nil, env: {}, config_dir: nil, models: nil,
-             home: nil, out: nil)
+             home: nil, out: nil, model_access: nil)
     reruns = suites.dup
     Repair.new(
       root: @root, evidence: evidence,
       budget: (models ? budget(attempts: attempts, models: models) : budget(attempts: attempts)),
       env: env, out: out, runner: agent, config_dir: config_dir, home: home,
       rerun: -> { reruns.shift || FakeSuite.new(ok: false, output: "still red") },
-      on_attempt: on_attempt
+      on_attempt: on_attempt, model_access: model_access
     )
   end
 
@@ -705,6 +705,41 @@ class RepairTest < Minitest::Test
     assert_includes path, File.join(home, "repair")
     document = JSON.parse(File.read(path))
     assert document.fetch("agent").key?("repair"), "the agent is not declared in the config"
+  end
+
+  # **The account's fragment is a provider, not a copied secret.** The config names the
+  # environment variable; only the agent process receives the value. The limit record is keyed by
+  # the credential, so one account's spent tier cannot suppress another's model.
+  def test_the_account_fragment_adds_a_provider_and_keeps_the_secret_in_the_environment
+    access = {
+      "chain" => ["nano-gpt/deepseek/deepseek-v4.1-flash"],
+      "providers" => {
+        "nano-gpt" => {
+          "name" => "NanoGPT", "npm" => "@ai-sdk/openai-compatible",
+          "base_url" => "https://api.nano-gpt.com/api/v1", "auth_style" => "bearer",
+          "models" => [{ "id" => "deepseek/deepseek-v4.1-flash", "name" => "DeepSeek" }]
+        }
+      },
+      "keys" => {
+        "nano-gpt" => { "credential_id" => "cred-1",
+                        "env_name" => "AGENTS_MODEL_KEY_deadbeef", "secret" => "sk-account-7f3c" }
+      }
+    }
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+    home = temp_home
+
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)], home: home,
+      config_dir: File.join(home, "repair"), model_access: access).run
+
+    env = agent.calls.first[:env]
+    assert_equal "sk-account-7f3c", env.fetch("AGENTS_MODEL_KEY_deadbeef")
+    path = env.fetch("OPENCODE_CONFIG")
+    assert_equal 0o600, File.stat(path).mode & 0o777
+    text = File.read(path)
+    refute_includes text, "sk-account-7f3c", "the secret was written to the config"
+    entry = JSON.parse(text).dig("provider", "nano-gpt")
+    assert_equal "{env:AGENTS_MODEL_KEY_deadbeef}", entry.dig("options", "apiKey")
+    assert entry.fetch("models").key?("deepseek/deepseek-v4.1-flash")
   end
 
   def test_no_config_file_is_left_in_the_application_s_tree

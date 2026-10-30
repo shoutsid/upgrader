@@ -127,7 +127,7 @@ module Agents
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil, pause: nil, stack: nil, project: nil, control: nil
+        progress: nil, pause: nil, stack: nil, project: nil, control: nil, model_access: nil
       )
         @repository = repository
         @to = to
@@ -194,6 +194,9 @@ module Agents
         # environment *names* the suite reads and the stack; the entry points that have a
         # declaration pass it (the design notes call this the adapter).
         @project = project
+        # **The provider fragment the service released for this target's lease.** It supplies the
+        # config's provider definitions; the chain itself is still the project's resolved budget.
+        @model_access = model_access.is_a?(Hash) ? model_access : {}
         # **The account/project policy the service resolved for this walk.** A declaration written
         # before the field existed is empty, which leaves the deployment's own behaviour; the only
         # values this build acts on are the suite-hang bound and the browser driver, and both are
@@ -788,6 +791,11 @@ module Agents
           @out&.puts("  repair: not attempted — no budget (UPGRADER_REPAIR_ATTEMPTS) or the account permits no repair")
           return nil
         end
+        # **The service's chain wins, because it is the one the keys were resolved for.** A
+        # project may narrow its chain, but the release names exactly the providers it handed
+        # over; running a model outside it would be a model with no credential.
+        chain = Array(@model_access["chain"]).map(&:to_s).reject(&:empty?)
+        budget = budget.merge(models: chain) if chain.any?
 
         # **A repair that changes the Gemfile has not been measured until the bundle is installed.**
         # The loop's `rerun` is the suite, and the suite runs the installed bundle: on
@@ -823,6 +831,7 @@ module Agents
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
           config_dir: File.join(@home, "repair"), home: @home,
+          model_access: @model_access,
           on_attempt: ->(attempt) { stages << repair_stage(attempt) }
         ).run
         @out.puts("  repair: #{result}") if @out && !result.attempts.empty?

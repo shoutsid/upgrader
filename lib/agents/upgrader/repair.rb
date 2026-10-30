@@ -249,8 +249,8 @@ module Agents
       # The project config one attempt runs under: the agent, and nothing it may do beyond
       # reading and editing this tree. `tools` is deny-first, because a capability opencode
       # adds tomorrow must not arrive enabled.
-      def self.document(model:, agent: AGENT)
-        {
+      def self.document(model:, agent: AGENT, credentials: nil)
+        document = {
           "$schema" => "https://opencode.ai/config.json",
           "autoupdate" => false,
           "snapshot" => false,
@@ -264,11 +264,54 @@ module Agents
             }
           }
         }.compact
+        providers = provider_document(credentials)
+        document["provider"] = providers unless providers.empty?
+        document
+      end
+
+      # **The provider fragment the service released, as opencode reads it.** The secret is named
+      # by an environment variable, never embedded: the config is written beside the streams and
+      # a support bundle can carry it. A provider with no key entry is omitted, because a
+      # half-configured provider is a run that fails after the model budget is spent.
+      def self.provider_document(credentials)
+        return {} unless credentials.is_a?(Hash)
+
+        providers = credentials["providers"].is_a?(Hash) ? credentials["providers"] : {}
+        keys = credentials["keys"].is_a?(Hash) ? credentials["keys"] : {}
+        providers.each_with_object({}) do |(slug, fragment), result|
+          key = keys[slug]
+          next unless fragment.is_a?(Hash) && key.is_a?(Hash)
+
+          entry = {
+            "name" => fragment["name"].to_s.empty? ? slug.to_s : fragment["name"].to_s,
+            "models" => Array(fragment["models"]).each_with_object({}) do |row, models|
+              next unless row.is_a?(Hash)
+
+              id = row["id"].to_s.strip
+              next if id.empty?
+
+              models[id] = { "name" => row["name"].to_s.strip.empty? ? id : row["name"].to_s }
+            end
+          }
+          npm = fragment["npm"].to_s
+          entry["npm"] = npm unless npm.empty?
+          options = {}
+          base_url = fragment["base_url"].to_s
+          options["baseURL"] = base_url unless base_url.empty?
+          reference = "{env:#{key['env_name']}}"
+          if fragment["auth_style"].to_s == "x-api-key"
+            options["headers"] = { "x-api-key" => reference }
+          else
+            options["apiKey"] = reference
+          end
+          entry["options"] = options
+          result[slug] = entry
+        end
       end
 
       def initialize(root:, evidence:, budget:, env: {}, out: nil, runner: nil, rerun: nil,
                      on_attempt: nil, before_the_move: false, config_dir: nil, home: nil,
-                     stream_dir: nil)
+                     stream_dir: nil, model_access: nil)
         @root = root
         @evidence = evidence
         @attempts = budget.fetch(:attempts)
@@ -307,11 +350,18 @@ module Agents
         # beside it, so a walk never writes an artifact into somebody's repository.
         @stream_dir = stream_dir.to_s
         @stream_dir = default_stream_dir if @stream_dir.empty?
+        # **The account's fragment is context for the config, not a new source of models.** The
+        # chain still comes from the project's resolved budget; the fragment supplies the provider
+        # definitions and the environment names for its secrets.
+        @access = model_access.is_a?(Hash) ? model_access : {}
+        @credential_namespace = Array(@access["keys"]).filter_map do |_slug, row|
+          row["credential_id"].to_s if row.is_a?(Hash)
+        end.sort.join(":")
         # **A limited model is removed before the first attempt.** The provider's reset is a
         # fact about the next step as much as this one, and `ModelLimits` keeps it in the
         # client's home. A chain of `free,paid` therefore starts at `paid` while the free tier
         # is spent, and returns to `free` when the recorded time has passed.
-        @limits = ModelLimits.new(home: @home, env: @env)
+        @limits = ModelLimits.new(home: @home, env: @env, namespace: @credential_namespace)
         @model_index = 0
         @skipped_models = []
         @models = @models.reject do |model|
@@ -448,8 +498,26 @@ module Agents
         dir = @config_dir.empty? ? File.join(Dir.tmpdir, "agents-repair") : @config_dir
         FileUtils.mkdir_p(dir)
         path = File.join(dir, CONFIG)
-        File.write(path, "#{JSON.pretty_generate(self.class.document(model: model, agent: @agent))}\n")
+        document = self.class.document(model: model, agent: @agent, credentials: @access)
+        File.open(path, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |file|
+          file.write("#{JSON.pretty_generate(document)}\n")
+        end
+        File.chmod(0o600, path)
         path
+      end
+
+      # The secrets cross only into the agent process. The config names the variables; the walker
+      # itself never writes one to a record, a log line or a command.
+      def credential_env
+        keys = @access["keys"].is_a?(Hash) ? @access["keys"] : {}
+        keys.each_with_object({}) do |(_slug, row), result|
+          next unless row.is_a?(Hash)
+
+          name = row["env_name"].to_s
+          next if name.empty?
+
+          result[name] = row["secret"].to_s
+        end
       end
 
       # **The model process gets an allowlist, not the walker's environment.** The walker holds the
@@ -486,6 +554,7 @@ module Agents
         # nor the method's real subject. Every test had passed a Hash, which is why the first
         # live repair was where this was found.
         env = @env.to_h.slice(*AGENT_ENV)
+        env.merge!(credential_env)
         env["OPENCODE_CONFIG"] = config_path(model)
         env["HOME"] = @home unless @home.empty?
         answer = @runner ? @runner.call(argv, chdir: @root, timeout: @timeout, env: env) : collect(argv, env)

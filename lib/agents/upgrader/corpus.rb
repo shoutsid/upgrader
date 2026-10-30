@@ -231,6 +231,15 @@ module Agents
           body: { "lease_token" => lease_token.to_s })
       end
 
+      # **The provider fragment for a target this walker already holds.** The service checks the
+      # target's live lease and the key's explicit grant; this client never fetches a key for a
+      # target it has not claimed. The body is empty because the lease is the authority.
+      def model_access(target_id)
+        call(:post,
+          "/api/upgrades/targets/#{URI.encode_www_form_component(target_id.to_s)}/model_access",
+          body: {})
+      end
+
       # One step, as the service files it: the verdict, the commands with their exit
       # codes, the refusals, and the patch.
       def record_run(payload)

@@ -297,16 +297,13 @@ or reports the agent missing. Check that `opencode` is installed (`WITH_REPAIR_A
 `UPGRADER_HOME` is writable.
 
 ### Repair attempts fail immediately
-
-The agent needs an authenticated model in its own configuration. In a container, authenticate it
-once in the home volume:
-
-```bash
-docker compose exec upgrader opencode auth login
-```
-
-The credential survives a restart because it is on the volume, not in the image. A model name in
-`UPGRADER_REPAIR_MODEL` that the agent cannot use fails the same way.
+The walker fetches the account's provider fragment after claiming the target, and writes a
+per-attempt `opencode.json` that names the released environment variables. An account administrator
+connects the provider at `/admin/model-access`; the service key also needs the `model_access` grant
+(`bin/rails 'model_access:grant[email]'`). A deployment-wide credential imported with
+`bin/rails model_credentials:import_auth[path]` is the fallback. There is no `opencode auth login`
+step. A refusal before the step names the missing provider; a model name in
+`UPGRADER_REPAIR_MODEL` that the released chain does not include is replaced by the service's chain.
 
 ### The repair timed out
 

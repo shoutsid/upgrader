@@ -861,6 +861,7 @@ module Agents
       def run_one(repository, ref, project: nil, target_id: nil)
         project ||= project_for(repository)
         lease_token = nil
+        model_access = nil
         if !target_id.to_s.empty?
           claimed, problem = @corpus.claim_target(target_id,
             seconds: @step_timeout.to_i + 300)
@@ -869,6 +870,17 @@ module Agents
             return nil
           end
           lease_token = claimed["lease_token"].to_s
+          # **The account's keys are read after the claim and only when a repair could run.** A
+          # walk with repairs off never needs a provider secret, and a target whose project has
+          # no key must stop before the step rather than fail after the suite has run.
+          if repair_could_run?(project, target_id)
+            begin
+              model_access = @corpus.model_access(target_id)
+            rescue Corpus::Refused, Corpus::Unreachable => e
+              @out.puts("serve: #{repository} — model access was refused: #{e.message}")
+              return nil
+            end
+          end
         end
         # **The checkpoint when the project has one, the destination otherwise.** A feed written
         # before checkpoints existed carries neither field, so an old row keeps walking to `to` —
@@ -890,7 +902,7 @@ module Agents
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
-          record: @record, project: project, control: @control
+          record: @record, project: project, control: @control, model_access: model_access
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")
@@ -930,6 +942,17 @@ module Agents
                       "#{e.message}")
           end
         end
+      end
+
+      # Whether this target could spend a model call. A repair that is off or unconfigured never
+      # reads a key; a project's own `off` permission is the same veto one layer in.
+      def repair_could_run?(project, target_id)
+        return false if target_id.to_s.empty?
+        return false unless @corpus.respond_to?(:model_access)
+        return false unless @env[Repair::ENV_ATTEMPTS].to_s.to_i.positive?
+
+        permission = project&.repair
+        permission.nil? || !permission.off?
       end
 
       # What the tree becomes, and this is the difference between a loop and a loop that
