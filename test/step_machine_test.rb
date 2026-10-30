@@ -889,8 +889,8 @@ class StepMachineTest < Minitest::Test
     past = step(app, machines: machines, runner: FakeRunner.new, to: "5.0.7.2").run
     pinned = past.stages.select { |stage| stage.stage == "pin" }
     refute_empty pinned, "the step never reached the pin: #{past.stages.map(&:stage).inspect}"
-    assert(pinned.first.command.include?("bundle _2.4.22_ update"),
-      "the 5.0 pin used the lock's 1.17.3: #{pinned.first.command}")
+    assert_includes pinned.first.command, "bundle _2.4.22_ update",
+      "the 5.0 pin used the lock's 1.17.3: #{pinned.first.command}"
 
     below = step(app, machines: machines, runner: FakeRunner.new, to: "4.2.11.3").run
     caps = below.stages.select { |stage| stage.stage == "pin" }
