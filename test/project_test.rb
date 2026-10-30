@@ -490,18 +490,6 @@ class ProjectTest < Minitest::Test
     assert_equal "6.0.1", again.next_checkpoint
   end
 
-  private
-
-  def decision
-    { "id" => "d1", "question" => "Should the row keep a Show link?",
-      "answer" => "remove the link", "accepted_by" => "operator:9f2c1ab8",
-      "effects" => [{ "kind" => "patch",
-                      "payload" => { "path" => "app/views/bids/index.html.erb",
-                                     "find" => "show", "replace" => "" },
-                      "applies_when" => { "rung_gte" => "6.0.0" } }] }
-  end
-
-  # The smallest declaration that is complete: every other rule is about what may be added to it.
   # **The warrant is a permission, and its absence is the old shape.** A feed that sends
   # `allow_test_edits: true` means a person allowed the repair to change a test; a project with
   # none must round-trip without the key, because the rule is "do not edit tests" by default.
@@ -520,6 +508,18 @@ class ProjectTest < Minitest::Test
     refute absent.to_h["repair"].key?("allow_test_edits")
   end
 
+  private
+
+  def decision
+    { "id" => "d1", "question" => "Should the row keep a Show link?",
+      "answer" => "remove the link", "accepted_by" => "operator:9f2c1ab8",
+      "effects" => [{ "kind" => "patch",
+                      "payload" => { "path" => "app/views/bids/index.html.erb",
+                                     "find" => "show", "replace" => "" },
+                      "applies_when" => { "rung_gte" => "6.0.0" } }] }
+  end
+
+  # The smallest declaration that is complete: every other rule is about what may be added to it.
   def minimal
     {
       "slug" => "storefront",
