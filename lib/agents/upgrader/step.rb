@@ -1296,6 +1296,22 @@ module Agents
             env: bundle_env(machine), machine: machine)
           stages << stage
         end
+        # **A stale lock is not an application that cannot be installed.** caturday_api's
+        # baseline install exited 6 with `rspec-rails 3.3.3 … rspec-core ~> 3.3.0` beside a
+        # snapshot holding 3.2.2, and `json ~> 1.8` beside a `gcm` that reaches a newer one; the
+        # lock was written before the Gemfile's lines moved, and a conservative update of the
+        # gems Bundler names is the same resolve the pin would run later. The install is the
+        # baseline's environment, so it has to be able to move the lock the application arrived
+        # with; a conflict that names nothing this can act on is left as the install's failure.
+        if stage.exit_code.to_i == 6
+          named = stuck_gems(stage.output_tail)
+          unless named.empty?
+            stage = command(Record::BUNDLE, ["bundle", "update", *named, "--conservative"],
+              chdir: @worktree.root, env: bundle_env(machine), machine: machine,
+              excerpt_bytes: Shell::RESOLVER_BYTES)
+            stages << stage
+          end
+        end
         return stage if stage.ok?
 
         # **A native extension that will not build needs the gem to *move*, and `--conservative` is

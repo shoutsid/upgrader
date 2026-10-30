@@ -920,6 +920,33 @@ class StepMachineTest < Minitest::Test
       "the 4.2 pin must keep the lock's Bundler, which Rails 4.2 requires"
   end
 
+  # **A stale lock at install is updated for the gem Bundler names.** caturday_api's baseline
+  # install exited 6 with `rspec-rails 3.3.3 … rspec-core ~> 3.3.0` beside a snapshot holding
+  # 3.2.2; the lock predates the Gemfile's lines, and a conservative update is the resolve the
+  # pin would run later. The install is the baseline's environment, so it must move that lock.
+  def test_a_stale_lock_at_install_is_updated_for_the_gem_bundler_names
+    conflict = <<~OUTPUT
+      Bundler could not find compatible versions for gem "rspec-core":
+        In Gemfile:
+          rspec-rails (~> 3.3.0) was resolved to 3.3.3, which depends on
+            rspec-core (~> 3.3.0)
+    OUTPUT
+    runner = FakeRunner.new(answers: {
+      "bundle install" => [6, conflict], "bundle update" => [0, "Bundle updated!"]
+    })
+    # `stuck_gems` names only a gem the lock actually holds: the conflict has to be about a
+    # snapshot entry, which is the shape a stale lock has.
+    lock = LOCKFILE.sub("    rails (4.0.0.rc1)\n",
+      "    rails (4.0.0.rc1)\n    rspec-rails (3.3.3)\n      rspec-core (~> 3.3.0)\n    rspec-core (3.2.2)\n")
+
+    record = step(app(lockfile: lock), machines: machines, runner: runner).run
+
+    update = record.stages.find { |stage| stage.command.include?("bundle update") }
+    refute_nil update, "the stale lock was not updated: #{record.stages.map(&:command).inspect}"
+    assert_includes update.command, "rspec-core"
+    assert_includes update.command, "--conservative"
+  end
+
   # **A lock names the bundler that wrote it, and an era may not ship it.** RubyGems activates the version
   # in `BUNDLED WITH`, so an era whose image pins a newer bundler cannot install the application at all —
   # measured on the 2.7 era at the 6.0 rung: `Could not find 'bundler' (1.17.3) required by your
