@@ -3516,22 +3516,21 @@ module Agents
       # pipeline keeps paying for.
       def declare_for_the_rung(stages)
         entries = @deferred.to_a
-        result =
-          if entries.empty?
-            Preflight::Result.new(repairs: [], decisions: [], notes: [], deferred: [])
-          else
-            @preflight.declare_deferred(entries)
-          end
+        # **The post-pin repairs run even when the digest held nothing.** They are rung-scoped
+        # by their own subject rather than by a digest entry (`mongo_mapper_xml_repairs`), and
+        # an empty digest is not evidence the application needs none of them.
+        result = @preflight.declare_deferred(entries)
         @applied.concat(result.repairs)
         @decisions.concat(result.decisions)
+        nothing = entries.empty? && result.repairs.empty?
         stages << Record::Command.new(
           stage: Record::DECLARATIONS,
-          command: entries.empty? ? "declarations: none held for this rung" :
+          command: nothing ? "declarations: none held for this rung" :
             "declarations: #{result.repairs.size} declared for this rung",
           ran: true, exit_code: 0, seconds: 0.0,
           output_tail: result.details.first(20).join("\n")
         )
-        @out.puts("  declarations: #{result.summary}") if @out && entries.any?
+        @out.puts("  declarations: #{result.summary}") if @out && !nothing
         result
       end
 

@@ -1690,20 +1690,30 @@ class PreflightTest < Minitest::Test
   # **Rails 5.0 removed ActiveModel::Serializers::Xml, and MongoMapper still includes it.**
   # Measured on caturday_api's 5.0.7.2 boot: the application dies before the first example with
   # `uninitialized constant ActiveModel::Serializers::Xml`; the extracted gem is the declaration.
-  def test_a_mongo_mapper_app_gets_the_extracted_xml_serializer_at_rails_5
+  # **It is the destination's line, not the baseline's**: every release of the gem requires
+  # ActiveModel > 5.x, so a 4.2 bundle cannot install it — measured on caturday_api and
+  # rails-4-api, whose 4.2 baselines failed on every era until this moved after the pin.
+  def test_a_mongo_mapper_app_gets_the_extracted_xml_serializer_after_the_pin
     lock = "#{PLAIN_LOCKFILE}    mongo_mapper (0.13.1)\n"
     dir = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
+    preflight = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.0.7.2")
 
-    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.0.7.2").run
+    baseline = preflight.run
+    assert_empty baseline.repairs.select { |repair| repair.subject == "activemodel-serializers-xml" },
+      "the extracted gem cannot sit beside the 4.2 baseline's Active Model"
 
-    refute_nil result.repairs.find { |repair| repair.subject == "activemodel-serializers-xml" }
+    later = preflight.declare_deferred(baseline.deferred)
+    refute_nil later.repairs.find { |repair| repair.subject == "activemodel-serializers-xml" }
     assert_includes read(dir, "Gemfile"),
       'gem "activemodel-serializers-xml", "~> 1.0"'
 
     older = app(gemfile: PLAIN_GEMFILE, lockfile: lock)
-    older_result = Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.2.11").run
+    older_preflight = Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.2.11")
+    older_result = older_preflight.run
     assert_empty older_result.repairs.select { |repair| repair.subject == "activemodel-serializers-xml" },
       "the module is still in Active Model on Rails 4.2"
+    assert_empty older_preflight.declare_deferred(older_result.deferred).repairs
+      .select { |repair| repair.subject == "activemodel-serializers-xml" }
   end
 
   # **A Rails 7 application can name a namespace directory as an autoload root and hide the

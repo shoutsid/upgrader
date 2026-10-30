@@ -183,9 +183,13 @@ module Agents
             "preflight — this tool moves Rails applications"
         end
 
+        # **`mongo_mapper_xml_repairs` is not here, and that is the destination's line.** Every
+        # release of `activemodel-serializers-xml` requires ActiveModel > 5.x, so declaring it in
+        # a 4.2 bundle makes the baseline install fail on every era; the pin rewrites the Gemfile's
+        # Rails first, and `post_pin_repairs` is applied just before the resolve that installs it.
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
           framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
-          magic_encoding_repairs + autoload_namespace_repairs + mongo_mapper_xml_repairs +
+          magic_encoding_repairs + autoload_namespace_repairs +
           bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs
         decisions = []
         notes = []
@@ -245,6 +249,11 @@ module Agents
         # 4.0-era line at the install stage; adding it there made every era fail to resolve.
         # After the pin, the devise line is the rung's line and the pair resolves.
         repairs.concat(devise_token_repairs)
+        # **The MongoMapper XML bridge is the destination's, too.** Every release of
+        # `activemodel-serializers-xml` requires ActiveModel > 5.x, so it cannot be in the 4.2
+        # bundle the baseline installs; added here, after the pin, the pin's resolve installs it
+        # beside the rung's Rails. `run` deliberately does not call it.
+        repairs.concat(mongo_mapper_xml_repairs)
         # The rung-scoped minitest declaration is written here, after the pin, so the maxitest
         # ceiling is checked here too; `run` checks the non-deferred case.
         withdraw_minitest_declaration(repairs, notes)
