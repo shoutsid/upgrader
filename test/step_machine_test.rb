@@ -700,6 +700,27 @@ class StepMachineTest < Minitest::Test
     refute fleet["2.1"].started, "an era outside the declaration was started"
   end
 
+  # **A declared era is the preflight's interpreter hint, not the rung's floor.** The digest's
+  # `ruby_at_least` conditions are facts about the machine the step will run on; evaluating them
+  # against the floor skipped `ffi ~> 1.16.0` for sample's 2.7 declaration and the pin took a
+  # 1.17.4 variant whose own floor is 3.0.
+  def test_a_declared_era_is_the_preflight_s_ruby_hint
+    ffi = { "gem" => "ffi", "kind" => "declared", "replacement" => nil,
+            "requirement" => "~> 1.16.0", "mechanical" => true,
+            "when" => { "ruby_at_least" => "2.5" }, "note" => "a native extension this era needs" }
+    project = Agents::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "4.0.0.rc1", "to" => "5.0.7.2",
+      "eras" => ["2.7"], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    })
+    record = step(app, machines: machines, project: project,
+      corpus: FakeCorpus.new(requires_ruby: "2.2.2", migrations: [ffi]), to: "5.0.7.2").run
+
+    applied = record.applied.find { |edit| edit.path == "Gemfile" && edit.after.to_s.include?("ffi") }
+    refute_nil applied, "the 2.7-scoped declaration was not applied: " \
+      "#{record.applied.map { |edit| [edit.path, edit.after] }.inspect}"
+    assert_includes applied.after, "~> 1.16.0"
+  end
+
   # A named era that cannot meet the rung's floor is refused by name rather than silently
   # walked on an era the operator did not choose.
   def test_a_declared_era_that_cannot_meet_the_floor_is_refused_by_name

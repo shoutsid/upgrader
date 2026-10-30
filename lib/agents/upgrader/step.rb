@@ -919,9 +919,15 @@ module Agents
         # step carries no floor; it is a hint, exactly as it is for the interpreter choice, and
         # an unreadable declaration stays nil rather than becoming a guess.
         declared = @lockfile.declared_ruby.to_s[/\d+(?:\.\d+)*/]
+        # **A project's declared era is the interpreter the preflight is about.** The rung's
+        # floor is the *oldest* interpreter the framework allows, not the one the project chose:
+        # sample-legacy-rails-app declares 2.7 for its 5.0 rung, and an `ffi ~> 1.16.0` entry
+        # scoped `ruby_at_least 2.5` was skipped against the 2.2 floor, so the pin took
+        # ffi 1.17.4-musl, whose own Ruby floor is 3.0. A declaration that names no era keeps the
+        # floor as the hint, which is the old rule.
+        hint = Array(declared_eras).first || step["requires_ruby"] || @lockfile.locked_ruby || declared
         @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
-          ruby: step["requires_ruby"] || @lockfile.locked_ruby || declared,
-          rails: rung_of(step), decision_policy: @decision_policy)
+          ruby: hint, rails: rung_of(step), decision_policy: @decision_policy)
         result = @preflight.run
         # **What the preflight could not do because the Gemfile and the pin did not agree yet.**
         # A rung-scoped entry — a declaration *or* a rewrite of a line the application already
