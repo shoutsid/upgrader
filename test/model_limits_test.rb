@@ -84,6 +84,21 @@ class ModelLimitsTest < Minitest::Test
     assert_nil paid
   end
 
+  # **A paid timeout after the provider's own refusal is a limit, not a slow answer.** The
+  # measured sentence is opencode's client log, not the model's prose: `level=ERROR …
+  # error.error="AI_APICallError: Go usage limit exceeded"`. The guard above still ignores a
+  # limit word the model read in a fixture.
+  def test_a_paid_timeout_with_the_provider_s_own_refusal_is_held
+    entry = limits.record(model: "opencode-go/paid", timed_out: true, exit_code: nil,
+      output: %(timestamp=2026-10-30T13:23:48Z level=ERROR message="stream error" ) +
+        %(error.error="AI_APICallError: Go usage limit exceeded"))
+
+    refute_nil entry
+    assert entry.indefinite?
+    assert_includes entry.reason, "operator clears"
+    assert_equal Limits::INDEFINITE, limits.limited_until("opencode-go/paid")
+  end
+
   def test_a_successful_answer_that_mentions_a_rate_limit_is_not_a_limit
     entry = limits.record(model: "opencode/free", exit_code: 0,
       output: "I fixed the initializer. The old code had a rate limit check.")

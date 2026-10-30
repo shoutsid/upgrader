@@ -39,6 +39,17 @@ module Agents
       INDEFINITE = :indefinite
 
       LIMIT = /(?:rate|usage|free)\s*limit|quota|too many requests|\b429\b|insufficient (?:quota|credits)|exceeded.{0,40}(?:limit|quota)|out of credits/i
+      # **The provider's own refusal, as opencode logs it.** A paid attempt that times out after
+      # `level=ERROR … error.error="AI_APICallError: Go usage limit exceeded"` is limited, not
+      # slow. The guard below exists to ignore a limit word the *model* read in a fixture; this
+      # line is the difference between the two, and without it the paid model is retried for the
+      # whole deadline on a call the provider already refused.
+      PROVIDER_ERROR = /level=ERROR.*error\.error="[^"]*(?:limit|quota|insufficient)/i
+      # **The client's own log prefix is not the provider's reset.** opencode writes
+      # `timestamp=<ISO>` on every line; reading that as the reset made a `Go usage limit
+      # exceeded` hold expire at the moment it was written, so the paid model was retried
+      # immediately. Only the provider's sentence is read for a reset.
+      LOG_STAMP = /\btimestamp=\S+/
       RESET = /(?:resets?|reset|try again|retry|available|until)\s*(?:at|on|in|after|:)?\s*([^\n.;]+)/i
       RETRY_AFTER = /retry-after[:\s]+(\d+)/i
       ABSOLUTE = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/
@@ -100,17 +111,21 @@ module Agents
       def record(model:, output:, timed_out: false, exit_code: nil, now: nil)
         text = output.to_s
         free = model.to_s.match?(/\bfree\b/i)
-        return nil if exit_code.to_i.zero? && !timed_out
+        # **A killed attempt has no exit status, and the provider's own refusal is still one.**
+        # `collect` kills the group when it reads the error, so `exit_code` is nil rather than a
+        # number; the nil-is-success guard must not erase the sentence that caused the kill.
+        return nil if exit_code.to_i.zero? && !timed_out && !text.match?(PROVIDER_ERROR)
         # **A paid model's timeout is a measured attempt, not the provider's sentence.** The
         # agent may have been mid-answer, and a limit-looking word in its own tool output is not
         # a limit the provider reported: measured live, a timed-out paid attempt was held
         # indefinitely because the stream mentioned a 429 the model was reading, which then
-        # blocked every later repair. Only a free model's silence is the availability fact.
-        return nil if timed_out && !free
+        # blocked every later repair. Only a free model's silence is the availability fact — and
+        # the provider's own logged refusal is the one paid sentence that is not the model's.
+        return nil if timed_out && !free && !text.match?(PROVIDER_ERROR)
         return nil unless (timed_out && free) || text.match?(LIMIT)
 
         moment = (now || @now.call).utc
-        reset = extract_reset(text, moment)
+        reset = extract_reset(text.gsub(LOG_STAMP, ""), moment)
         reported = !reset.nil?
         deadline = reset
         reason = if reported

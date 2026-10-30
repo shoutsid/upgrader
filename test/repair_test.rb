@@ -418,6 +418,24 @@ class RepairTest < Minitest::Test
     assert_includes errors, "the repair agent was killed after 1s"
   end
 
+  # **A provider refusal ends the attempt, not the deadline.** The live opencode process logs the
+  # API error and then waits, so a 900-second budget is spent on a call that already failed.
+  # `collect` kills the group on the provider's own line; the attempt is still `ran` and the
+  # limit record is what the next attempt reads.
+  def test_a_provider_refusal_kills_the_attempt_early
+    repair = Repair.new(root: @root, evidence: nil, budget: budget(attempts: 1, timeout: 60))
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    command = %q!echo 'level=ERROR message="stream error" error.error="AI_APICallError: Go usage limit exceeded"' >&2; sleep 60!
+    exit_code, _output, errors, outcome = repair.send(:collect, ["sh", "-c", command], {})
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_operator elapsed, :<, 10, "collect waited for the refused call instead of killing it"
+    assert_includes errors, "usage limit exceeded"
+    assert_equal :ran, outcome
+    # A signalled child has no exit status; the provider's error line is the evidence.
+    assert_nil exit_code
+  end
+
   def test_a_timed_out_attempt_says_so_rather_than_claiming_it_never_ran
     out = StringIO.new
     agent = FakeAgent.new { |_argv, _chdir, _n| [nil, "the repair agent was killed after 900s", :timed_out] }

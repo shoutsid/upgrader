@@ -520,6 +520,7 @@ module Agents
         # group rather than hoping the parent forwards it.
         Open3.popen3(env, *argv, chdir: @root, pgroup: true) do |stdin, out, err, wait|
           stdin.close
+          limit_seen = false
           readers = [
             Thread.new do
               out.each_line { |line| stdout << line }
@@ -527,7 +528,17 @@ module Agents
               nil
             end,
             Thread.new do
-              err.each_line { |line| stderr << line }
+              err.each_line do |line|
+                stderr << line
+                # **A provider refusal is not a slow answer.** opencode logs the API error and
+                # then waits; measured live, `Go usage limit exceeded` kept an attempt alive for
+                # its whole 900-second deadline with nothing happening. The line is the
+                # provider's own, so the group is killed and the record reads it as a limit.
+                if !limit_seen && line.match?(ModelLimits::PROVIDER_ERROR)
+                  limit_seen = true
+                  terminate(wait.pid)
+                end
+              end
             rescue IOError, Errno::EBADF
               nil
             end
