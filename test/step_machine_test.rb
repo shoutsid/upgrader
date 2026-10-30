@@ -935,6 +935,22 @@ class StepMachineTest < Minitest::Test
       "the 4.2 pin must keep the lock's Bundler, which Rails 4.2 requires"
   end
 
+  # **A selector naming the version the binstub already is does not exist.** caturday_api's 2.2
+  # era is Bundler 1.17.3 and the lock names 1.17.3; `bundle _1.17.3_ update` answered `Could not
+  # find command "_1.17.3_"`, because the selector is a newer binstub's feature.
+  def test_the_pin_names_no_selector_when_the_lock_already_names_the_eras_bundler
+    dir = app(lockfile: LOCKFILE + "BUNDLED WITH\n   2.4.22\n")
+    runner = FakeRunner.new(answers: { "bundle install" => [0, "Bundle complete!"],
+      "bundle update" => [0, "Bundle updated!"] })
+
+    record = step(dir, machines: machines, runner: runner, to: "5.0.7.2").run
+
+    pinned = record.stages.select { |stage| stage.stage == "pin" }
+    refute_empty pinned, "the step never reached the pin: #{record.stages.map(&:stage).inspect}"
+    refute_includes pinned.first.command, "_2.4.22_",
+      "the pin named the Bundler the lock already names: #{pinned.first.command}"
+  end
+
   # **A stale lock at install is updated for the gem Bundler names.** caturday_api's baseline
   # install exited 6 with `rspec-rails 3.3.3 … rspec-core ~> 3.3.0` beside a snapshot holding
   # 3.2.2; the lock predates the Gemfile's lines, and a conservative update is the resolve the

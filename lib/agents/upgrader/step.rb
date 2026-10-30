@@ -3576,7 +3576,21 @@ module Agents
       # pin with `undefined method 'name' for "Gemfile.lock":String`. When the era's image has a
       # Bundler and the rung can run it, the pin names that version explicitly; a rung below the
       # cap keeps the lock's own version.
-      def pin_bundler = era_bundler(@machine)
+      # **Naming the version the lock already names is not a version selector, it is a command
+      # the era's own binstub does not have.** Measured on caturday_api's 2.2 era: the lock and
+      # the image are both Bundler 1.17.3, and `bundle _1.17.3_ update` answered `Could not find
+      # command "_1.17.3_"` — the selector is handled by a newer binstub than the one it is naming.
+      # The name is only useful when it differs from the lock's.
+      def pin_bundler
+        version = era_bundler(@machine)
+        return nil if version.nil?
+
+        path = File.join(@worktree.root, "Gemfile.lock")
+        named = File.file?(path) ? BundlerTrailer.version(File.binread(path)) : nil
+        return nil if named == version
+
+        version
+      end
 
       # **From Rails 5.0.5 the era's own Bundler is the one the rung can use.** Rails 4.2 declares
       # `bundler < 2.0`, so a lock's 1.17.3 must stay for a 4.x rung; from 5.0.5.rc1 the cap is
