@@ -1739,7 +1739,7 @@ class PreflightTest < Minitest::Test
     repair = result.repairs.find { |each| each.subject == "state_machine" }
     refute_nil repair, result.details.inspect
     assert_includes read(dir, "config/initializers/state_machine_around_validation.rb"),
-      "StateMachine::Machine.send(:public, :around_validation)"
+      "def around_validation(object, &block)"
 
     older = app(gemfile: gemfile, lockfile: lock)
     older_result = Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.0.13").run

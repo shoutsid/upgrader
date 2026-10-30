@@ -341,12 +341,22 @@ module Agents
       # because the failure is one visibility fact repeated across the suite. The initializer makes
       # the method public on the one class; it is the gem's own method, unchanged.
       STATE_MACHINE_INITIALIZER = "config/initializers/state_machine_around_validation.rb"
+      # **The method lives in an included integration module, not in the class itself**, so
+      # `StateMachine::Machine.send(:public, :around_validation)` raises
+      # `undefined method 'around_validation' for class StateMachine::Machine` — measured on 19wu's
+      # 4.0.13 baseline. A public method on the class that calls `super` reaches the protected
+      # implementation through the ancestor chain and gives Rails 4.1 the public entry point it
+      # calls.
       STATE_MACHINE_SOURCE = <<~RUBY
         # state_machine 1.2.0 registers `around_validation` as a protected callback, and Rails 4.1
-        # invokes callbacks without `send`. Making the gem's own method public is the smallest
-        # change that lets the existing machine run; no application code is rewritten.
+        # invokes callbacks without `send`. The implementation lives in an included integration
+        # module; this public method reaches it through `super` without changing the gem.
         if defined?(StateMachine::Machine)
-          StateMachine::Machine.send(:public, :around_validation)
+          StateMachine::Machine.class_eval do
+            def around_validation(object, &block)
+              super
+            end
+          end
         end
       RUBY
 
