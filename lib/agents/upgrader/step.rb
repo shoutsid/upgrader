@@ -1303,7 +1303,7 @@ module Agents
         # gems Bundler names is the same resolve the pin would run later. The install is the
         # baseline's environment, so it has to be able to move the lock the application arrived
         # with; a conflict that names nothing this can act on is left as the install's failure.
-        if stage.exit_code.to_i == 6
+        unless stage.ok?
           named = stuck_gems(stage.output_tail)
           unless named.empty?
             stage = command(Record::BUNDLE, ["bundle", "update", *named, "--conservative"],
