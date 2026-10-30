@@ -736,6 +736,44 @@ class StepMachineTest < Minitest::Test
     assert_includes applied.after, "~> 1.16.0"
   end
 
+  # **A multi-era declaration's hint is the first era that meets the floor.** Sample's
+  # `2.5,2.7,3.1,3.2` on a 3.2-floor rung must read `ruby_at_least 3.2` conditions against 3.2,
+  # not against the declaration's first entry: the 8.0 rung otherwise kept the 2.7-era
+  # bigdecimal 1.4 line, which does not build on 3.2.
+  def test_a_multi_era_declaration_hints_the_era_the_floor_allows
+    bigdecimal = { "gem" => "bigdecimal", "kind" => "replaced", "replacement" => "bigdecimal",
+                   "requirement" => "~> 3.1", "mechanical" => true,
+                   "when" => { "ruby_at_least" => "3.2" }, "note" => "the 3.2 line" }
+    project = Agents::Upgrader::Project.new({
+      "slug" => "p", "repo" => "acme/old", "from" => "7.2.4", "to" => "8.0.5.1",
+      "eras" => %w[2.5 2.7 3.1 3.2], "suite" => { "kind" => "rspec", "command" => "bundle exec rspec" }
+    })
+    lock = <<~LOCK
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          bigdecimal (1.4.4)
+          rails (7.2.4)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        bigdecimal
+        rails (= 7.2.4)
+    LOCK
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "rails", "7.2.4"\ngem "bigdecimal", "~> 1.4.2"\n),
+      lockfile: lock)
+
+    record = step(dir, machines: machines, project: project,
+      corpus: FakeCorpus.new(requires_ruby: "3.2.0", migrations: [bigdecimal]), to: "8.0.5.1").run
+
+    applied = record.applied.find { |edit| edit.path == "Gemfile" && edit.after.to_s.include?("bigdecimal") }
+    refute_nil applied, "the 3.2-scoped declaration was not applied: " \
+      "#{record.applied.map { |edit| [edit.path, edit.after] }.inspect}"
+    assert_includes applied.after, "~> 3.1"
+  end
+
   # A named era that cannot meet the rung's floor is refused by name rather than silently
   # walked on an era the operator did not choose.
   def test_a_declared_era_that_cannot_meet_the_floor_is_refused_by_name

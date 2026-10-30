@@ -933,7 +933,14 @@ module Agents
         # scoped `ruby_at_least 2.5` was skipped against the 2.2 floor, so the pin took
         # ffi 1.17.4-musl, whose own Ruby floor is 3.0. A declaration that names no era keeps the
         # floor as the hint, which is the old rule.
-        hint = Array(declared_eras).first || step["requires_ruby"] || @lockfile.locked_ruby || declared
+        # **The hint is the era the step will actually try first, not the declaration's first
+        # entry.** A project naming `2.5,2.7,3.1,3.2` walks a 3.2-floor rung on 3.2 only; taking
+        # `2.5` as the hint made every `ruby_at_least 3.2` entry (bigdecimal's 3.1 replacement)
+        # look inapplicable, so the 8.0 rung kept the 1.4 line and failed to build it.
+        first = if declared_eras
+          Interpreters.candidates(requires_ruby: step["requires_ruby"], only: declared_eras).first
+        end
+        hint = first&.name || step["requires_ruby"] || @lockfile.locked_ruby || declared
         @preflight = Preflight.new(root: @worktree.root, corpus: corpus,
           ruby: hint, rails: rung_of(step), decision_policy: @decision_policy)
         result = @preflight.run
