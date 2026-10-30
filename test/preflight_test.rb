@@ -1052,6 +1052,25 @@ class PreflightTest < Minitest::Test
     assert_equal %(gem "bootsnap", "~> 1.4.9", require: false), read(dir, "Gemfile").lines[1].strip
   end
 
+  # **A replacement keeps the group the application put the gem in.** Measured on `rails-4-api`:
+  # `gem 'debugger', group: [:development, :test]` has no newer release that builds on any era the
+  # rung can use, and byebug is the replacement — but dropping the group would install a debugger
+  # in production, which is why the rewrite carries the tokens it does not own.
+  def test_a_replaced_entry_keeps_the_group_option
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem 'debugger', group: [:development, :test]\n),
+      lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "debugger", kind: "replaced",
+      replacement: "byebug", requirement: "~> 11.0",
+      condition: { "ruby_at_least" => "2.4" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.7")
+
+    repair = result.repairs.find { |each| each.subject == "debugger" }
+    refute_nil repair, result.details.inspect
+    assert_includes read(dir, "Gemfile"),
+      %(gem "byebug", "~> 11.0", group: [:development, :test])
+  end
+
   # **The kind that keeps the gem and stops it loading at boot.** `capistrano`/`rvm-capistrano`
   # in the *default* group make `Bundler.require(:default, Rails.env)` load a deploy recipe
   # before anything boots, and capistrano 2.15.4's `Configuration.instance` answers

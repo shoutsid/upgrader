@@ -1499,8 +1499,15 @@ module Agents
         # version while appending the same option changes nothing else on the line. A `require:`
         # with any other value keeps the old refusal, because this class would be dropping a
         # decision it does not understand.
-        extra -= ["require"] if %w[replaced updated].include?(kind) &&
-          line.match?(/\brequire:\s*false\b/)
+        # **`require: false` and `group:` survive a version rewrite because the rewrite keeps
+        # the rest of the line.** The old rewrite rebuilt the declaration from name and version
+        # and dropped every option, so both had to be refused; the rewrite now carries the tokens
+        # it does not own, which is the only way `gem 'debugger', group: [:development, :test]`
+        # can become byebug without installing a debugger in production.
+        if %w[replaced updated].include?(kind)
+          extra -= ["require"] if line.match?(/\brequire:\s*false\b/)
+          extra -= ["group"]
+        end
         return nil if extra.empty?
 
         "carries #{extra.sort.join(", ")}, which changes what the application does rather " \
@@ -1525,16 +1532,25 @@ module Agents
           return nil if replacement.empty?
 
           requirement = entry["requirement"].to_s
-          after = if requirement.empty?
-            %(#{indent}gem "#{replacement}")
-          else
-            %(#{indent}gem "#{replacement}", "#{requirement}")
+          # **The options on the line are the application's, and a version rewrite keeps them.**
+          # Measured on `rails-4-api`: `gem 'debugger', group: [:development, :test]` has to
+          # become byebug, and dropping the group would install a debugger in production; the
+          # previous rewrite rebuilt the line from the name and version alone, which is why
+          # `unrewritable` refused every option. The one token that moves is the requirement; the
+          # rest of the line is carried verbatim.
+          rest = line.sub(DECLARATION, "").sub(/\A\s*,\s*(["'])[^"']*\1/, "").strip
+          # **A source option is the one thing the digest's release supersedes.** A `replaced`
+          # entry says which release the gem should be; a fork's `git:`/`branch:` named where the
+          # line came from, and the measured release is what the digest is about. Every other
+          # option (`group:`, `require:`) is the application's and is carried.
+          SOURCE_OPTIONS.each do |option|
+            rest = rest.gsub(/(?:,\s*)?#{Regexp.escape(option)}:\s*(?:"[^"]*"|'[^']*'|[^,]+)/, "")
           end
-          # The one option a version rewrite keeps, for the reason `unrewritable` gives: the
-          # application's statement about whether Bundler should load the gem is not the
-          # version's business.
-          after = "#{after}, require: false" if line.match?(/\brequire:\s*false\b/)
-          after
+          rest = rest.sub(/\A,\s*/, "").strip
+          parts = [%(#{indent}gem "#{replacement}")]
+          parts << %("#{requirement}") unless requirement.empty?
+          parts << rest unless rest.empty?
+          parts.join(", ")
         when "forked"
           # The gem keeps its name; only where it comes from changes. No requirement: the fork's
           # own gemspec states what it accepts, and a version beside a Git source would pin a
