@@ -37,6 +37,21 @@ class StepMachineTest < Minitest::Test
       rails (= 4.0.0.rc1)
   LOCK
 
+  # A lockfile at a release past Rails' `bundler < 2.0` cap, which is the shape that meets Ruby
+  # 3.1's pre-activated default Bundler when the trailer still names 1.17.3.
+  MODERN_LOCK = <<~LOCK
+    GEM
+      remote: https://rubygems.org/
+      specs:
+        rails (7.1.6)
+
+    PLATFORMS
+      ruby
+
+    DEPENDENCIES
+      rails (= 7.1.6)
+  LOCK
+
   # A lockfile that holds a gem the application's suite brings in, so a step that moves that gem's line
   # has something in the snapshot to name.
   RSPEC_LOCK = <<~LOCK
@@ -952,11 +967,11 @@ class StepMachineTest < Minitest::Test
   # 1.17.3 instead: `You have already activated bundler 2.3.27, but your Gemfile requires bundler
   # 1.17.3`. The rewrite also makes the install's path (`<path>/ruby/3.1.0`) the one the boot reads.
   def test_a_rung_past_the_cap_rewrites_the_lock_trailer_to_the_eras_bundler
-    dir = app(lockfile: LOCKFILE + "BUNDLED WITH\n   1.17.3\n")
+    dir = app(lockfile: MODERN_LOCK + "BUNDLED WITH\n   1.17.3\n")
     runner = FakeRunner.new(answers: { "bundle install" => [0, "Bundle complete!"],
       "bundle update" => [0, "Bundle updated!"] })
 
-    step(dir, machines: machines, runner: runner, to: "5.0.7.2").run
+    step(dir, machines: machines, runner: runner, to: "7.2.4").run
 
     assert_includes File.read(File.join(dir, "Gemfile.lock")), "BUNDLED WITH\n   2.4.22"
   end

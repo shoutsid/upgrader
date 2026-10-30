@@ -376,6 +376,14 @@ module Agents
                   "#{@machine.image.to_s.empty? ? "" : ", image #{@machine.image}"}") if @out
         return finish(install_record(install, stages)) unless install.ok?
 
+        # **The chosen machine's Bundler may be the one that boots.** When the trailer was
+        # rewritten, the probe's install landed in the old Bundler's path; installing again is
+        # what puts the gems where this machine's own `bundle exec` and `bin/rails` read them.
+        if adopt_era_bundler(@machine)
+          install = install_bundle(stages, @machine)
+          return finish(install_record(install, stages)) unless install.ok?
+        end
+
         # The browser, if this project's declaration names one, on the machine that installed the
         # bundle rather than on every candidate the probe tried.
         prepare_browser(stages, @machine)
@@ -1047,6 +1055,14 @@ module Agents
                   "#{@machine.image.to_s.empty? ? "" : ", image #{@machine.image}"}") if @out
         return finish(install_record(install, stages)) unless install.ok?
 
+        # **The chosen machine's Bundler may be the one that boots.** When the trailer was
+        # rewritten, the probe's install landed in the old Bundler's path; installing again is
+        # what puts the gems where this machine's own `bundle exec` and `bin/rails` read them.
+        if adopt_era_bundler(@machine)
+          install = install_bundle(stages, @machine)
+          return finish(install_record(install, stages)) unless install.ok?
+        end
+
         prepare_browser(stages, @machine)
 
         services = services_stage(stages)
@@ -1283,7 +1299,12 @@ module Agents
       def install_bundle(stages, machine = @machine)
         install_packages(stages, machine)
         drop_unrunnable_bundler(machine, stages)
-        adopt_era_bundler(machine)
+        # **Only the machine the step settled on rewrites the trailer.** During selection each
+        # candidate is probed with the application's own lock; rewriting there made the trailer
+        # whichever era tried last (rails-4-api's 3.2 attempt was told its lock was written by
+        # 2.5.9, the 3.1 candidate's Bundler). The chosen machine's own install runs again after
+        # the rewrite, so the gems land where its boot looks.
+        adopt_era_bundler(machine) if machine.equal?(@machine)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
           env: bundle_env(machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
@@ -3582,6 +3603,11 @@ module Agents
       def adopt_era_bundler(machine)
         version = era_bundler(machine)
         return if version.nil?
+        # **The baseline is still the application's own release.** Rails 4.2 declares
+        # `bundler < 2.0`, so a 4.x baseline cannot install under the era's Bundler 2 even though
+        # the *rung's* destination can; the lock's 1.17.3 has to carry the baseline until the pin
+        # moves Rails past the cap (the pin names the era's Bundler explicitly).
+        return unless Gem::Version.new(@from.to_s) >= Gem::Version.new("5.0.5.rc1")
 
         path = File.join(@worktree.root, "Gemfile.lock")
         return unless File.file?(path)
@@ -3601,6 +3627,7 @@ module Agents
           note: "the lock names bundler #{named}, and this rung (Rails #{rung_to}) no longer caps " \
                 "Bundler below 2.0 — the era's #{version} is the version that both installs and " \
                 "boots here, and its bundle path is the one the boot's Bundler reads")
+        true
       end
 
       # **The framework plus every gem this step has rewritten a line for.** The pin's own rounds are
