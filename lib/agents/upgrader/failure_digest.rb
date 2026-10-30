@@ -38,6 +38,12 @@ module Agents
       MINITEST_FRAME = /\A\s+([^\s#].+?):(\d+):in\s+[`'].*\z/
       MINITEST_HEADER = /\A\s*(?:Error|Failure):\s*\z/
       RSPEC_HEADER = /\A\s*(\d+)\)\s+(.+?)\s*\z/
+      # **The line every RSpec failure carries, and the one an expectation has instead of a
+      # class.** `expected to find text …` prints no exception name, so a parser that only
+      # reads named exceptions dropped seven of 19wu's sixteen failures and told the model the
+      # suite had nine. RSpec raises `ExpectationNotMetError` for that shape; an unnamed
+      # failure of another shape is grouped as exactly that, not guessed into a class.
+      RSPEC_FAILURE = /\A\s+Failure\/Error:/
 
       def initialize(text)
         @text = text.to_s.dup.force_encoding(Encoding::UTF_8).scrub.gsub(ANSI, "")
@@ -129,6 +135,7 @@ module Agents
         exception = nil
         message = +""
         frames = []
+        failure_line = nil
         lines.each_with_index do |raw, index|
           # **The parser reads lines, not terminators.** `\z` in the patterns is the end of the
           # line; a trailing newline made every exception and every Minitest frame miss, which is
@@ -147,9 +154,25 @@ module Agents
             end
           elsif (match = line.match(RSPEC_FRAME) || line.match(MINITEST_FRAME))
             frames << [match[1], match[2].to_i]
+          elsif failure_line.nil? && line.match?(RSPEC_FAILURE)
+            failure_line = index
           end
         end
-        return nil if exception.nil?
+        if exception.nil?
+          # A block with no named exception is still a failure when RSpec printed its own
+          # `Failure/Error:` line; returning nil here is what made the count a lie.
+          return nil if failure_line.nil?
+
+          text = lines[(failure_line + 1)..].to_a.map(&:chomp).find do |following|
+            !following.strip.empty? && !following.match?(RSPEC_FRAME) && !following.match?(MINITEST_FRAME)
+          end.to_s.strip
+          exception = if text.start_with?("expected")
+            "RSpec::Expectations::ExpectationNotMetError"
+          else
+            "an unnamed failure"
+          end
+          message << text
+        end
 
         Example.new(title: title, exception: exception, message: message.strip,
           frame: app_frame(frames), frames: frames)

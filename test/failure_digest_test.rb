@@ -81,6 +81,38 @@ class FailureDigestTest < Minitest::Test
     assert_includes rendered, "something went wrong"
   end
 
+  # **An expectation failure has no exception class in the log, and it is still a failure.**
+  # 19wu's 4.1 suite had sixteen failures in RSpec's own output; seven were `expected to find
+  # text ...`, and the digest told the model the suite had nine. The count must be every RSpec
+  # block, and RSpec's class for an unmet expectation is the honest group key.
+  def test_rspec_expectation_failures_are_counted_and_grouped
+    digest = Digest.new(<<~LOG)
+      Failures:
+
+        1) event orders should create
+           Failure/Error: expect(page).to have_content('done')
+             expected to find text "done" in "nothing"
+           # ./spec/features/event_orders_spec.rb:28:in `block (4 levels) in <top (required)>'
+
+        2) event orders should save
+           Failure/Error: o.save
+           ActiveRecord::StatementInvalid:
+             PG::NotNullViolation: ERROR: null value in column "event_id"
+           # ./spec/controllers/event_orders_controller_spec.rb:23:in `block'
+
+      Finished in 4.5 seconds
+      2 examples, 2 failures
+    LOG
+
+    rendered = digest.render
+
+    assert_includes rendered, "2 failing example(s) in 2 group(s)"
+    assert_includes rendered, "RSpec::Expectations::ExpectationNotMetError"
+    assert_includes rendered, "spec/features/event_orders_spec.rb:28"
+    assert_includes rendered, "expected to find text"
+    assert_includes rendered, "1 × ActiveRecord::StatementInvalid"
+  end
+
   # Terminal colour is not part of the failure.
   def test_colour_codes_are_stripped
     digest = Digest.new("\e[31mNoMethodError: broken\e[0m\n# ./app/models/user.rb:3:in `x'\n")
