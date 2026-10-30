@@ -1014,8 +1014,9 @@ class PreflightTest < Minitest::Test
   # these is a Gemfile shape that exists in the wild. The note names the line and the
   # reason, so a reader knows the install that follows may be failing about it.
   def test_a_declaration_that_cannot_be_rewritten_is_skipped_with_its_reason
+    # A trailing comment is **not** here: a replaced/updated line keeps it verbatim (see the
+    # comment test above), and only the shapes the rewrite cannot carry are refused.
     cases = {
-      "a comment on the line" => %(gem "devise" # pinned for the rails4 branch\n),
       "a multi-line declaration" => %(gem "devise",\n  github: "plataformatec/devise",\n  branch: "rails4"\n),
       "platforms" => %(gem "devise", platforms: :ruby\n)
     }
@@ -1050,6 +1051,25 @@ class PreflightTest < Minitest::Test
     repair = result.repairs.find { |each| each.subject == "bootsnap" }
     refute_nil repair, result.details.inspect
     assert_equal %(gem "bootsnap", "~> 1.4.9", require: false), read(dir, "Gemfile").lines[1].strip
+  end
+
+  # **A trailing comment travels with a replaced line.** rails-4-api's
+  # `gem "shoulda-matchers", :group => :test #Collection of Rails testing matchers` could not be
+  # moved while a comment was a refusal, and the 2.2 baseline died in shoulda-matchers 2.2.0's
+  # `test/unit` require.
+  def test_a_replaced_entry_keeps_a_trailing_comment
+    dir = app(gemfile: %(source "https://rubygems.org"\ngem "shoulda-matchers", :group => :test #Collection of testing matchers\n),
+      lockfile: PLAIN_LOCKFILE)
+    corpus = FakeCorpus.new(entries: [entry(gem: "shoulda-matchers", kind: "replaced",
+      replacement: "shoulda-matchers", requirement: "~> 2.7",
+      condition: { "ruby_at_least" => "2.2", "ruby_below" => "2.7" })])
+
+    result = preflight(dir, corpus: corpus, ruby: "2.2")
+
+    repair = result.repairs.find { |each| each.subject == "shoulda-matchers" }
+    refute_nil repair, result.details.inspect
+    assert_includes read(dir, "Gemfile"),
+      %(gem "shoulda-matchers", "~> 2.7", :group => :test #Collection of testing matchers)
   end
 
   # **A replacement keeps the group the application put the gem in.** Measured on `rails-4-api`:

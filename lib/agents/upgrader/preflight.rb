@@ -1485,7 +1485,15 @@ module Agents
 
           return nil
         end
-        return "carries a comment this class will not risk rewriting around" if line.match?(/\s#/)
+        # **A trailing comment travels with the line, and it is not a reason to refuse a
+        # replacement.** The comment is the application's note about the gem, not part of the
+        # declaration; the rewrite keeps it verbatim. Measured on rails-4-api's
+        # `gem "shoulda-matchers", :group => :test #Collection of Rails testing matchers` — the
+        # old refusal left 2.2.0 in place and the baseline died in the gem's `test/unit` require.
+        comment = line.match?(/\s#/)
+        if comment && !%w[replaced updated].include?(kind)
+          return "carries a comment this class will not risk rewriting around"
+        end
 
         # The option names, with quoted values removed first so a URL's `https:` is not
         # read as an option called `https`.
@@ -1532,13 +1540,16 @@ module Agents
           return nil if replacement.empty?
 
           requirement = entry["requirement"].to_s
+          # **A trailing comment is the application's note and travels with the line.**
+          comment = line[/\s(#.*)\z/, 1]
+          body = comment ? line.sub(/\s#.*\z/, "") : line
           # **The options on the line are the application's, and a version rewrite keeps them.**
           # Measured on `rails-4-api`: `gem 'debugger', group: [:development, :test]` has to
           # become byebug, and dropping the group would install a debugger in production; the
           # previous rewrite rebuilt the line from the name and version alone, which is why
           # `unrewritable` refused every option. The one token that moves is the requirement; the
           # rest of the line is carried verbatim.
-          rest = line.sub(DECLARATION, "").sub(/\A\s*,\s*(["'])[^"']*\1/, "").strip
+          rest = body.sub(DECLARATION, "").sub(/\A\s*,\s*(["'])[^"']*\1/, "").strip
           # **A source option is the one thing the digest's release supersedes.** A `replaced`
           # entry says which release the gem should be; a fork's `git:`/`branch:` named where the
           # line came from, and the measured release is what the digest is about. Every other
@@ -1550,7 +1561,8 @@ module Agents
           parts = [%(#{indent}gem "#{replacement}")]
           parts << %("#{requirement}") unless requirement.empty?
           parts << rest unless rest.empty?
-          parts.join(", ")
+          after = parts.join(", ")
+          comment ? "#{after} #{comment}" : after
         when "forked"
           # The gem keeps its name; only where it comes from changes. No requirement: the fork's
           # own gemspec states what it accepts, and a version beside a Git source would pin a
