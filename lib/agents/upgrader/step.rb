@@ -815,6 +815,10 @@ module Agents
             # already in force, a decision another project made. The repair agent is the one reader
             # who can use that before trying the same fix again.
             brief: @brief,
+            # **The person's warrant, if the project has one.** The brief's rule about tests is
+            # the difference between a model that can repair a framework-broken test suite and
+            # one that must leave it red; the service has already decided whose warrant it is.
+            allow_test_edits: @project&.repair&.allow_test_edits == true,
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,

@@ -155,11 +155,19 @@ module Agents
       # The account's repair permission and the model chain it names. `off` is a decision (no
       # model, however the deployment is configured); `fallback` is a permission the deployment's
       # budget still has to allow. An empty chain means the deployment's `UPGRADER_REPAIR_MODEL`.
-      Repair = Struct.new(:policy, :models, keyword_init: true) do
+      Repair = Struct.new(:policy, :models, :allow_test_edits, keyword_init: true) do
         def off? = policy == "off"
         def fallback? = policy == "fallback"
         def model_chain = Array(models)
-        def to_h = { "policy" => policy, "model" => model_chain.join(",") }.compact
+
+        # **The warrant is the person's, and it is sent only when it exists.** A false is the
+        # absence of a warrant rather than a refusal to send one, so the old shape is preserved
+        # for every project that has none.
+        def to_h
+          result = { "policy" => policy, "model" => model_chain.join(",") }.compact
+          result["allow_test_edits"] = true if allow_test_edits
+          result
+        end
       end
 
       # **A browser version is a fact about the application's test stack, not about the era.** The
@@ -641,7 +649,7 @@ module Agents
 
         raise Invalid, "repair must be an object, not #{value.class}" unless value.is_a?(Hash)
 
-        unknown = value.keys - %w[policy model]
+        unknown = value.keys - %w[policy model allow_test_edits]
         raise Invalid, "unknown repair field(s): #{unknown.sort.join(", ")}" unless unknown.empty?
 
         policy = value["policy"].to_s.strip
@@ -651,7 +659,8 @@ module Agents
         end
 
         Repair.new(policy: policy,
-          models: value["model"].to_s.split(/[,\s]+/).reject(&:empty?))
+          models: value["model"].to_s.split(/[,\s]+/).reject(&:empty?),
+          allow_test_edits: value["allow_test_edits"] == true)
       end
 
       # **The resolved defaults, not a second policy engine.** The service has already applied

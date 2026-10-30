@@ -502,6 +502,24 @@ class ProjectTest < Minitest::Test
   end
 
   # The smallest declaration that is complete: every other rule is about what may be added to it.
+  # **The warrant is a permission, and its absence is the old shape.** A feed that sends
+  # `allow_test_edits: true` means a person allowed the repair to change a test; a project with
+  # none must round-trip without the key, because the rule is "do not edit tests" by default.
+  def test_the_test_edit_warrant_travels_only_when_it_is_true
+    project = PROJECT.parse(minimal.merge("repair" => {
+      "policy" => "fallback", "model" => "opencode-go/deepseek-v4.1-flash",
+      "allow_test_edits" => true
+    }).to_json)
+
+    assert_equal true, project.repair.allow_test_edits
+    assert_equal true, project.to_h["repair"]["allow_test_edits"]
+
+    absent = PROJECT.parse(minimal.merge("repair" => { "policy" => "fallback" }).to_json)
+
+    assert_equal false, absent.repair.allow_test_edits
+    refute absent.to_h["repair"].key?("allow_test_edits")
+  end
+
   def minimal
     {
       "slug" => "storefront",

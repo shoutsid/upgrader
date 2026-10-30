@@ -193,7 +193,7 @@ module Agents
           framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
           magic_encoding_repairs + autoload_namespace_repairs +
           bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs +
-          state_machine_repairs
+          callback_condition_repairs + state_machine_repairs
         decisions = []
         notes = []
         deferred = []
@@ -582,6 +582,12 @@ module Agents
       # removing the line is the repair.
       WHITELIST_ATTRIBUTES = /^(\s*)config\.active_record\.whitelist_attributes\s*=.*$/
 
+      # **A string `:if`/`:unless` condition is a Rails 5.2 ArgumentError, and the replacement is
+      # the same condition as a symbol (a bare method name) or a lambda (anything else).** The
+      # pattern keeps the callback and its options and rewrites only the quoted condition.
+      CALLBACK_CONDITION = /^(\s*(?:before|after|around|prepend_before|append_before|skip_before|
+        skip_after|skip_around)_(?:action|filter)\b.*?\b(?:if|unless):\s*)(['"])(.+?)\2/x
+
       def whitelist_attributes_repairs
         return [] unless rails_at_least?("4.1")
 
@@ -602,6 +608,44 @@ module Agents
                     "and the boot dies on the missing method before the suite")
           end
           File.binwrite(full, lines.join("\n")) if changed
+        end
+        repairs
+      rescue SystemCallError
+        []
+      end
+
+      # **Rails 5.2 refuses a string callback condition before the suite starts.** The guide's
+      # replacement is a symbol for a bare method and a lambda for an expression, both evaluated
+      # in the controller's own instance; the rewrite changes nothing else on the line. Measured
+      # on brimir's 5.2.8.1 suite: `skip_before_action …, if: 'request.format.json?'` raised
+      # `ArgumentError: Passing string to be evaluated in :if and :unless conditional options is
+      # not supported`. A condition whose shape is not a bare method becomes a lambda; one this
+      # class cannot read is left alone and named.
+      def callback_condition_repairs
+        return [] unless rails_at_least?("5.2")
+
+        repairs = []
+        %w[app/controllers app/models app/helpers].each do |directory|
+          Dir[File.join(@root, directory, "**", "*.rb")].sort.each do |full|
+            lines = File.binread(full).split("\n", -1)
+            changed = false
+            lines.each_with_index do |line, index|
+              match = line.match(CALLBACK_CONDITION)
+              next unless match
+
+              condition = match[3]
+              replacement = condition.match?(/\A[a-z_][a-zA-Z0-9_?!]*\z/) ?
+                ":#{condition}" : "-> { #{condition} }"
+              after = line.sub(match[0], "#{match[1]}#{replacement}")
+              lines[index] = after
+              changed = true
+              repairs << Repair.new(path: full.delete_prefix("#{@root}/"), line: index + 1,
+                text: line, after: after, subject: "callback condition",
+                note: "Rails 5.2 raises for a string :if/:unless condition; the documented " \
+                      "replacement is a symbol or a lambda, evaluated in the same instance")
+            end
+            File.binwrite(full, lines.join("\n")) if changed
+          end
         end
         repairs
       rescue SystemCallError

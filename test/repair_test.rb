@@ -482,6 +482,63 @@ class RepairTest < Minitest::Test
     assert_includes prompt, "there is no shell"
   end
 
+  # **A warrant is the difference between "do not touch the tests" and "a person allowed it".**
+  # The service carries the warrant on the project; without it in the brief, a repair cannot fix
+  # a suite the framework's own API change broke, which is what brimir's 46 `current_tenant`
+  # errors were.
+  def test_a_warranted_project_may_change_a_test
+    prompt = nil
+    agent = FakeAgent.new do |argv, _chdir, _n|
+      prompt = argv.last
+      [0, "done\n"]
+    end
+
+    Repair.new(
+      root: @root,
+      evidence: evidence.merge(allow_test_edits: true),
+      budget: budget(attempts: 1), env: {}, out: nil, runner: agent,
+      rerun: -> { FakeSuite.new(ok: true) }
+    ).run
+
+    assert_includes prompt, "warranted test edits"
+    assert_includes prompt, "never to weaken an assertion"
+    refute_includes prompt, "Do not edit the tests"
+  end
+
+  # **The brief reads the complete log when the stage kept one.** The record's tail is what a
+  # reviewer sees; the model needs the failures printed before it. The digest is the grouped
+  # form, and the path is named so a group's full backtrace is one read away.
+  def test_the_brief_uses_the_complete_log_and_groups_the_failures
+    log = File.join(@root, "baseline.log")
+    File.write(log, <<~LOG)
+      1) UsersControllerTest#test_should_get_edit
+         Failure/Error: render
+         NoMethodError: undefined method `current_tenant'
+         # ./test/controllers/tickets_controller_test.rb:201:in `block'
+
+      2) TicketsControllerTest#test_should_create
+         Failure/Error: render
+         NoMethodError: undefined method `current_tenant'
+         # ./test/controllers/tickets_controller_test.rb:201:in `block'
+    LOG
+    prompt = nil
+    agent = FakeAgent.new do |argv, _chdir, _n|
+      prompt = argv.last
+      [0, "done\n"]
+    end
+
+    Repair.new(
+      root: @root,
+      evidence: evidence(output: "tail\n[full output: #{log}]"),
+      budget: budget(attempts: 1), env: {}, out: nil, runner: agent,
+      rerun: -> { FakeSuite.new(ok: true) }
+    ).run
+
+    assert_includes prompt, "2 failing example(s) in 1 group(s)"
+    assert_includes prompt, "2 × NoMethodError"
+    assert_includes prompt, log
+  end
+
   def test_the_agent_command_names_the_agent_the_model_and_the_prompt_s_size
     agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
 

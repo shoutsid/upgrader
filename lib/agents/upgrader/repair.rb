@@ -50,10 +50,14 @@ module Agents
       # artifacts elsewhere.
       ENV_STREAMS = "UPGRADER_REPAIR_STREAMS"
 
-      # Off, and ten minutes per attempt when it is not: one attempt is a model call with a
+      # Off, and fifteen minutes per attempt when it is not: one attempt is a model call with a
       # tool loop around it, and a rung's suite is measured in minutes rather than seconds.
+      # **Measured at 300 seconds, the loop killed attempts that were still working**: caturday's
+      # repair had made 90 tool calls and read the API, the router and the specs when the deadline
+      # arrived, and the next attempt started over. The budget is a deadline, not a target; a
+      # model that finishes early spends nothing extra.
       DEFAULT_ATTEMPTS = 0
-      DEFAULT_TIMEOUT = 600
+      DEFAULT_TIMEOUT = 900
 
       # The agent this loop runs, declared in the config it writes. Named rather than left to
       # the default because `opencode run` falls back to its `build` agent — which has a
@@ -337,7 +341,12 @@ module Agents
         end
 
         attempts = []
-        failure = @evidence[:output_tail].to_s
+        # **The brief gets the whole log when the stage kept one.** The record's tail is what a
+        # reader sees; the model needs the failures that were printed before it, or it is
+        # repairing whichever error happened to be last. The tail names the file, and the file
+        # is on the same volume this process reads.
+        failure = full_text(@evidence[:output_tail])
+        @failure_log = log_path(@evidence[:output_tail]) || @evidence[:failure_log]
         repaired = false
         @attempts.times do |index|
           model = model_for
@@ -372,7 +381,8 @@ module Agents
             repaired = true
             break
           end
-          failure = suite.output_tail.to_s
+          @failure_log = log_path(suite.output_tail) || @failure_log
+          failure = full_text(suite.output_tail)
         end
         Result.new(attempts: attempts, repaired: repaired)
       end
@@ -590,6 +600,25 @@ module Agents
         text = output.to_s
         lines = text.lines
         lines.length > 60 ? lines.last(60).join : text
+      end
+
+      # The stage appends `[full output: …]` to its tail, and that file holds the failures the
+      # tail had to drop. The path is read from the tail rather than carried on the record,
+      # because the record is the same shape for every stage and this is the one consumer.
+      def log_path(output)
+        output.to_s[/\[full output: ([^\]]+)\]/, 1]
+      end
+
+      def full_text(output)
+        path = log_path(output)
+        return output.to_s unless path && File.file?(path)
+
+        text = File.binread(path)
+        # A runaway log is bounded from the end: the summary is at the end, and the digest only
+        # needs a representative block, not a megabyte of deprecation warnings.
+        text.bytesize > 1_000_000 ? (text[-1_000_000..] || text) : text
+      rescue SystemCallError
+        output.to_s
       end
 
       # A deadline the provider named, or the honest sentence for one it did not. The nil case is
@@ -820,13 +849,18 @@ module Agents
           lines << "so there is nothing to find for them."
           lines << ""
         end
-        lines << "The failure (the tail of the suite's own output):"
+        log = @failure_log.to_s
+        lines << "The failure#{log.empty? ? "" : " (the complete output is #{log}; read it if a group's backtrace is not enough)"}:"
         lines << "```"
-        lines << failure.to_s.lines.last(80).join
+        lines << FailureDigest.new(failure).render
         lines << "```"
         lines << ""
         lines << "Rules, and they are not negotiable:"
-        if @before_the_move
+        if e[:allow_test_edits]
+          lines << "- A person has warranted test edits for this project. You may change a test when the"
+          lines << "  framework's own API change is what broke it, but never to weaken an assertion;"
+          lines << "  name the test and the reason in your final message."
+        elsif @before_the_move
           lines << "- Make the suite green without changing what it asserts. Do not edit the tests"
           lines << "  to make them pass: a change that weakens a test is not a repair, and the record"
           lines << "  travels to a reviewer who reads the diff."

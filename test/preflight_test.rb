@@ -1647,6 +1647,38 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "config/application.rb"), "removed: Rails 4.1"
   end
 
+  # **Rails 5.2 refuses a string callback condition.** Brimir's suite raised
+  # `ArgumentError: Passing string to be evaluated in :if and :unless conditional options is not
+  # supported`; a bare method becomes a symbol, an expression becomes a lambda, and Rails 5.1
+  # keeps its line.
+  def test_a_string_callback_condition_is_rewritten_at_rails_5_2
+    write_callback = lambda do |dir|
+      FileUtils.mkdir_p(File.join(dir, "app", "controllers"))
+      File.write(File.join(dir, "app", "controllers", "tickets_controller.rb"), <<~RUBY)
+        class TicketsController < ApplicationController
+          before_action :authenticate, if: 'logged_in?'
+          skip_before_action :verify_authenticity_token, only: :create, if: 'request.format.json?'
+        end
+      RUBY
+    end
+
+    dir = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    write_callback.call(dir)
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.2.8.1").run
+
+    text = read(dir, "app/controllers/tickets_controller.rb")
+    assert_includes text, "if: :logged_in?"
+    assert_includes text, "if: -> { request.format.json? }"
+    assert_equal 2, result.repairs.count { |repair| repair.subject == "callback condition" }
+
+    older = app(gemfile: PLAIN_GEMFILE, lockfile: PLAIN_LOCKFILE)
+    write_callback.call(older)
+    Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.2", rails: "5.1.7").run
+
+    assert_includes read(older, "app/controllers/tickets_controller.rb"), "if: 'logged_in?'",
+      "Rails 5.1 still accepts the string; the rewrite is a 5.2 fact"
+  end
+
   # **A test-only gem and the framework's test adapter can have an empty minitest window.** The
   # project's `test_gem_removal` class is the permission; the suite is still the gate.
   def test_maxitest_is_removed_only_when_the_project_allows_it
