@@ -1550,6 +1550,25 @@ module Agents
         return if probe.ok?
 
         stages << probe
+        # **A named bundler that is merely absent is installed, not erased.** The probe's
+        # "Could not find 'bundler' (1.17.3)" is a missing tool, and 1.17.3 runs on the 2.7 era
+        # that needs it for Rails 4.2 — dropping the trailer instead made the era's 2.4.22 read
+        # a Rails 4.2 Gemfile, which it refuses because Rails 4.2 declares `bundler < 2.0`.
+        # The version is installed into the walker's home and the probe is asked once more; only
+        # a version that still cannot *run* (the `untaint` case on Ruby 3.2) loses the trailer.
+        if (version = missing_bundler(probe))
+          installed = command(Record::BUNDLE,
+            ["gem", "install", "--user-install", "bundler", "-v", version, "--no-document"],
+            chdir: @worktree.root, env: bundle_env(machine), machine: machine,
+            excerpt_bytes: Shell::RESOLVER_BYTES)
+          stages << installed
+          if installed.ok?
+            again = command(Record::BUNDLE, %w[bundle --version], chdir: @worktree.root,
+              env: bundle_env(machine), machine: machine)
+            stages << again
+            return if again.ok?
+          end
+        end
         File.binwrite(path, after)
         @applied << Applier::Applied.new(path: "Gemfile.lock", line: nil,
           text: "BUNDLED WITH\n   #{BundlerTrailer.version(before)}",

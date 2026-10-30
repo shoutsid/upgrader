@@ -304,6 +304,31 @@ class StepMachineTest < Minitest::Test
     end
   end
 
+  # A runner whose `bundle --version` probe cannot find the lock's bundler until the gem install
+  # that follows it, and whose second probe succeeds. The state is the install, not the answer.
+  class BundlerProbeRunner < FakeRunner
+    def initialize
+      super(answers: {})
+      @installed = false
+    end
+
+    def run(argv, stage:, chdir: nil, env: {}, stdin: nil, timeout: nil, excerpt_bytes: nil,
+      display: nil, stream: nil)
+      line = argv.join(" ")
+      @calls << line
+      @excerpts << [line, excerpt_bytes]
+      if line.include?("bundle --version") && !@installed
+        return Command.new(stage: stage, command: line, display: (display || argv).join(" "),
+          ran: true, exit_code: 1, seconds: 0.0,
+          output_tail: "Could not find 'bundler' (1.17.3) required by your Gemfile.lock. " \
+                       "To install the missing version, run `gem install bundler:1.17.3`")
+      end
+      @installed = true if line.include?("gem install") && line.include?("bundler")
+      Command.new(stage: stage, command: line, display: (display || argv).join(" "),
+        ran: true, exit_code: 0, seconds: 0.0, output_tail: "Bundle complete!")
+    end
+  end
+
   # A runner that resolves the way bundler does: the lock it is asked to update comes back changed, and
   # the Gemfile it was handed at that moment is remembered. Nothing else in the suite needs a resolver;
   # this is the one property about what the *second* resolve sees.
@@ -875,6 +900,24 @@ class StepMachineTest < Minitest::Test
       "the install is retried once, and only after the bundler was installed"
     assert_empty record.stages.select { |stage| stage.command.include?("gem install") && stage.exit_code != 0 },
       "the bundler arrives before the second attempt"
+  end
+
+  # **A bundler that is merely absent is installed, not erased.** The probe's own sentence names
+  # the version; dropping the trailer instead made the era's 2.4.22 read a Rails 4.2 Gemfile, which
+  # it refuses because Rails 4.2 declares `bundler < 2.0`. The lock keeps the trailer 1.17.3 named.
+  def test_a_lock_naming_a_missing_bundler_installs_it_and_keeps_the_trailer
+    dir = app(lockfile: LOCKFILE + "BUNDLED WITH\n   1.17.3\n")
+    runner = BundlerProbeRunner.new
+
+    record = step(dir, machines: machines, runner: runner).run
+
+    installed = record.stages.find { |stage| stage.command.include?("gem install") }
+    refute_nil installed, "the lock's bundler was not installed: #{record.stages.map(&:command).inspect}"
+    assert_includes installed.command, "1.17.3"
+    assert_includes File.read(File.join(dir, "Gemfile.lock")), "BUNDLED WITH",
+      "the trailer was dropped even though the named version could be installed"
+    assert_operator runner.calls.count { |call| call.include?("bundle --version") }, :>=, 2,
+      "the probe was not asked again after the install"
   end
 
   # **A resolver's output is evidence, and the record must not be a place its cause can hide.** Measured
