@@ -28,7 +28,9 @@ module Agents
       class << self
         # Every conflict the message names that has more than one requirement, first four.
         def derive(text)
-          blocks(text).filter_map { |gem, lines| derivation(gem, lines) }.first(MAX_CONFLICTS)
+          found = blocks(text).filter_map { |gem, lines| derivation(gem, lines) }
+          found << requested_conflict(text)
+          found.compact.first(MAX_CONFLICTS)
         end
 
         private
@@ -91,6 +93,30 @@ module Agents
             "requirements" => requirements,
             "summary" => summary(gem, requirements)
           }
+        end
+
+        # **The other shape, and it has no "could not find compatible versions" header.** A
+        # digest declaration the lock does not satisfy is answered with "You have requested:" and
+        # the version the lock holds — two constraints on one gem, which is the same minimal set as
+        # a version conflict even though Bundler spells it as an instruction rather than a failure.
+        def requested_conflict(text)
+          requested = text.to_s[/You have requested:\s*\n((?:[ \t]+.+\n?)+)/, 1].to_s
+          locked = /The bundle currently has ([\w.-]+) locked at ([\w.]+?)(?:\.(?=\s|\z)|\s|\z)/.match(text.to_s)
+          return nil if requested.empty? || locked.nil?
+
+          gem = locked[1]
+          requirement = requested.lines.filter_map do |line|
+            match = /\A\s*#{Regexp.escape(gem)}\s+\(?([^)\n]+?)\)?\s*\z/.match(line)
+            match && match[1].strip
+          end.first
+          return nil if requirement.to_s.empty?
+
+          requirements = [
+            { "requirement" => requirement, "via" => ["the Gemfile"] },
+            { "requirement" => "= #{locked[2]}", "via" => ["Gemfile.lock"] }
+          ]
+          { "gem" => gem, "requirements" => requirements,
+            "summary" => summary(gem, requirements) }
         end
 
         def summary(gem, requirements)

@@ -64,6 +64,27 @@ class ConflictTest < Minitest::Test
     assert_equal %w[rack json], conflicts.map { |row| row["gem"] }
   end
 
+  # **The digest-declaration shape, which Bundler writes as an instruction.** A requirement the
+  # Gemfile added against a release the lock already holds names both constraints without a
+  # "compatible versions" header; the minimal set is the requested range and the locked version.
+  def test_a_requested_version_against_the_lock_is_a_conflict
+    message = <<~OUTPUT
+      You have requested:
+        responders ~> 2.0
+
+      The bundle currently has responders locked at 1.1.2.
+      Try running `bundle update responders`
+    OUTPUT
+
+    conflict = C.derive(message).first
+
+    assert_equal "responders", conflict["gem"]
+    assert_equal ["~> 2.0", "= 1.1.2"],
+      conflict["requirements"].map { |row| row["requirement"] }
+    assert_equal ["the Gemfile"], conflict["requirements"].first["via"]
+    assert_equal ["Gemfile.lock"], conflict["requirements"].last["via"]
+  end
+
   def test_a_requirement_less_dependency_is_not_a_constraint
     message = <<~OUTPUT
       Bundler could not find compatible versions for gem "rack":
