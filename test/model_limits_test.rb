@@ -74,8 +74,10 @@ class ModelLimitsTest < Minitest::Test
   def test_a_free_timeout_is_an_availability_limit_but_a_paid_timeout_is_not
     free = limits.record(model: "opencode/free", timed_out: true, exit_code: nil,
       output: "the repair agent was killed after 300s")
+    # A limit-looking word in the agent's own stream is not the provider's limit: measured live,
+    # the paid attempt was held because its tool output mentioned a 429 the model was reading.
     paid = limits.record(model: "opencode-go/paid", timed_out: true, exit_code: nil,
-      output: "the repair agent was killed after 300s")
+      output: "the repair agent was killed after 300s; it had read a 429 in a test fixture")
 
     refute_nil free
     assert_includes free.reason, "no reset was reported"

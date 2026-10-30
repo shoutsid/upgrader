@@ -101,7 +101,13 @@ module Agents
         text = output.to_s
         free = model.to_s.match?(/\bfree\b/i)
         return nil if exit_code.to_i.zero? && !timed_out
-        return nil unless text.match?(LIMIT) || (timed_out && free)
+        # **A paid model's timeout is a measured attempt, not the provider's sentence.** The
+        # agent may have been mid-answer, and a limit-looking word in its own tool output is not
+        # a limit the provider reported: measured live, a timed-out paid attempt was held
+        # indefinitely because the stream mentioned a 429 the model was reading, which then
+        # blocked every later repair. Only a free model's silence is the availability fact.
+        return nil if timed_out && !free
+        return nil unless text.match?(LIMIT)
 
         moment = (now || @now.call).utc
         reset = extract_reset(text, moment)
