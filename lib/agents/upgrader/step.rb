@@ -1661,10 +1661,12 @@ module Agents
       # The resolver knows this application's requirement graph, so the next round is read out
       # of its message rather than guessed — which is why the pin and the bundle's fallback
       # share it rather than each keeping their own idea of what usually moves together.
-      def conservative_update(stages, gems, stage:, machine: nil)
+      def conservative_update(stages, gems, stage:, machine: nil, bundler: nil)
         gems = gems.dup
         PIN_ROUNDS.times do
-          attempt = command(stage, ["bundle", "update", *gems, "--conservative"],
+          argv = ["bundle"]
+          argv << "_#{bundler}_" unless bundler.to_s.empty?
+          attempt = command(stage, [*argv, "update", *gems, "--conservative"],
             chdir: @worktree.root, env: bundle_env(machine || @machine), machine: machine,
             excerpt_bytes: Shell::RESOLVER_BYTES)
           stages << attempt
@@ -3518,10 +3520,27 @@ module Agents
       # refuses is *released* rather than forced, and bundler names it, the same way it names what
       # has to move: a gem the move really needs is a gem that has to move.
       def pin(stages)
-        resolved = conservative_update(stages, pin_named, stage: Record::PIN)
+        resolved = conservative_update(stages, pin_named, stage: Record::PIN,
+          bundler: pin_bundler)
         return resolved unless resolved.ok?
 
         hold_what_the_move_did_not_need(stages, @lockfile)
+      end
+
+      # **A lock's old Bundler is the wrong tool for a rung whose Rails no longer caps it.**
+      # Rails 4.2 declares `bundler < 2.0`, so the 2.7 era's 2.4.22 must not run that pin; Rails
+      # 5.0.5 and later dropped the cap, and Bundler 1.17.3's resolver crashes on the 5.0.7.2
+      # pin with `undefined method 'name' for "Gemfile.lock":String`. When the era's image has a
+      # Bundler and the rung can run it, the pin names that version explicitly; a rung below the
+      # cap keeps the lock's own version.
+      def pin_bundler
+        return nil unless @machine.respond_to?(:bundler)
+
+        version = @machine.bundler.to_s
+        return nil if version.empty?
+        return nil unless Gem::Version.new(rung_to.to_s) >= Gem::Version.new("5.0.5.rc1")
+
+        version
       end
 
       # **The framework plus every gem this step has rewritten a line for.** The pin's own rounds are

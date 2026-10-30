@@ -668,6 +668,10 @@ module Agents
         def interpreter = "ruby #{entry.ruby}"
         def ruby_version = entry.ruby
         def era = entry.name
+        # **The Bundler the era's image installs beside the interpreter.** A lock written by an
+        # older Bundler activates that version; the pin can name this one explicitly when the
+        # rung's Rails no longer requires bundler < 2.
+        def bundler = entry.bundler
         # The sibling container publishes the port the host connects to, and the URL-only
         # configuration has to name that port rather than the container's own 5432.
         def database_url = "postgres://app@127.0.0.1:#{@services.pg_port}/app"

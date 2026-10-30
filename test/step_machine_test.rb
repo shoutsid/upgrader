@@ -466,6 +466,7 @@ class StepMachineTest < Minitest::Test
     def script(command, chdir:, env: {}) = [["fake", era, "sh", "-lc", command], {}]
     def interpreter = "ruby #{era}"
     def ruby_version = era
+    def bundler = "2.4.22"
     def image = "era-#{era}"
     def services? = @services
     def stamp = "ruby #{era} (era-#{era}@sha256:#{"f" * 64})"
@@ -879,6 +880,23 @@ class StepMachineTest < Minitest::Test
 
     assert_empty record.decisions.select { |decision| decision.path.to_s.include?("application_record") },
       "the scaffold line came back as work: #{record.decisions.map(&:path).inspect}"
+  end
+
+  # **A rung past Rails' bundler cap uses the era's Bundler, and one below it keeps the lock's.**
+  # Rails 4.2 declares `bundler < 2.0`, so the 2.7 era's 2.4.22 must not pin it; Rails 5.0.5
+  # dropped the cap, and the 1.17.3 the lock names crashes on the 5.0.7.2 resolve.
+  def test_a_rung_past_the_bundler_cap_pins_with_the_eras_bundler
+    past = step(app, machines: machines, runner: FakeRunner.new, to: "5.0.7.2").run
+    pinned = past.stages.select { |stage| stage.stage == "pin" }
+    refute_empty pinned, "the step never reached the pin: #{past.stages.map(&:stage).inspect}"
+    assert(pinned.first.command.include?("bundle _2.4.22_ update"),
+      "the 5.0 pin used the lock's 1.17.3: #{pinned.first.command}")
+
+    below = step(app, machines: machines, runner: FakeRunner.new, to: "4.2.11.3").run
+    caps = below.stages.select { |stage| stage.stage == "pin" }
+    refute_empty caps, "the 4.2 step never reached the pin: #{below.stages.map(&:stage).inspect}"
+    refute_includes caps.first.command, "_2.4.22_",
+      "the 4.2 pin must keep the lock's Bundler, which Rails 4.2 requires"
   end
 
   # **A lock names the bundler that wrote it, and an era may not ship it.** RubyGems activates the version
