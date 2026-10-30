@@ -63,9 +63,10 @@ class MachineTest < Minitest::Test
     end
   end
 
-  def entry(name: "2.2", ruby: "2.2.10", image: "agents-upgrader-ruby-2.2:dev")
+  def entry(name: "2.2", ruby: "2.2.10", image: "agents-upgrader-ruby-2.2:dev",
+            bundler: "1.17.3")
     Interpreters::Entry.new(name: name, ruby: ruby, image: image,
-      base: "ruby:2.2@sha256:#{"a" * 64}", bundler: "1.17.3")
+      base: "ruby:2.2@sha256:#{"a" * 64}", bundler: bundler)
   end
 
   # The home a machine starts against has to be a directory this process can write to —
@@ -170,6 +171,15 @@ class MachineTest < Minitest::Test
   def test_the_stamp_names_the_interpreter_and_the_image_digest
     strip = container(inspector: FakeInspector.new(sha: "c" * 64))
     assert_equal "ruby 2.2.10 (agents-upgrader-ruby-2.2:dev@sha256:#{"c" * 64})", strip.stamp
+  end
+
+  # **The pin asks the machine for its Bundler, and the container is the machine a walk runs
+  # on.** The step's own test double answered this first, so the sample 7.2.4 pin silently kept
+  # the lock's Bundler 1.17.3 on the 3.1 era; the real container must answer the matrix's entry.
+  def test_the_container_names_the_bundler_its_image_installs
+    assert_equal "1.17.3", container.bundler
+    assert_equal "2.5.9", container(name: "3.1", ruby: "3.1.7",
+      image: "agents-upgrader-ruby-3.1:dev", bundler: "2.5.9").bundler
   end
 
   # A rebuilt image is a new machine: the digest is what makes yesterday's verdict not stand

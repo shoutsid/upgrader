@@ -408,6 +408,12 @@ module Agents
         # entry carries so the next cycle can try the same interpreter first.
         def era = entry.name
 
+        # **The Bundler the era's image installs beside the interpreter.** The container is the
+        # machine a walk actually runs on; the pin names this version explicitly when the rung's
+        # Rails no longer caps Bundler below 2.0, because the lock's own old Bundler cannot
+        # resolve the newer framework and installs into a different path than the boot's.
+        def bundler = entry.bundler
+
         # Whether the application's services are started inside this machine. A container
         # owns them; a native step uses whatever the host has, because starting databases on
         # somebody's laptop because they ran a step is not this tool's to do.
