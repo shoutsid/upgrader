@@ -1283,6 +1283,7 @@ module Agents
       def install_bundle(stages, machine = @machine)
         install_packages(stages, machine)
         drop_unrunnable_bundler(machine, stages)
+        adopt_era_bundler(machine)
         @out.puts("  install: bundle install#{machine.respond_to?(:era) && machine.era ? " (ruby #{machine.era})" : ""}") if @out
         stage = command(Record::BUNDLE, %w[bundle install], chdir: @worktree.root,
           env: bundle_env(machine), machine: machine, excerpt_bytes: Shell::RESOLVER_BYTES)
@@ -3555,14 +3556,51 @@ module Agents
       # pin with `undefined method 'name' for "Gemfile.lock":String`. When the era's image has a
       # Bundler and the rung can run it, the pin names that version explicitly; a rung below the
       # cap keeps the lock's own version.
-      def pin_bundler
-        return nil unless @machine.respond_to?(:bundler)
+      def pin_bundler = era_bundler(@machine)
 
-        version = @machine.bundler.to_s
+      # **From Rails 5.0.5 the era's own Bundler is the one the rung can use.** Rails 4.2 declares
+      # `bundler < 2.0`, so a lock's 1.17.3 must stay for a 4.x rung; from 5.0.5.rc1 the cap is
+      # gone, and the interpreter's Bundler is the tool that actually runs there.
+      def era_bundler(machine)
+        return nil unless machine.respond_to?(:bundler)
+
+        version = machine.bundler.to_s
         return nil if version.empty?
         return nil unless Gem::Version.new(rung_to.to_s) >= Gem::Version.new("5.0.5.rc1")
 
         version
+      end
+
+      # **A lock written by Bundler 1 on an era whose default Bundler is 2 cannot boot.** Ruby 3.1
+      # pre-activates its default Bundler (2.3.27) for `bundle exec`, then `config/boot.rb`
+      # requires `bundler/setup`, which activates the 1.17.3 the lock names: measured on sample's
+      # 7.2.4 baseline, `You have already activated bundler 2.3.27, but your Gemfile requires
+      # bundler 1.17.3`. The era's Bundler is also the one that installs into the path the boot
+      # reads (`<path>/ruby/3.1.0`), while 1.17.3 installs directly into `<path>` — so the trailer
+      # is rewritten before the install, and the install and the boot finally agree. A rung below
+      # Rails 5.0.5 keeps the lock's version, because Rails 4.2 refuses Bundler 2.
+      def adopt_era_bundler(machine)
+        version = era_bundler(machine)
+        return if version.nil?
+
+        path = File.join(@worktree.root, "Gemfile.lock")
+        return unless File.file?(path)
+
+        before = File.binread(path)
+        named = BundlerTrailer.version(before)
+        return if named.nil? || Gem::Version.new(named) >= Gem::Version.new(version)
+
+        after = before.sub(BundlerTrailer::TRAILER, "\nBUNDLED WITH\n   #{version}\n")
+        return if after == before
+
+        File.binwrite(path, after)
+        @applied << Applier::Applied.new(path: "Gemfile.lock", line: nil,
+          text: "BUNDLED WITH\n   #{named}",
+          after: "BUNDLED WITH\n   #{version}",
+          subject: "BUNDLED WITH", origin: nil,
+          note: "the lock names bundler #{named}, and this rung (Rails #{rung_to}) no longer caps " \
+                "Bundler below 2.0 — the era's #{version} is the version that both installs and " \
+                "boots here, and its bundle path is the one the boot's Bundler reads")
       end
 
       # **The framework plus every gem this step has rewritten a line for.** The pin's own rounds are

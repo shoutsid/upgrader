@@ -947,6 +947,31 @@ class StepMachineTest < Minitest::Test
     assert_includes update.command, "--conservative"
   end
 
+  # **A lock's old Bundler is rewritten to the era's on a rung past the cap, before the baseline.**
+  # Ruby 3.1 pre-activates Bundler 2.3.27 and the 1.17.3 trailer makes `config/boot.rb` activate
+  # 1.17.3 instead: `You have already activated bundler 2.3.27, but your Gemfile requires bundler
+  # 1.17.3`. The rewrite also makes the install's path (`<path>/ruby/3.1.0`) the one the boot reads.
+  def test_a_rung_past_the_cap_rewrites_the_lock_trailer_to_the_eras_bundler
+    dir = app(lockfile: LOCKFILE + "BUNDLED WITH\n   1.17.3\n")
+    runner = FakeRunner.new(answers: { "bundle install" => [0, "Bundle complete!"],
+      "bundle update" => [0, "Bundle updated!"] })
+
+    step(dir, machines: machines, runner: runner, to: "5.0.7.2").run
+
+    assert_includes File.read(File.join(dir, "Gemfile.lock")), "BUNDLED WITH\n   2.4.22"
+  end
+
+  # Below the cap the lock's own Bundler stays: Rails 4.2 declares `bundler < 2.0`.
+  def test_a_rung_below_the_cap_keeps_the_locks_bundler_trailer
+    dir = app(lockfile: LOCKFILE + "BUNDLED WITH\n   1.17.3\n")
+    runner = FakeRunner.new(answers: { "bundle install" => [0, "Bundle complete!"],
+      "bundle update" => [0, "Bundle updated!"] })
+
+    step(dir, machines: machines, runner: runner, to: "4.2.11.3").run
+
+    assert_includes File.read(File.join(dir, "Gemfile.lock")), "BUNDLED WITH\n   1.17.3"
+  end
+
   # **A lock names the bundler that wrote it, and an era may not ship it.** RubyGems activates the version
   # in `BUNDLED WITH`, so an era whose image pins a newer bundler cannot install the application at all —
   # measured on the 2.7 era at the 6.0 rung: `Could not find 'bundler' (1.17.3) required by your
