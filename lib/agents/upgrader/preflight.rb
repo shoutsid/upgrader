@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+
 module Agents
   module Upgrader
     # What an old application's Gemfile needs *before* anything can be installed.
@@ -190,7 +192,8 @@ module Agents
         repairs = protocol_repairs + ruby_pin_repairs + ruby_removal_repairs +
           framework_removal_repairs + mailer_host_repairs + squiggly_heredoc_repairs +
           magic_encoding_repairs + autoload_namespace_repairs +
-          bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs
+          bundler_lock_repairs + test_gem_removal_repairs + whitelist_attributes_repairs +
+          state_machine_repairs
         decisions = []
         notes = []
         deferred = []
@@ -327,6 +330,45 @@ module Agents
           subject: "action_mailer.default_url_options",
           note: "Devise's mailer builds confirmation_url, and the test environment has no request " \
                 "to take a host from; localhost is the host the suite's own requests use")]
+      rescue SystemCallError
+        []
+      end
+
+      # **state_machine 1.2.0's validation callback is a protected method, and Rails 4.1 calls it
+      # without `send`.** Measured on 19wu's 4.0.13 → 4.1.16 move: 248 examples failed with
+      # `NoMethodError: protected method 'around_validation' called for #<StateMachine::Machine>`
+      # from the machine's validation callback, and the repair agent's three attempts timed out
+      # because the failure is one visibility fact repeated across the suite. The initializer makes
+      # the method public on the one class; it is the gem's own method, unchanged.
+      STATE_MACHINE_INITIALIZER = "config/initializers/state_machine_around_validation.rb"
+      STATE_MACHINE_SOURCE = <<~RUBY
+        # state_machine 1.2.0 registers `around_validation` as a protected callback, and Rails 4.1
+        # invokes callbacks without `send`. Making the gem's own method public is the smallest
+        # change that lets the existing machine run; no application code is rewritten.
+        if defined?(StateMachine::Machine)
+          StateMachine::Machine.send(:public, :around_validation)
+        end
+      RUBY
+
+      def state_machine_repairs
+        return [] unless rails_at_least?("4.1")
+
+        gemfile = File.join(@root, "Gemfile")
+        lockfile = File.join(@root, "Gemfile.lock")
+        return [] unless File.file?(gemfile) && File.file?(lockfile)
+        return [] unless File.binread(lockfile).match?(/\bstate_machine \(1\.2\.0\)/)
+        return [] unless File.binread(gemfile).match?(/^\s*gem\s+["']state_machine["']/)
+
+        path = File.join(@root, STATE_MACHINE_INITIALIZER)
+        return [] if File.file?(path)
+
+        FileUtils.mkdir_p(File.dirname(path))
+        File.binwrite(path, STATE_MACHINE_SOURCE)
+        [Repair.new(path: STATE_MACHINE_INITIALIZER, line: nil, text: nil,
+          after: "StateMachine::Machine.send(:public, :around_validation)",
+          subject: "state_machine",
+          note: "state_machine 1.2.0's around_validation is protected and Rails 4.1 calls it " \
+                "without send; the suite dies in every example that saves a machine-backed model")]
       rescue SystemCallError
         []
       end

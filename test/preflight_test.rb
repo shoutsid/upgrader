@@ -1726,6 +1726,27 @@ class PreflightTest < Minitest::Test
     assert_includes read(dir, "Gemfile.lock"), "BUNDLED WITH"
   end
 
+  # **state_machine 1.2.0's callback is protected, and Rails 4.1 calls it without send.**
+  # 19wu's 4.0.13 -> 4.1.16 move failed 248 examples with that one NoMethodError; the initializer
+  # makes the gem's own method public.
+  def test_a_state_machine_app_gets_the_visibility_repair_at_rails_4_1
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "4.0.13"\ngem "state_machine"\n)
+    lock = "#{PLAIN_LOCKFILE}    state_machine (1.2.0)\n"
+    dir = app(gemfile: gemfile, lockfile: lock)
+
+    result = Preflight.new(root: dir, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.1.16").run
+
+    repair = result.repairs.find { |each| each.subject == "state_machine" }
+    refute_nil repair, result.details.inspect
+    assert_includes read(dir, "config/initializers/state_machine_around_validation.rb"),
+      "StateMachine::Machine.send(:public, :around_validation)"
+
+    older = app(gemfile: gemfile, lockfile: lock)
+    older_result = Preflight.new(root: older, corpus: FakeCorpus.new, ruby: "2.1", rails: "4.0.13").run
+    assert_empty older_result.repairs.select { |each| each.subject == "state_machine" },
+      "Rails 4.0 calls the callback with send; the repair is a 4.1 fact"
+  end
+
   # **Rails 5.0 removed ActiveModel::Serializers::Xml, and MongoMapper still includes it.**
   # Measured on caturday_api's 5.0.7.2 boot: the application dies before the first example with
   # `uninitialized constant ActiveModel::Serializers::Xml`; the extracted gem is the declaration.
