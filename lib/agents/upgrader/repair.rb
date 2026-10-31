@@ -86,6 +86,16 @@ module Agents
         def ok? = ran && !timed_out && !exit_code.nil? && exit_code.zero?
         def limited? = limited == true
 
+        # **An attempt that concluded with no change is not evidence about the application.**
+        # The model read the tree, said it was done and edited nothing: the next attempt faces
+        # exactly the same failure, so asking again mostly repeats the walk. Measured over 137
+        # recorded attempts: a third of the tokens (38.7M) went to zero-edit attempts, and the
+        # costliest of them (11.5M over 185 tool calls) changed not one file. A reached a real
+        # state only when the model *wrote* something — the suite then measures a new tree — or
+        # when it was cut off before it could conclude (a timeout or a provider limit), which is
+        # unknown rather than empty. `changed` is the tree's own answer, not the model's word.
+        def barren? = ok? && Array(changed).empty?
+
         # The line the record and the operator both read. It names the stream and the opencode
         # session, because those are the two facts that turn "the model failed" into something
         # a person can open and finish reading.
@@ -438,6 +448,19 @@ module Agents
 
           if suite.ok?
             repaired = true
+            break
+          end
+          # **A concluded attempt that changed nothing buys no second attempt.** The suite has
+          # already measured the tree; it is red, and the next attempt would be briefed with the
+          # same failure against the same tree — a repetition whose only cost is tokens.
+          # Measured over 137 recorded attempts, 40 edited no file and took a third of all
+          # tokens, one of them 11.5M over 185 tool calls. The suite still runs, because the
+          # record and the caller both read it; what stops is the next *model* call. A *cut off*
+          # attempt is not this case — it never reached a conclusion, so the next attempt is a
+          # genuine new reading even when the tree is unchanged.
+          if attempt.barren?
+            @out.puts("  repair: attempt #{attempt.number} changed no file, so the next " \
+                      "attempt would be the same walk — stopping") if @out
             break
           end
           @failure_log = log_path(suite.output_tail) || @failure_log

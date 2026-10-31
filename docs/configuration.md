@@ -43,8 +43,8 @@ A setting that is not present is a setting the caller did not make.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `UPGRADER_REPAIR_ATTEMPTS` | `0` (off) | attempts a repair agent gets when a suite is red — the baseline before the move, or the suite after it. |
-| `UPGRADER_REPAIR_TIMEOUT` | `600` | seconds one repair attempt may run. A timeout is a kill, not a wait. |
+| `UPGRADER_REPAIR_ATTEMPTS` | `0` (off) | attempts a repair agent gets when a suite is red — the baseline before the move, or the suite after it. Two is the measured default the deployment runs: a second attempt still converts about a third of the runs that reach it into a pass, and no run has ever passed on a fourth. |
+| `UPGRADER_REPAIR_TIMEOUT` | `900` | seconds one repair attempt may run. A timeout is a kill, not a wait. |
 | `UPGRADER_REPAIR_MODEL` | empty | the model the agent is asked to use. Empty uses the agent's own configuration. |
 | `UPGRADER_REPAIR_AGENT` | `repair` | the agent name in the generated config. |
 | `UPGRADER_REPAIR_BINARY` | `opencode` | the agent binary, for an installation that names it differently. |
@@ -54,6 +54,16 @@ A setting that is not present is a setting the caller did not make.
 Repair is off by default because it is the only setting here that spends money. Turning it on
 also needs an authenticated model in the agent's own configuration; the deployment's home volume
 is the place for that credential, never the image.
+
+**An attempt that concludes with no file changed ends the loop, and that bound is a measurement.**
+Over 137 recorded attempts, 40 edited no file and consumed a third of all the tokens spent —
+the costliest took 11.5M tokens and 185 tool calls to change nothing. The suite still runs, because
+the record and the caller both read it; what stops is the next *model* call, which would be briefed
+with the same failure against the same tree. A **cut-off** attempt (a timeout or a provider limit)
+is not this case: it never reached a conclusion, so the suite measures whatever it left and the next
+attempt is a genuine new reading even when the tree is unchanged. Attempts that *did* write
+something keep their retry, because the next attempt then faces a new failure rather than the same
+one.
 
 `UPGRADER_REPAIR_MODEL` is the deployment's fallback, not the only answer: a project the service
 feeds carries a `repair` object, and its `model` replaces this variable for that walk. A row with

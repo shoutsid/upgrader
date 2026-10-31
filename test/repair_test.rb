@@ -305,7 +305,10 @@ class RepairTest < Minitest::Test
   # Two attempts, the second one green: the *second* prompt is written from the suite's new
   # failure rather than from the first one, because that is the evidence the model has.
   def test_the_second_attempt_is_briefed_with_the_new_failure
-    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "attempt done\n"] }
+    agent = FakeAgent.new do |_argv, chdir, n|
+      File.write(File.join(chdir, "attempt-#{n}.rb"), "x\n")
+      [0, "attempt done\n"]
+    end
     suites = [FakeSuite.new(ok: false, output: "second failure: NameError"),
               FakeSuite.new(ok: true)]
 
@@ -329,6 +332,40 @@ class RepairTest < Minitest::Test
     assert_equal 2, result.attempts.length
     assert_equal 2, agent.calls.length
     assert_includes result.to_s, "2 attempt(s), not repaired"
+  end
+
+  # **An attempt that concluded with no change ends the loop rather than buying the same walk.**
+  # Measured over 137 recorded attempts: 40 of them edited no file and consumed a third of all
+  # tokens, one of them 11.5M over 185 tool calls. A bare "done, nothing to change" is not
+  # evidence about the application, and the next attempt faces an identical tree and failure.
+  def test_an_attempt_that_changed_no_file_stops_the_loop
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "I looked and nothing needs changing.\n"] }
+    out = StringIO.new
+
+    result = repair(agent: agent, suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)],
+      attempts: 3, out: out).run
+
+    refute result.repaired
+    assert_equal 1, result.attempts.length, "a no-edit attempt bought a second identical walk"
+    assert_equal 1, agent.calls.length
+    assert_includes out.string, "the next attempt would be the same walk"
+  end
+
+  # **A cut-off attempt is not a no-edit attempt.** It never reached a conclusion, so the suite
+  # still measures whatever it left behind, and the next attempt is a genuine new reading even
+  # when the tree is unchanged. Removing that distinction would end the loop on the very
+  # timeouts the budget exists for.
+  def test_a_timed_out_attempt_with_no_edits_still_gets_the_next_attempt
+    agent = FakeAgent.new do |_argv, _chdir, _n|
+      [nil, "halfway through the failure\nthe repair agent was killed after 900s", :timed_out]
+    end
+
+    result = repair(agent: agent,
+      suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)], attempts: 3).run
+
+    assert result.repaired
+    assert_equal 2, result.attempts.length, "a timeout was treated as a concluded no-edit attempt"
+    assert_equal 2, agent.calls.length
   end
 
   # An agent that cannot be started is not a model failure and must not be retried against a
