@@ -334,21 +334,50 @@ class RepairTest < Minitest::Test
     assert_includes result.to_s, "2 attempt(s), not repaired"
   end
 
-  # **An attempt that concluded with no change ends the loop rather than buying the same walk.**
-  # Measured over 137 recorded attempts: 40 of them edited no file and consumed a third of all
-  # tokens, one of them 11.5M over 185 tool calls. A bare "done, nothing to change" is not
-  # evidence about the application, and the next attempt faces an identical tree and failure.
-  def test_an_attempt_that_changed_no_file_stops_the_loop
-    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "I looked and nothing needs changing.\n"] }
+  # **A no-edit attempt that burned a full walk's budget is a loop, not a quick look.** Over 137
+  # recorded attempts, 40 edited no file and consumed a third of all tokens; the costliest took
+  # 11.5M tokens over 185 tool calls to change nothing. Asking the same model the same question of
+  # the same tree buys that walk again, so the loop stops once the suite has measured it.
+  def test_a_no_edit_attempt_that_spent_a_full_walk_stops_the_loop
+    events = JSON.generate(
+      { "type" => "step_finish", "sessionID" => "ses_loop",
+        "part" => { "type" => "step-finish", "reason" => "stop",
+                    "tokens" => { "total" => 3_300_000 }, "cost" => 0.01 } }
+    )
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "#{events}\n", "", :ran] }
     out = StringIO.new
 
     result = repair(agent: agent, suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)],
       attempts: 3, out: out).run
 
     refute result.repaired
-    assert_equal 1, result.attempts.length, "a no-edit attempt bought a second identical walk"
+    assert_equal 1, result.attempts.length, "a no-edit loop bought a second identical walk"
+    assert_equal 3_300_000, result.attempts.first.tokens
     assert_equal 1, agent.calls.length
     assert_includes out.string, "the next attempt would be the same walk"
+  end
+
+  # **A cheap no-edit attempt is a re-roll, and the re-roll is worth it.** Same model, same brief,
+  # same tree, and the next attempt sometimes edits: pong's 5.2.8.1 rung passed on attempt three
+  # after a 0.29M-token first attempt that changed nothing. Stopping on a budged-but-cheap no-edit
+  # attempt would have cost that pass, so only a multi-million-token walk ends the loop.
+  def test_a_cheap_no_edit_attempt_still_gets_the_next_attempt
+    agent = FakeAgent.new do |_argv, chdir, n|
+      if n == 1
+        [0, "I looked and nothing needs changing.\n"]
+      else
+        File.write(File.join(chdir, "fixed.rb"), "x\n")
+        [0, "fixed it\n"]
+      end
+    end
+
+    result = repair(agent: agent,
+      suites: [FakeSuite.new(ok: false), FakeSuite.new(ok: true)], attempts: 3).run
+
+    assert result.repaired, result.to_s
+    assert_equal 2, result.attempts.length, "a cheap no-edit re-roll was read as a loop"
+    assert_equal 0, result.attempts.first.tokens
+    assert_equal 2, agent.calls.length
   end
 
   # **A cut-off attempt is not a no-edit attempt.** It never reached a conclusion, so the suite

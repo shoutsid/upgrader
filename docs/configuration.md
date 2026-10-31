@@ -43,7 +43,7 @@ A setting that is not present is a setting the caller did not make.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `UPGRADER_REPAIR_ATTEMPTS` | `0` (off) | attempts a repair agent gets when a suite is red — the baseline before the move, or the suite after it. Two is the measured default the deployment runs: a second attempt still converts about a third of the runs that reach it into a pass, and no run has ever passed on a fourth. |
+| `UPGRADER_REPAIR_ATTEMPTS` | `0` (off) | attempts a repair agent gets when a suite is red — the baseline before the move, or the suite after it. The deployment runs three, and that number is measured: over 137 attempts the passes landed 18/13/4 on attempts one, two and three, and no run has ever passed on a fourth. |
 | `UPGRADER_REPAIR_TIMEOUT` | `900` | seconds one repair attempt may run. A timeout is a kill, not a wait. |
 | `UPGRADER_REPAIR_MODEL` | empty | the model the agent is asked to use. Empty uses the agent's own configuration. |
 | `UPGRADER_REPAIR_AGENT` | `repair` | the agent name in the generated config. |
@@ -55,15 +55,21 @@ Repair is off by default because it is the only setting here that spends money. 
 also needs an authenticated model in the agent's own configuration; the deployment's home volume
 is the place for that credential, never the image.
 
-**An attempt that concludes with no file changed ends the loop, and that bound is a measurement.**
-Over 137 recorded attempts, 40 edited no file and consumed a third of all the tokens spent —
-the costliest took 11.5M tokens and 185 tool calls to change nothing. The suite still runs, because
-the record and the caller both read it; what stops is the next *model* call, which would be briefed
-with the same failure against the same tree. A **cut-off** attempt (a timeout or a provider limit)
-is not this case: it never reached a conclusion, so the suite measures whatever it left and the next
-attempt is a genuine new reading even when the tree is unchanged. Attempts that *did* write
-something keep their retry, because the next attempt then faces a new failure rather than the same
-one.
+**A no-edit attempt that spent a full walk ends the loop, and that bound is a measurement.**
+Over 137 recorded attempts, 40 edited no file and consumed a third of all the tokens spent — the
+costliest took 11.5M tokens and 185 tool calls to change nothing. What separates a *loop* from a
+*re-roll* is the budget: a cheap no-edit attempt is worth repeating, because the same brief
+sometimes draws an edit on the next try (pong's 5.2.8.1 rung passed on attempt three after a
+0.29M-token no-edit first attempt, so stopping on every no-edit attempt would have lost that pass),
+while a multi-million-token no-edit attempt is the model walking the whole tree and the next attempt
+repeats that walk. The floor is 2M tokens — between the cheapest recorded *loop* (3.3M) and the
+most expensive *re-roll* (0.7M) — and an attempt whose stream carries no token count fails open:
+an unparsable attempt is never read as a loop. The suite still runs, because the record and the
+caller both read it; what stops is the next *model* call, which would be briefed with the same
+failure against the same tree. A **cut-off** attempt (a timeout or a provider limit) is not this
+case: it never reached a conclusion, so the suite measures whatever it left and the next attempt is
+a genuine new reading even when the tree is unchanged. Attempts that *did* write something keep
+their retry, because the next attempt then faces a new failure rather than the same one.
 
 `UPGRADER_REPAIR_MODEL` is the deployment's fallback, not the only answer: a project the service
 feeds carries a `repair` object, and its `model` replaces this variable for that walk. A row with

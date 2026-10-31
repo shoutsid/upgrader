@@ -86,15 +86,18 @@ module Agents
         def ok? = ran && !timed_out && !exit_code.nil? && exit_code.zero?
         def limited? = limited == true
 
-        # **An attempt that concluded with no change is not evidence about the application.**
-        # The model read the tree, said it was done and edited nothing: the next attempt faces
-        # exactly the same failure, so asking again mostly repeats the walk. Measured over 137
-        # recorded attempts: a third of the tokens (38.7M) went to zero-edit attempts, and the
-        # costliest of them (11.5M over 185 tool calls) changed not one file. A reached a real
-        # state only when the model *wrote* something — the suite then measures a new tree — or
-        # when it was cut off before it could conclude (a timeout or a provider limit), which is
-        # unknown rather than empty. `changed` is the tree's own answer, not the model's word.
-        def barren? = ok? && Array(changed).empty?
+        # **A no-edit attempt that read its way through a large budget is a loop, not a quick
+        # look.** A short no-edit attempt is a re-roll: the model read a few files, concluded
+        # "nothing to change", and the next attempt — same model, same brief — sometimes does
+        # edit, which is a cheap way to buy a pass. Measured on pong's 5.2.8.1 rung, a 0.29M-token
+        # no-edit first attempt was followed by two editing attempts and a pass; stopping on it
+        # would have cost that pass. The expensive shape is different: a 3.3M-token, 137-tool-call
+        # attempt that changed nothing is the model walking the whole tree, and the next attempt
+        # repeats it. The floor is the boundary the recorded attempts show — the cheapest *loop*
+        # 3.3M, the most expensive *re-roll* 0.7M — and a stream with no token count fails open
+        # (continues), so an unparsable attempt is never read as a loop.
+        REPEAT_FLOOR = 2_000_000
+        def looped? = ok? && Array(changed).empty? && tokens.to_i >= REPEAT_FLOOR
 
         # The line the record and the operator both read. It names the stream and the opencode
         # session, because those are the two facts that turn "the model failed" into something
@@ -450,17 +453,22 @@ module Agents
             repaired = true
             break
           end
-          # **A concluded attempt that changed nothing buys no second attempt.** The suite has
-          # already measured the tree; it is red, and the next attempt would be briefed with the
-          # same failure against the same tree — a repetition whose only cost is tokens.
-          # Measured over 137 recorded attempts, 40 edited no file and took a third of all
-          # tokens, one of them 11.5M over 185 tool calls. The suite still runs, because the
-          # record and the caller both read it; what stops is the next *model* call. A *cut off*
-          # attempt is not this case — it never reached a conclusion, so the next attempt is a
-          # genuine new reading even when the tree is unchanged.
-          if attempt.barren?
-            @out.puts("  repair: attempt #{attempt.number} changed no file, so the next " \
-                      "attempt would be the same walk — stopping") if @out
+          # **A no-edit attempt that spent a full walk's budget buys no second attempt.** The
+          # suite has already measured the tree; it is red, and the next attempt would be briefed
+          # with the same failure against the same tree. What makes that a *loop* rather than a
+          # quick re-roll is the budget it burned: a cheap no-edit attempt is worth repeating,
+          # because the same brief sometimes draws an edit on the next try (pong's 5.2.8.1 rung
+          # passed on attempt three after a 0.29M-token no-edit first attempt), while a
+          # multi-million-token no-edit attempt is the model walking the whole tree, and the next
+          # attempt repeats that walk. Measured over 137 attempts: 40 changed no file and took a
+          # third of the tokens, the costliest 11.5M over 185 tool calls. The suite still runs for
+          # the record; what stops is the next *model* call. A *cut off* attempt is not this case —
+          # it never reached a conclusion, so the next attempt is a genuine new reading even when
+          # the tree is unchanged.
+          if attempt.looped?
+            @out.puts("  repair: attempt #{attempt.number} changed no file after " \
+                      "#{attempt.tokens} token(s), so the next attempt would be the same walk — " \
+                      "stopping") if @out
             break
           end
           @failure_log = log_path(suite.output_tail) || @failure_log

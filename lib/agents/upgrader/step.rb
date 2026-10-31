@@ -858,16 +858,6 @@ module Agents
             # the difference between a model that can repair a framework-broken test suite and
             # one that must leave it red; the service has already decided whose warrant it is.
             allow_test_edits: @project&.repair&.allow_test_edits == true,
-            # **A stage that never started is not a failure to repair.** A suite whose own bundle
-            # cannot load, whose database is missing or whose command does not exist is the
-            # environment rather than the application: the model can edit all it likes and the
-            # suite still will not run, so the loop is asked and does nothing. The caller reads two
-            # facts the subject alone does not state — `ran` (the command started) and
-            # `reached_examples` (the runner got as far as an example). Both false is
-            # "unmeasurable". Measured: brimir's 5.1 baseline died on `Could not find execjs-2.7.0`
-            # before one example, and its two attempts changed nothing.
-            unmeasurable: !subject.ran ||
-              (subject.respond_to?(:reached_examples) && subject.reached_examples == false),
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
