@@ -620,6 +620,36 @@ class PreflightTest < Minitest::Test
     refute_includes read(dir, "Gemfile"), "2.0.3"
   end
 
+  # **The database adapter's own `gem` call is the ceiling on which rung may take sqlite3 1.4.**
+  # Rails 5.0 and 5.1 declare `gem 'sqlite3', '~> 1.3.6'` — strictly below 1.4 — while 5.2 declares
+  # `~> 1.3, >= 1.3.6`. A rewrite applied in the preflight therefore turns a working 5.1 baseline
+  # red: measured on brimir, whose 5.1.6 adapter refused 1.4.4 with `can't activate sqlite3
+  # (~> 1.3.6), already activated sqlite3-1.4.4`. The entry is rung-scoped, so a rung below 5.2 does
+  # not meet the clause and a 5.2 rung defers the line to after the pin.
+  def test_the_sqlite3_rewrite_waits_for_a_rung_whose_adapter_accepts_it
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "5.1.6"\ngem "sqlite3", "~> 1.3"\n)
+    corpus = FakeCorpus.new(entries: [entry(gem: "sqlite3", replacement: "sqlite3",
+      requirement: "~> 1.4.0",
+      condition: { "ruby_at_least" => "2.2", "ruby_below" => "3.2", "rails_at_least" => "5.2" })])
+
+    below = preflight(app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE), corpus: corpus,
+      ruby: "2.2", rails: "5.1.7")
+    assert_empty below.repairs, "the 5.1 rung took a line its adapter refuses: #{below.details.inspect}"
+    assert_empty below.deferred
+
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    held = preflight(dir, corpus: corpus, ruby: "2.2", rails: "5.2.8.1")
+    assert_empty held.repairs
+    assert_equal %w[sqlite3], held.deferred.map { |deferred| deferred["gem"] }
+    assert_includes read(dir, "Gemfile"), %(gem "sqlite3", "~> 1.3")
+
+    later = Preflight.new(root: dir, corpus: corpus, ruby: "2.2", rails: "5.2.8.1")
+      .declare_deferred(held.deferred)
+
+    assert_equal %w[sqlite3], later.repairs.map(&:subject)
+    assert_includes read(dir, "Gemfile"), %(gem "sqlite3", "~> 1.4.0")
+  end
+
   # **A rung-scoped rewrite of a bare line gains its requirement after the pin.** Measured on pong's
   # 6.1.7.10 -> 7.0.10 pin: Rails 7.0 requires Spring 3.0.0 or newer, the application declares a bare
   # `gem 'spring'` beside `spring-watcher-listen '~> 2.0.0'` (whose releases cap spring below 3.0),
