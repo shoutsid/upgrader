@@ -425,6 +425,21 @@ module Agents
         # made it green; then the move", in that order.
         @baseline = attempt_baseline_repair(stages, step) || @baseline
 
+        # **A baseline that is still red ends the cycle here.** Everything below — the scan, the
+        # mechanical rules, the gem moves, the pin, `app:update`, the boot and the suite — measures
+        # *the move*, and the move cannot be attributed when the tree was already red before it.
+        # `Record.verdict` would reach the same `unverified` at the end; stopping now only avoids
+        # spending the stages on a verdict the re-run already decided. Measured: 19wu's 4.1.16
+        # baseline was green, then 16 suite failures after the move, and the required `pin` had run
+        # first — that is the case the early stop must not change. The early stop fires only when
+        # the baseline is red *after its repair* and there is no subject suite yet, which is the
+        # `suite.nil?` branch `Record.verdict` reads as the same sentence.
+        if baseline_red_after_repair?
+          verdict, why = Record.verdict(baseline: @baseline, suite: nil, stages: stages,
+            checks: [])
+          return finish(build(step, stages, verdict, why))
+        end
+
         applied, refused, decisions = apply(stages, step)
         checkpoint("apply mechanical rules")
         @applied.concat(applied)
@@ -754,6 +769,12 @@ module Agents
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
       end
 
+      # **The baseline's verdict, after its repair, as one question both pipelines ask.** Red or
+      # never-started, the move cannot be attributed and every stage after this measures a tree
+      # Rails never ran a green suite on. `nil` (no suite found at all) is not this case: that is
+      # a fact about the application the record states rather than a cycle to cut short.
+      def baseline_red_after_repair? = !@baseline.nil? && !@baseline.ok?
+
       # **Both pipelines repair a red baseline through this one method.** A rung reaches it after
       # its preflight and before its plan's edits; a patch checkpoint reaches it after its
       # preflight and before its pin. The budget, the warrant, the brief, the re-run and the
@@ -837,6 +858,16 @@ module Agents
             # the difference between a model that can repair a framework-broken test suite and
             # one that must leave it red; the service has already decided whose warrant it is.
             allow_test_edits: @project&.repair&.allow_test_edits == true,
+            # **A stage that never started is not a failure to repair.** A suite whose own bundle
+            # cannot load, whose database is missing or whose command does not exist is the
+            # environment rather than the application: the model can edit all it likes and the
+            # suite still will not run, so the loop is asked and does nothing. The caller reads two
+            # facts the subject alone does not state — `ran` (the command started) and
+            # `reached_examples` (the runner got as far as an example). Both false is
+            # "unmeasurable". Measured: brimir's 5.1 baseline died on `Could not find execjs-2.7.0`
+            # before one example, and its two attempts changed nothing.
+            unmeasurable: !subject.ran ||
+              (subject.respond_to?(:reached_examples) && subject.reached_examples == false),
             output_tail: subject.output_tail
           },
           budget: budget, env: @env, out: @out, rerun: rerun, before_the_move: before_the_move,
@@ -1121,6 +1152,16 @@ module Agents
         # made. The bounded attempt, the green re-run and the patch that carries it are identical
         # to a rung's; the difference is only that this pipeline has no plan behind it.
         @baseline = attempt_baseline_repair(stages, step) || @baseline
+
+        # **The same early stop as a rung's.** A patch checkpoint is maintenance, and a red
+        # baseline makes even the pin unmeasurable: the suite after it cannot be attributed to
+        # the patch. Stopping here is the difference between one cycle and two on an application
+        # whose bundle does not load at all.
+        if baseline_red_after_repair?
+          verdict, why = Record.verdict(baseline: @baseline, suite: nil, stages: stages,
+            checks: [])
+          return finish(build(step, stages, verdict, why))
+        end
 
         pin = rewrite(stages, step)
         return finish(pin) if pin.is_a?(Record)

@@ -264,6 +264,19 @@ module Agents
           end
         end
 
+        # **A baseline that could not be made green ends the step where it stands.** Nothing after
+        # it can be attributed to the move, so the step stops before the move's edits rather than
+        # spending a pin, an `app:update`, a boot and a suite on a verdict that was decided the
+        # moment the re-run said "still red". `suite.nil?` is the tell: a subject suite that ran
+        # reaches the branches below, and a red baseline with no subject is the early stop. The
+        # message is the same one the full run would have produced, so the record reads the same
+        # either way; what changes is that the cycle is not spent.
+        if baseline && !baseline.ok? && suite.nil?
+          return [UNVERIFIED, "the suite was not green before this step " \
+                              "(#{baseline.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
+                              "so the move was not made#{database_note(stages)}"]
+        end
+
         if suite.nil?
           return [UNVERIFIED, "no test suite was found in this application, so this step is " \
                               "unverified rather than passed: the ladder's changes were applied " \

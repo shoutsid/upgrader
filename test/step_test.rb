@@ -1520,6 +1520,39 @@ class StepTest < Minitest::Test
     refute_includes record.why, "repair"
   end
 
+  # **A baseline still red after its repair ends the cycle where it stands.** Nothing after it can
+  # be attributed to the move, so the step must not spend the scan, the pin, `app:update`, the boot
+  # and the suite on a verdict the re-run already decided. Measured on pong: a red 5.2.3 baseline
+  # was repaired, but a *patch* rung whose baseline cannot be made green (an application whose own
+  # bundle will not load) was still paying for the whole move under the old order.
+  def test_a_baseline_still_red_after_its_repair_does_not_run_the_move
+    dir = track(app)
+    record = step(dir, tests: SequencedTests.new(results: [red]), repair: FakeRepair,
+      env: {}).run
+
+    assert_equal "unverified", record.verdict
+    assert_includes record.why, "the move was not made"
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "baseline"
+    assert_empty stages & %w[apply pin rails:update boot suite],
+      "a red baseline ran the move's stages anyway: #{stages.inspect}"
+  end
+
+  # And the same on a patch checkpoint, which has no plan behind it: a red baseline makes even the
+  # pin unmeasurable, so the maintenance pipeline stops before it too.
+  def test_a_patch_checkpoint_with_a_baseline_still_red_stops_before_the_pin
+    dir = track(app)
+    record = step(dir, to: "4.2.12", tests: SequencedTests.new(results: [red]), repair: FakeRepair,
+      env: {}).run
+
+    assert_equal "unverified", record.verdict
+    assert_includes record.why, "the move was not made"
+    stages = record.stages.map(&:stage)
+    assert_includes stages, "baseline"
+    assert_empty stages & %w[pin boot suite],
+      "a patch checkpoint with a red baseline pinned and measured anyway: #{stages.inspect}"
+  end
+
   # The brief is the step's own record, which is what makes the attempt a repair of *this*
   # failure rather than a guess: the evidence handed over names the move, the suite command
   # and the output it failed with.
