@@ -145,11 +145,11 @@ module Agents
 
           pairs = []
           body.each_line do |line|
-            match = /depends on\s+([\w.\-]+)\s+(.+?)\s*,?\s*\z/.match(line)
+            match = /depends on\s+([\w.-]+)\s+(.+?)\s*,?\s*\z/.match(line)
             next if match.nil?
 
             subject = line.sub(/^.*?\b(?:Because|because|and)\s+/, "").split(" depends on").first.to_s.strip
-            requirement = match[2].strip.sub(/,\z/, "").strip
+            requirement = match[2].strip.delete_suffix(',').strip
             requirement = requirement.delete_prefix("(").delete_suffix(")").strip
             next if requirement.empty?
 
