@@ -620,6 +620,36 @@ class PreflightTest < Minitest::Test
     refute_includes read(dir, "Gemfile"), "2.0.3"
   end
 
+  # **A rung-scoped rewrite of a bare line gains its requirement after the pin.** Measured on pong's
+  # 6.1.7.10 -> 7.0.10 pin: Rails 7.0 requires Spring 3.0.0 or newer, the application declares a bare
+  # `gem 'spring'` beside `spring-watcher-listen '~> 2.0.0'` (whose releases cap spring below 3.0),
+  # and the resolver had no pair. Both lines are the application's own and both move together after
+  # the pin, because the requirement is a fact about the release the Gemfile names next, not the one
+  # it still names.
+  def test_a_bare_line_scoped_to_the_rung_gains_its_requirement_after_the_pin
+    gemfile = %(source "https://rubygems.org"\ngem "rails", "6.1.7.10"\n) +
+      %(gem 'spring'\ngem 'spring-watcher-listen', '~> 2.0.0'\n)
+    corpus = FakeCorpus.new(entries: [
+      entry(gem: "spring", replacement: "spring", requirement: "~> 4.0",
+        condition: { "rails_at_least" => "7.0" }),
+      entry(gem: "spring-watcher-listen", replacement: "spring-watcher-listen",
+        requirement: "~> 2.1", condition: { "rails_at_least" => "7.0" })
+    ])
+
+    dir = app(gemfile: gemfile, lockfile: PLAIN_LOCKFILE)
+    result = preflight(dir, corpus: corpus, ruby: "2.7", rails: "7.0.10")
+
+    assert_empty result.repairs, "the preflight moved a line before the pin: #{result.details.inspect}"
+    assert_includes read(dir, "Gemfile"), "gem 'spring'\n"
+    assert_equal %w[spring spring-watcher-listen], result.deferred.map { |deferred| deferred["gem"] }
+
+    Preflight.new(root: dir, corpus: corpus, ruby: "2.7", rails: "7.0.10")
+      .declare_deferred(result.deferred)
+
+    assert_includes read(dir, "Gemfile"), %(gem "spring", "~> 4.0")
+    assert_includes read(dir, "Gemfile"), %(gem "spring-watcher-listen", "~> 2.1")
+  end
+
   # **A declaration is only written where the application already holds the gem.** Measured at the
   # 7.1.6 rung: moving the `database_cleaner` meta-gem to 2.1 keeps `database_cleaner-active_record`
   # 2.0.1 locked, because 2.1.0 asks `>= 2, < 3` — and 2.0.1 calls `SchemaMigration.table_name`,
