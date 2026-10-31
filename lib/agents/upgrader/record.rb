@@ -268,9 +268,9 @@ module Agents
         # it can be attributed to the move, so the step stops before the move's edits rather than
         # spending a pin, an `app:update`, a boot and a suite on a verdict that was decided the
         # moment the re-run said "still red". `suite.nil?` is the tell: a subject suite that ran
-        # reaches the branches below, and a red baseline with no subject is the early stop. The
-        # message is the same one the full run would have produced, so the record reads the same
-        # either way; what changes is that the cycle is not spent.
+        # reaches the branches below, and a *red* baseline with no subject is the early stop. This
+        # is why the later baseline branch speaks of a *missing* baseline rather than a red one —
+        # both pipelines stop here first, so a red baseline never reaches it.
         if baseline && !baseline.ok? && suite.nil?
           return [UNVERIFIED, "the suite was not green before this step " \
                               "(#{baseline.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
