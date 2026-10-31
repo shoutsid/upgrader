@@ -8,6 +8,11 @@ versioning for its command-line surface and record format.
 
 ### Changed
 
+- **The auxiliary model is pinned to the attempt's model.** opencode generates a session title
+  before the repair call, and left unset it used its own small model — measured in the live walk
+  as `providerID=nano-gpt modelID=google/gemini-3.8-flash small=true agent=title` while the chain
+  named deepseek. The account released a provider fragment for one chain; the generated config
+  now sets `small_model` to the attempt's model so no call runs outside the lease.
 - The project is **Agents**. The client is `agents-upgrader`, the namespace is
   `Agents::Upgrader`, the environment variables use the `AGENTS_` prefix, the state directory is
   `~/.cache/agents-upgrader`, and the image tags use `agents-upgrader`. The old names are not read

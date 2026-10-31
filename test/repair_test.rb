@@ -707,6 +707,22 @@ class RepairTest < Minitest::Test
     assert document.fetch("agent").key?("repair"), "the agent is not declared in the config"
   end
 
+  # **The auxiliary call is pinned to the attempt's model.** opencode generates a session title
+  # with its own small model before the repair call, and on the live walk that was
+  # `google/gemini-3.8-flash` under the account's provider while the chain named deepseek. The
+  # spend record could not show it: it records the model the attempt asked for. A document that
+  # names only `model` leaves that second call to opencode's default.
+  def test_the_document_pins_the_small_model_to_the_attempt_s_model
+    agent = FakeAgent.new { |_argv, _chdir, _n| [0, "done\n"] }
+
+    repair(agent: agent, suites: [FakeSuite.new(ok: true)],
+      config_dir: File.join(temp_home, "repair")).run
+
+    document = JSON.parse(File.read(agent.calls.first[:env].fetch("OPENCODE_CONFIG")))
+    assert_equal "opencode-go/deepseek-v4.1-flash", document["model"]
+    assert_equal document["model"], document["small_model"]
+  end
+
   # **The account's fragment is a provider, not a copied secret.** The config names the
   # environment variable; only the agent process receives the value. The limit record is keyed by
   # the credential, so one account's spent tier cannot suppress another's model.

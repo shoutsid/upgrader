@@ -249,12 +249,21 @@ module Agents
       # The project config one attempt runs under: the agent, and nothing it may do beyond
       # reading and editing this tree. `tools` is deny-first, because a capability opencode
       # adds tomorrow must not arrive enabled.
+      #
+      # **`small_model` is the same model, because opencode's title call was not.** Measured
+      # in the live walk: every session logged `providerID=nano-gpt
+      # modelID=google/gemini-3.8-flash small=true agent=title` — a session title generated on
+      # the account's key by opencode's own default, before the repair call the chain named. The
+      # account released a provider fragment for one chain; a call outside it is spend the
+      # record never showed and a model the account did not pick. The main model is pinned per
+      # attempt (`config_path(model)` rewrites this file), so the small one follows it.
       def self.document(model:, agent: AGENT, credentials: nil)
         document = {
           "$schema" => "https://opencode.ai/config.json",
           "autoupdate" => false,
           "snapshot" => false,
           "model" => model.to_s.empty? ? nil : model,
+          "small_model" => model.to_s.empty? ? nil : model,
           "agent" => {
             agent => {
               "mode" => "primary",
