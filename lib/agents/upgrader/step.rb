@@ -423,15 +423,7 @@ module Agents
         # repair is bounded exactly as the post-move one is, the re-run baseline is what makes
         # it green, and the patch carries it — so a reviewer reads "the suite was red; this
         # made it green; then the move", in that order.
-        if @baseline && !@baseline.ok?
-          repaired = repair(stages, step, subject: @baseline, before_the_move: true,
-            rerun: -> {
-              install_after_repair(stages)
-              @baseline = run_suite(stages, Record::BASELINE)
-            })
-          @baseline = repaired || @baseline
-          checkpoint("repair the baseline") if repaired
-        end
+        @baseline = attempt_baseline_repair(stages, step) || @baseline
 
         applied, refused, decisions = apply(stages, step)
         checkpoint("apply mechanical rules")
@@ -760,6 +752,24 @@ module Agents
         Record.refused(repository: @repository, commit: record_commit, worktree: @worktree.root,
           from_version: @from, to_version: rung_to,
           why: "#{e.message} (a step needs the ladder, so nothing was attempted)")
+      end
+
+      # **Both pipelines repair a red baseline through this one method.** A rung reaches it after
+      # its preflight and before its plan's edits; a patch checkpoint reaches it after its
+      # preflight and before its pin. The budget, the warrant, the brief, the re-run and the
+      # checkpoint are the same in both — the only difference is what runs after, and that is the
+      # caller's. Returns the repaired baseline (the re-run's reading, green or not), or nil when
+      # there was nothing to repair, so the caller keeps the reading it already had.
+      def attempt_baseline_repair(stages, step)
+        return nil unless @baseline && !@baseline.ok?
+
+        repaired = repair(stages, step, subject: @baseline, before_the_move: true,
+          rerun: -> {
+            install_after_repair(stages)
+            @baseline = run_suite(stages, Record::BASELINE)
+          })
+        checkpoint("repair the baseline") if repaired
+        repaired
       end
 
       # The agentic half: a green-baseline/red-suite step gets a bounded number of attempts by
@@ -1101,15 +1111,47 @@ module Agents
         # was already red" are one sentence without it, and the second is not a fact about Rails.
         @baseline = baseline(stages)
 
+        # **The repair lane is the same lane a rung has, and its absence here was the bug.** A
+        # patch checkpoint is maintenance, so it writes nothing *for the release* — but a red
+        # baseline is the application's own suite being red, and the agent that repairs that is
+        # measuring the application, not making a change nobody documented. Without this, every
+        # patch checkpoint whose application suite was already red (pong 5.2.3, limestone 6.1.3.1,
+        # rails-devise-graphql 6.0.3.3) skipped the agent entirely: the baseline was red, the run
+        # was `unverified`, and the ledger settled it after three attempts with no model call ever
+        # made. The bounded attempt, the green re-run and the patch that carries it are identical
+        # to a rung's; the difference is only that this pipeline has no plan behind it.
+        @baseline = attempt_baseline_repair(stages, step) || @baseline
+
         pin = rewrite(stages, step)
         return finish(pin) if pin.is_a?(Record)
         checkpoint("pin Rails #{@to}")
 
         @boot = boot(stages)
         stale_lock(stages)
+        # A boot failure is attributable in exactly the way a red suite is, and it reaches the
+        # agent before the suite does — a suite behind a boot nobody measured is a suite about the
+        # boot. The attempt and the re-boot are the rung's, with the same stale-lock re-read after
+        # a repair that changed the Gemfile.
+        if @boot && !@boot.ok?
+          repair(stages, step, subject: @boot,
+            rerun: -> {
+              install_after_repair(stages)
+              @boot = boot(stages)
+            })
+          stale_lock(stages)
+        end
         missing_gems(stages)
         @suite = suite(stages)
         mechanical_repairs(stages)
+        # The agentic half, gated on the boot exactly as a rung's is: a red suite behind a red boot
+        # belongs to the boot, and the boot's own attempt already had its chance.
+        if @boot.nil? || @boot.ok?
+          repair(stages, step, subject: @suite,
+            rerun: -> {
+              install_after_repair(stages)
+              @suite = run_suite(stages, Record::SUITE)
+            })
+        end
         @checks = Array(@prepare_checks) + checks_stage(stages)
         checkpoint(nil)
 

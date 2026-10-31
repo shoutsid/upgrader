@@ -1949,6 +1949,38 @@ class StepTest < Minitest::Test
     assert_empty (corpus.upgrade_calls || []), "a patch run asked the ladder for a plan"
   end
 
+  # **A red baseline on a patch checkpoint reaches the repair lane, and its absence was the bug.**
+  # The patch pipeline is maintenance — it writes nothing for the release — but a red baseline is
+  # the *application's* suite being red, and the bounded agent that repairs that is measuring the
+  # application, not changing it for a release. Measured on pong 5.2.3, limestone 6.1.3.1 and
+  # rails-devise-graphql 6.0.3.3: every one was already red before any move, every one was settled
+  # `unverified` after three attempts, and none ever made a model call. The re-run's green baseline
+  # is what makes the patch measurable, exactly as it is on a rung.
+  def test_a_red_baseline_on_a_patch_checkpoint_reaches_the_repair_loop
+    dir = track(app)
+    record = step(dir, to: "4.2.12",
+      tests: SequencedTests.new(results: [red, green, green]),
+      repair: FakeRepair, env: { "UPGRADER_REPAIR_ATTEMPTS" => "1" }).run
+
+    assert_equal "passed", record.verdict, record.why
+    assert_equal "4.2.12", record.to_version
+    assert_includes record.stages.map(&:stage), "repair",
+      "a patch checkpoint with a red baseline never reached the repair loop"
+    assert_empty record.stages.map(&:stage) & %w[apply decisions rails:update defaults style],
+      "the repair must not pull a rung's stages into the patch pipeline"
+  end
+
+  # And with no budget the patch checkpoint is `unverified` and spends nothing, the same honest
+  # verdict a rung gets: a red baseline the deployment has not permitted a model to repair.
+  def test_a_red_baseline_on_a_patch_checkpoint_with_no_budget_is_unverified
+    dir = track(app)
+    record = step(dir, to: "4.2.12", tests: SequencedTests.new(results: [red, red]),
+      repair: FakeRepair, env: {}).run
+
+    assert_equal "unverified", record.verdict
+    refute_includes record.stages.map(&:stage), "repair"
+  end
+
   # **A patch checkpoint cannot measure a Gemfile it cannot install, and the protocol is the
   # application's fact rather than the rung's.** The preflight's repairs run in both pipelines for
   # the reason the rung's own test states: the machine choice *is* a `bundle install`, so a dead
