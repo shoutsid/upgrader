@@ -4876,6 +4876,12 @@ module Agents
         end
         @out.puts("  recorded: run #{run && run["id"]} (#{record.verdict})") if @out
 
+        # **The boot stage is the corpus's own examination.** The walker booted the application in
+        # its era image, which is the environment a `boot` cell is about; the cell is pushed so a
+        # caller asking "does this move boot" is answered from an execution. Best-effort: a cell
+        # that cannot be written must not cost the run, which is the evidence.
+        post_examination(client, record)
+
         # **A stop becomes a question the corpus keeps.** Only a step that neither passed nor
         # was refused has work a person or an agent can answer; a refusal is settled, and a
         # passed run is evidence. Posting is best-effort for the same reason filing is: the
@@ -5011,6 +5017,20 @@ module Agents
         @out&.puts("  the run was not recorded yet (#{e.message}) — retrying")
         @pause.call(RECORD_BACKOFF_SECONDS * (2**(attempt - 1)))
         record_with_retry(client, record, attempt: attempt + 1)
+      end
+
+      # **The boot stage as an examination cell, pushed after the run.** The walker's era-image boot
+      # is the environment a `boot` cell is about, and the cell is what lets `check_compatibility`
+      # answer "does this move boot" from an execution. Best-effort: a cell that cannot be written
+      # must not cost the run, which is the evidence, and the run body already carries the same
+      # stage for a reader.
+      def post_examination(client, record)
+        payload = Filing.examination_for(record: record)
+        return if payload.nil?
+
+        client.record_examinations([payload])
+      rescue Corpus::Unreachable, Corpus::Refused => e
+        @out&.puts("  the boot examination was not recorded: #{e.message}#{refusal_detail(e)}")
       end
 
       # **The fields a validation refusal names.** The sentence a 422 carries is generic
@@ -5178,7 +5198,11 @@ module Agents
             "note" => [refusal.note, note].compact.reject { |text| text.to_s.empty? }.uniq.join(" — "),
             "source" => refusal.source,
             "path" => refusal.path,
-            "line" => refusal.line
+            "line" => refusal.line,
+            # **The change the refusal is about, when the edit named one.** The service's observed
+            # aggregation and its opt-in refusal publication both join a refusal to a change by this
+            # key; a refusal without one stays on the run, where a person can read it.
+            "change_key" => refusal.change_key
           })
         end + record.decisions.map do |decision|
           clipped({

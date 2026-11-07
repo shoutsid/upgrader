@@ -62,7 +62,7 @@ module Agents
       # refusal that is not about a change at all (an unsafe path, a file that could not
       # be read), which is honest rather than empty.
       Refused = Struct.new(:path, :line, :text, :found, :reason, :subject,
-        :kind, :replacement, :source, :note, keyword_init: true)
+        :kind, :replacement, :source, :note, :change_key, keyword_init: true)
 
       # `files_written` is the number of files whose bytes changed, and it is the
       # number an operator wants first, because it is the one that can be wrong.
@@ -183,7 +183,14 @@ module Agents
         Refused.new(
           path: path, line: edit["line"], text: edit["text"], found: found, reason: reason,
           subject: edit["subject"], kind: edit["kind"], replacement: edit["replacement"],
-          source: edit["source"], note: edit["note"]
+          source: edit["source"], note: edit["note"],
+          # **The change the refusal is about, when the edit names one.** The service's observed
+          # aggregation and its opt-in refusal publication both join a refusal to a change by this
+          # key, and a scan edit carries it (`Upgrade::Scanner::Edit#to_h`). Dropping it here left
+          # every applier refusal unjoinable — the demand signal and the publication had nothing
+          # to read. Nil for a refusal that is not about a named change (an unsafe path, a file
+          # that could not be read), which is honest rather than empty.
+          change_key: edit["change_key"]
         )
       end
 

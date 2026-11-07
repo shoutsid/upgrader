@@ -565,7 +565,10 @@ module Agents
                                                "kind" => edit.kind,
                                                "replacement" => edit.replacement,
                                                "source" => edit.source,
-                                               "note" => edit.note } },
+                                               "note" => edit.note,
+                                               # The change the refusal is about, when the edit named
+                                               # one; a reader joins a refusal to a change by it.
+                                               "change_key" => edit.respond_to?(:change_key) ? edit.change_key : nil } },
           "decisions" => @decisions.map { |change|
                            { "path" => change.path, "line" => change.line,
                                                      "subject" => change.subject,
@@ -735,7 +738,7 @@ module Agents
           Applier::Refused.new(path: edit["path"], line: edit["line"], text: edit["text"],
             found: edit["found"], reason: edit["reason"], subject: edit["subject"],
             kind: edit["kind"], replacement: edit["replacement"], source: edit["source"],
-            note: edit["note"])
+            note: edit["note"], change_key: edit["change_key"])
         end
       end
 

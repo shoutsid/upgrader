@@ -969,7 +969,10 @@ module Agents
           line: nil, text: nil, found: nil, reason: reason,
           subject: (decision["question"] || decision["id"]).to_s,
           kind: effect&.kind, replacement: nil, source: "an accepted decision",
-          note: "answered by #{decision["accepted_by"]}"
+          note: "answered by #{decision["accepted_by"]}",
+          # **The change the decision is about.** The service's decisions carry their key, and the
+          # observed aggregation and opt-in refusal publication join a refusal to a change by it.
+          change_key: decision["change_key"]
         )
       end
     end

@@ -516,4 +516,53 @@ class FilingTest < Minitest::Test
     assert_equal "duplicate", result.action
     assert_includes result.reason, "already recorded"
   end
+
+  # --- the boot examination ----------------------------------------------------------------
+
+  # **The walker's own boot is the corpus's examination.** The era-image boot is the environment a
+  # `boot` cell is about, so a run that booted cleanly writes a `clean` cell, and a run that could
+  # not boot writes `findings` — the distinction an upgrade question needs.
+  def test_a_boot_stage_becomes_a_clean_examination_cell
+    record = record_for(verdict: Agents::Upgrader::Record::PASSED,
+      stages: [command(stage: Agents::Upgrader::Record::BOOT, command: "bin/rails runner 1")])
+
+    cell = Agents::Upgrader::Filing.examination_for(record: record)
+
+    assert_equal "ruby", cell.fetch("ecosystem")
+    assert_equal "platform", cell.fetch("subject_kind")
+    assert_equal "rails", cell.fetch("library")
+    assert_equal "boot", cell.fetch("check_kind")
+    assert_equal "clean", cell.fetch("outcome")
+    assert_equal "3.3.12", cell.fetch("environment").fetch("ruby")
+    assert_equal "rails 7.1.0", cell.fetch("framework")
+  end
+
+  def test_a_boot_that_failed_is_a_finding
+    record = record_for(verdict: Agents::Upgrader::Record::FAILED,
+      stages: [command(stage: Agents::Upgrader::Record::BOOT, command: "bin/rails runner 1",
+        exit_code: 1, output_tail: "Could not load database configuration")])
+
+    cell = Agents::Upgrader::Filing.examination_for(record: record)
+
+    assert_equal "findings", cell.fetch("outcome")
+    assert_includes cell.fetch("evidence").fetch("boot"), "Could not load database configuration"
+    assert_equal 1, cell.fetch("checks").first.fetch("exit_code")
+  end
+
+  # A boot stage that never ran is a fact about the machine, not a clean boot.
+  def test_a_boot_stage_that_never_ran_is_unexaminable
+    record = record_for(verdict: Agents::Upgrader::Record::REFUSED,
+      stages: [command(stage: Agents::Upgrader::Record::BOOT, command: "bin/rails runner 1",
+        ran: false, exit_code: nil)])
+
+    cell = Agents::Upgrader::Filing.examination_for(record: record)
+
+    assert_equal "unexaminable", cell.fetch("outcome")
+  end
+
+  def test_a_record_with_no_boot_stage_writes_no_cell
+    record = record_for(verdict: Agents::Upgrader::Record::REFUSED, stages: [])
+
+    assert_nil Agents::Upgrader::Filing.examination_for(record: record)
+  end
 end

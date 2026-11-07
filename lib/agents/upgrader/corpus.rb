@@ -246,6 +246,16 @@ module Agents
         call(:post, "/api/upgrades/runs", body: payload)
       end
 
+      # **What this run's boot established, as the corpus's own examination.** The walker boots the
+      # application in its era image, which is exactly the environment a boot cell is about; the
+      # service stores the cell so a caller asking "does this move boot" is answered from an
+      # execution rather than from a report. A no-op for a run with no boot stage.
+      def record_examinations(records)
+        return { "recorded" => 0 } if Array(records).empty?
+
+        call(:post, "/api/releases/examinations", body: { "examinations" => records })
+      end
+
       # The pull-request lead is requested after the deterministic body is delivered. The body is
       # the one large field; the service checks the digest before it queues any model work.
       def request_presentation(run_id, body:, title: nil, pull_request: nil, body_digest: nil)

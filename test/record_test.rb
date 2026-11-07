@@ -289,7 +289,8 @@ class RecordTest < Minitest::Test
       refused: [Agents::Upgrader::Applier::Refused.new(
         path: "app/models/item.rb", line: 3, text: "old", found: "new",
         reason: "the line moved", subject: "serialize", kind: "changed",
-        replacement: "new", source: "7.2", note: "why"
+        replacement: "new", source: "7.2", note: "why",
+        change_key: "ruby|activerecord|serialize"
       )],
       decisions: [Agents::Upgrader::Record::Decision.new(
         path: "app/models/item.rb", line: 4, subject: "button_to", reason: "needs a person"

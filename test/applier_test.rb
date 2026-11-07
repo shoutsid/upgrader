@@ -22,7 +22,9 @@ class ApplierTest < Minitest::Test
       "replacement" => "before_action",
       "source" => "5.0",
       "note" => "renamed in Rails 5.0",
-      "automatic" => automatic
+      "automatic" => automatic,
+      # The scan's own join, carried so a refusal can be joined to the change it is about.
+      "change_key" => "ruby|actionpack|before_filter"
     }
   end
 
@@ -86,6 +88,10 @@ class ApplierTest < Minitest::Test
       assert_equal "before_action", result.refused.first.replacement
       assert_equal "5.0", result.refused.first.source
       assert_equal "renamed in Rails 5.0", result.refused.first.note
+      # **The change the refusal is about travels with it.** The service's observed aggregation and
+      # its opt-in refusal publication join a refusal to a change by this key, so dropping it here
+      # left both with nothing to read.
+      assert_equal "ruby|actionpack|before_filter", result.refused.first.change_key
       assert_equal 0, result.files_written
       assert_bytes "class User\n  before_action :check # changed since the scan\nend\n",
         read(dir, "app/models/user.rb")

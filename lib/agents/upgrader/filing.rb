@@ -144,6 +144,51 @@ module Agents
         }
       end
 
+      # **The boot stage, as the corpus's own examination.** The walker boots the application in its
+      # era image, which is exactly the environment a `boot` cell is about — a framework move that
+      # can be installed and still not boot is the failure an upgrade asks about. The cell is
+      # written so a caller asking "does this move boot" is answered from an execution rather than
+      # from a report, and `check_compatibility` can prefer it over an inference.
+      #
+      # The outcome is four-valued like every examination: `clean` when the boot ran and exited 0,
+      # `findings` when it ran and failed, `unexaminable` when it never ran (a refused rung, an era
+      # image that could not start). `nil` when the record has no boot stage at all, which is a
+      # step that never reached the boot rather than a clean one.
+      def self.examination_for(record:)
+        stage = record&.stages&.find { |one| one.stage.to_s == Record::BOOT }
+        return nil if stage.nil?
+
+        outcome = if !stage.ran
+          "unexaminable"
+        elsif stage.ok?
+          "clean"
+        else
+          "findings"
+        end
+        ruby = record.interpreter.to_s.split(/\s+/)[1].to_s
+        framework = "rails #{record.to_version}"
+        environment = { "ruby" => ruby, "framework" => framework }
+        environment["image"] = record.image if record.image
+        {
+          "ecosystem" => ECOSYSTEM,
+          "subject_kind" => SUBJECT_KIND,
+          "library" => LIBRARY,
+          "from_version" => record.from_version.to_s,
+          "to_version" => record.to_version.to_s,
+          "check_kind" => "boot",
+          "outcome" => outcome,
+          "interpreter" => record.interpreter,
+          "framework" => framework,
+          "environment" => environment.reject { |_key, value| value.to_s.empty? },
+          "checks" => [{ "name" => "boot", "status" => outcome,
+                         "exit_code" => stage.exit_code }],
+          "finding_count" => 0,
+          "evidence" => { "boot" => text(stage.output_tail, record: record).to_s[0, 2_000] },
+          "machine" => record.image.to_s.empty? ? record.interpreter : record.image,
+          "examined_at" => record.recorded_at
+        }
+      end
+
       # **A repair, as a report whose fix is the repair.** The failure is the *problem* — measured
       # before the repair, because that is the failure an application had — and the repair's own diff
       # is the *resolution*. The rung and the suite are the attempt, so a reader can see which move

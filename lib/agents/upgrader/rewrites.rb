@@ -1656,7 +1656,8 @@ module Agents
                 { "path" => path, "line" => index + 1, "text" => line.chomp, "after" => nil,
                   "subject" => subject, "kind" => change["kind"],
                   "replacement" => change["replacement"], "note" => change["note"],
-                  "source" => change["source"], "automatic" => true, "origin" => "rule" }
+                  "source" => change["source"], "automatic" => true, "origin" => "rule",
+                  "change_key" => change["change_key"] }
               end
             end
           end
@@ -2517,7 +2518,12 @@ module Agents
           "after" => after, "automatic" => true, "origin" => "rule",
           "subject" => entry["subject"], "kind" => entry["kind"],
           "replacement" => entry["replacement"], "note" => entry["note"],
-          "source" => entry["source"]
+          "source" => entry["source"],
+          # **The change the edit belongs to, carried so a refusal can be joined to it.** A scan
+          # entry names its key; a rule's own entry takes it from the change it is an instance of.
+          # Without it an applier refusal was unjoinable, and the service's observed aggregation and
+          # opt-in refusal publication both read a refusal by this key.
+          "change_key" => entry["change_key"]
         }
       end
       private_class_method :edit

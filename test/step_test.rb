@@ -76,7 +76,8 @@ class StepTest < Minitest::Test
   def change(subject: "before_filter", kind: "renamed", source: "5.0",
              automatic: false, replacement: "before_action", note: "renamed in Rails 5.0")
     { "subject" => subject, "kind" => kind, "source" => source, "automatic" => automatic,
-      "replacement" => replacement, "note" => note }
+      "replacement" => replacement, "note" => note,
+      "change_key" => "ruby|actionpack|#{subject}" }
   end
 
   def plan(to: "5.0.0", from: "4.2.11", changes: [])
@@ -355,6 +356,11 @@ class StepTest < Minitest::Test
     def record_run(payload)
       @calls << [:record_run, payload]
       { "run" => { "id" => "11111111-1111-1111-1111-111111111111" } }
+    end
+
+    def record_examinations(records)
+      @calls << [:record_examinations, records]
+      { "recorded" => Array(records).length }
     end
 
     def precheck(payload)
@@ -2341,6 +2347,23 @@ class StepTest < Minitest::Test
     assert_empty corpus.calls_of(:precheck), "a passing step was prechecked"
   end
 
+  # **The walker's boot is pushed as the corpus's own examination.** The era-image boot is the
+  # environment a `boot` cell is about, so a serving step writes one — and a hand-run step, which
+  # writes nothing, writes none.
+  def test_a_serving_step_pushes_its_boot_as_an_examination
+    dir = track(app)
+    corpus = RecordingCorpus.new(payload: plan)
+    step(dir, corpus: corpus, contribute: true).run
+
+    cells = corpus.calls_of(:record_examinations)
+    assert_equal 1, cells.size, "the boot examination was not pushed"
+    cell = cells.first.first
+    assert_equal "boot", cell.fetch("check_kind")
+    assert_equal "platform", cell.fetch("subject_kind")
+    assert_equal "rails", cell.fetch("library")
+    assert_equal "5.0.0", cell.fetch("to_version")
+  end
+
   # **The service's answer is the verdict the walk settles on.** The local suite was green, but the
   # service lowered the run because its patch moved a test file. The record must carry the lower
   # verdict so `Serve#settle` resets to the rung's base rather than committing and publishing a
@@ -2587,6 +2610,10 @@ class StepTest < Minitest::Test
     assert_equal "before_filter", refusal["subject"]
     assert_equal "5.0", refusal["source"]
     assert_equal "before_action", refusal["replacement"]
+    # **The change the refusal is about travels with it.** The service's observed aggregation and
+    # its opt-in refusal publication both join a refusal to a change by `change_key`; a refusal
+    # that dropped it left both with nothing to read.
+    assert_equal "ruby|actionpack|before_filter", refusal["change_key"]
     # And the fields mean what the service's own model says they mean. They used to carry
     # this tool's word for *who* refused — `"plan"` / `"applier"` — where the service
     # reads the kind of change and the guide chapter.
