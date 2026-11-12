@@ -266,7 +266,8 @@ class StepMachineTest < Minitest::Test
 
     def green
       Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
-        exit_code: 0, seconds: 0.1, output_tail: "3 examples", timed_out: false)
+        exit_code: 0, seconds: 0.1, output_tail: "3 examples", output: "3 examples, 0 failures",
+        timed_out: false)
     end
 
     def machine_test_env(_stack = nil) = { "RAILS_ENV" => "test" }
@@ -618,23 +619,65 @@ class StepMachineTest < Minitest::Test
 
     TEXT
     Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: false,
-      exit_code: 1, seconds: 0.1, output_tail: text, timed_out: false)
+      exit_code: 1, seconds: 0.1, output_tail: text, output: text, timed_out: false)
   end
 
   def green_suite
     Agents::Upgrader::Tests::Result.new(command: "bundle exec rspec", ran: true, passed: true,
-      exit_code: 0, seconds: 0.1, output_tail: "3 examples, 0 failures", timed_out: false)
+      exit_code: 0, seconds: 0.1, output_tail: "3 examples, 0 failures",
+      output: "3 examples, 0 failures", timed_out: false)
   end
 
   def step(dir, machines:, runner: nil, tests: nil, corpus: nil, ledger: nil, runtime: "docker",
-           to: "4.1.0", out: nil, project: nil)
+           to: "4.1.0", out: nil, project: nil, differential: nil)
     Step.new(
       repository: "acme/old", to: to, home: dir, out: out,
       source: FakeSource.new(dir), corpus: corpus || FakeCorpus.new,
       tests: tests || FakeTests.new, runner: runner || FakeRunner.new, ledger: ledger,
       runtime: runtime, machine_factory: ->(entry) { machines.fetch(entry.name) },
-      project: project
+      project: project, differential: differential
     )
+  end
+
+  # **A red baseline with the differential on is walked past, and the move is measured.** The
+  # default stops the step the moment the baseline cannot be made green; with `differential: true`
+  # the move is made, the suite runs, and the failures after it are compared against the failures
+  # before it. The verdict is `no_new_failures` — a weaker claim than a green suite, and its own
+  # word — and the record carries the comparison and the machine's reading.
+  def test_a_red_baseline_with_the_differential_on_measures_the_move
+    dir = app
+    red = failed_suite(5, "<%= link_to 'Show', @bid %> |", "undefined method `bid_path'")
+    tests = FakeTests.new(results: [red, red])
+    record = step(dir, machines: machines, tests: tests, differential: true).run
+
+    assert_equal "no_new_failures", record.verdict, record.why
+    assert_equal true, record.differential["captured"]
+    assert_equal 0, record.differential["new"]
+    assert_equal 1, record.differential["failures"]
+    assert_empty record.differential["new_keys"], "the same failure in both suites is not new"
+    assert_empty record.differential["fixed_keys"]
+    assert_equal "walkable", record.readiness["state"]
+    assert_equal true, record.readiness["suite"]["found"]
+    assert_equal 1, record.readiness["suite"]["exit_code"], "the reading names the red baseline's exit"
+
+    # **The payload the service receives carries both.** `readiness` is the machine's reading and
+    # `baseline` is the comparison the verdict rests on; the service stores them under those names.
+    payload = Agents::Upgrader::Step.run_payload(record)
+    assert_equal "walkable", payload.dig("readiness", "state")
+    assert_equal true, payload.dig("baseline", "captured")
+    assert_equal 0, payload.dig("baseline", "new")
+  end
+
+  # **The same red baseline without the differential still stops.** The default behaviour is
+  # unchanged: a baseline that cannot be made green says nothing about the move, so the step is
+  # `unverified` and no comparison is recorded.
+  def test_a_red_baseline_without_the_differential_still_stops
+    dir = app
+    red = failed_suite(5, "<%= link_to 'Show', @bid %> |", "undefined method `bid_path'")
+    record = step(dir, machines: machines, tests: FakeTests.new(results: [red, red])).run
+
+    assert_equal "unverified", record.verdict, record.why
+    assert_nil record.differential
   end
 
   # **The repair repeats, because a template raises at its first bad line.** `bids/edit` has two

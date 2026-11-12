@@ -58,7 +58,7 @@ module Agents
       # this one: the same key is the same change, and the project says whose answer it was. They
       # are optional because a declaration written before the join existed has neither.
       DECISION_FIELDS = %w[id project change_key question answer accepted_by effects
-        verified_by_run_id accepted_by_policy review risk_class acceptance].freeze
+        verified_by_run_id accepted_by_policy review risk_class acceptance report_id].freeze
       EFFECT_FIELDS = %w[id kind payload applies_when phase].freeze
 
       # What a suite can be. `none` is a real answer, not a missing one: an application without a

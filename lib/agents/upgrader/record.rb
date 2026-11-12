@@ -24,6 +24,10 @@ module Agents
       FAILED = "failed"
       REFUSED = "refused"
       UNVERIFIED = "unverified"
+      # **The differential verdict, and a distinct word rather than a flag on `passed`.** The suite
+      # was red before the step and no redder after it: the failures were compared and the move
+      # introduced none. `passed` means green before and green after, so the two are not one word.
+      NO_NEW_FAILURES = "no_new_failures"
 
       # The stages, named, because "the step failed" is not actionable and "bundle
       # update failed" is. They are used as stage labels on a `Command`.
@@ -239,7 +243,7 @@ module Agents
         REQUIRED.filter_map { |stage| last[stage] }.reject(&:ok?)
       end
 
-      def self.verdict(baseline:, suite:, stages:, checks: [])
+      def self.verdict(baseline:, suite:, stages:, checks: [], differential: nil)
         failed = failed_stages(stages)
         unless failed.empty?
           first = failed.first
@@ -271,7 +275,12 @@ module Agents
         # reaches the branches below, and a *red* baseline with no subject is the early stop. This
         # is why the later baseline branch speaks of a *missing* baseline rather than a red one —
         # both pipelines stop here first, so a red baseline never reaches it.
-        if baseline && !baseline.ok? && suite.nil?
+        #
+        # **Unless the walker was asked for a differential.** With `differential` captured, a red
+        # baseline is no longer the end: the move is made, the suite runs, and the failures after
+        # it are compared against the failures before it. The verdict is then `no_new_failures` or
+        # `failed`, both of which are about the move rather than about the tree it started in.
+        if baseline && !baseline.ok? && suite.nil? && differential.nil?
           return [UNVERIFIED, "the suite was not green before this step " \
                               "(#{baseline.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
                               "so the move was not made#{database_note(stages)}"]
@@ -290,6 +299,24 @@ module Agents
         end
 
         unless baseline&.ok?
+          # **The differential, when the walker captured one.** The baseline was red; the suite ran
+          # and its failures were compared against the baseline's. No new failure means the move
+          # introduced none — a weaker claim than a green suite, and its own word. A new failure is
+          # a failure about the move, named with its count.
+          if differential.is_a?(Hash) && differential["captured"] == true
+            introduced = differential["new"].to_i
+            if introduced.zero?
+              return [NO_NEW_FAILURES,
+                "the suite was not green before this step (#{baseline&.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
+                "and the move introduced no new failures; this is a weaker claim than a green " \
+                "suite#{database_note(stages)}"]
+            end
+            return [FAILED, "the suite was not green before this step " \
+                            "(#{baseline&.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
+                            "and the move introduced #{introduced} new failure(s)" \
+                            "#{differential_note(differential)}#{database_note(stages)}"]
+          end
+
           return [UNVERIFIED, "the suite was not green before this step " \
                               "(#{baseline&.ran ? "exit #{baseline.exit_code}" : "it did not run"}), " \
                               "so what it says afterwards cannot be attributed to the move#{database_note(stages)}"]
@@ -324,6 +351,15 @@ module Agents
 
         [FAILED, "the suite was green before this step and failed after it " \
                  "(exit #{suite.exit_code})#{repair_note(stages)}#{database_note(stages)}"]
+      end
+
+      # **The new failures, named rather than counted.** A differential verdict is only actionable
+      # if a reader can see which examples the move broke; the count alone sends them to the log.
+      def self.differential_note(differential)
+        keys = Array(differential["new_keys"]).first(5)
+        return "" if keys.empty?
+
+        " (#{keys.join(", ")}#{Array(differential["new_keys"]).length > 5 ? ", …" : ""})"
       end
 
       # **A failed `app:update` is recorded beside a passing run, never in place of it.** The
@@ -385,7 +421,7 @@ module Agents
         :requires_ruby, :interpreter, :image, :machine, :era, :stages, :applied, :refused,
         :decisions, :patch, :verdict, :why, :baseline, :suite, :recorded_at, :brief, :repairs,
         :checks, :commits, :accepted_decisions, :app_update, :toolchain, :project, :changes,
-        :expected, :fired_rules
+        :expected, :fired_rules, :readiness, :differential
       # The corpus's id for the run, learned after the record is written and used by the pull
       # request to link the run's page. It is an accessor rather than a constructor argument
       # because the record is the local artifact and the id is the service's answer.
@@ -396,7 +432,8 @@ module Agents
                      machine: nil, era: nil, stages: [], applied: [], refused: [], decisions: [],
                      patch: "", baseline: nil, suite: nil, recorded_at: nil, brief: nil,
                      repairs: [], checks: [], commits: [], accepted_decisions: [], app_update: nil,
-                     toolchain: nil, project: nil, changes: [], expected: [], fired_rules: [])
+                     toolchain: nil, project: nil, changes: [], expected: [], fired_rules: [],
+                     readiness: {}, differential: nil)
         @repository = repository
         @commit = commit
         @worktree = worktree
@@ -463,6 +500,14 @@ module Agents
         # field, which is how the service retires a rule a failed run falsified.
         @expected = expected
         @fired_rules = fired_rules
+        # **The machine's reading, and the per-test differential.** `readiness` is a fact about the
+        # environment — a suite found, a bundle installed, services up, what will block a walk — and
+        # it moves no verdict. `differential` is the comparison behind a `no_new_failures` verdict:
+        # the failures before the move, the failures after, and the set difference. Both are empty or
+        # nil for a record that did not capture them, and the service renders that as `not recorded`
+        # rather than as a healthy empty state.
+        @readiness = readiness || {}
+        @differential = differential
         @run_id = nil
       end
 
@@ -499,6 +544,10 @@ module Agents
       def failed? = @verdict == FAILED
       def refused? = @verdict == REFUSED
       def unverified? = @verdict == UNVERIFIED
+      # **A differential verdict is a pass of a different kind.** `passed?` stays false — the suite
+      # was not green before the move — and `no_new_failures?` is the query for a caller that wants
+      # to know whether the move itself introduced anything.
+      def no_new_failures? = @verdict == NO_NEW_FAILURES
 
       # **The service's verdict is the one the walk settles on.** The local verdict says what the
       # suite did; the service adds the warrant — a passed suite whose patch moved a test file is
@@ -582,6 +631,11 @@ module Agents
           "changes" => @changes,
           "expected" => @expected,
           "fired_rules" => @fired_rules,
+          # **The machine's reading and the per-test differential.** Both are named only when
+          # captured: an empty object is `not recorded` rather than a healthy empty state, and the
+          # service's read renders an absent key as exactly that.
+          "readiness" => @readiness,
+          "differential" => @differential,
           "patch" => @patch,
           "recorded_at" => @recorded_at,
           # Always true, and worth carrying rather than assuming: this tool's whole
@@ -608,9 +662,9 @@ module Agents
             raise ArgumentError, "the record has no #{field}, so there is nothing to preview"
           end
         end
-        unless [PASSED, FAILED, REFUSED, UNVERIFIED].include?(hash["verdict"].to_s)
+        unless [PASSED, FAILED, REFUSED, UNVERIFIED, NO_NEW_FAILURES].include?(hash["verdict"].to_s)
           raise ArgumentError, "the record's verdict is #{hash["verdict"].to_s.inspect}; known: " \
-                               "#{PASSED}, #{FAILED}, #{REFUSED}, #{UNVERIFIED}"
+                               "#{PASSED}, #{FAILED}, #{REFUSED}, #{UNVERIFIED}, #{NO_NEW_FAILURES}"
         end
         %w[app_update toolchain project].each do |field|
           value = hash[field]
@@ -645,7 +699,9 @@ module Agents
           app_update: hash["app_update"], toolchain: hash["toolchain"],
           project: hash["project"], changes: list_of(hash["changes"], "changes"),
           expected: list_of(hash["expected"], "expected"),
-          fired_rules: list_of(hash["fired_rules"], "fired_rules")
+          fired_rules: list_of(hash["fired_rules"], "fired_rules"),
+          readiness: hash["readiness"].is_a?(Hash) ? hash["readiness"] : {},
+          differential: hash["differential"].is_a?(Hash) ? hash["differential"] : nil
         )
         record.run_id = hash["run_id"]
         record

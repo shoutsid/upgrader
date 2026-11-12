@@ -6,7 +6,7 @@ require "agents/upgrader"
 
 # The upgrader's own vocabulary, checked without the service.
 #
-# The four verdicts are the words a run is recorded under, and the ledger keeps its own copy so
+# The verdicts are the words a run is recorded under, and the ledger keeps its own copy so
 # a previous process's book can be read back. That copy is the risk: a word one side writes and
 # the other does not recognise is work redone, or worse, work reported as done. The agreement
 # with the *service's* schema is a cross-repository claim and lives in the service's contract
@@ -18,18 +18,18 @@ class VocabularyTest < Minitest::Test
   Ledger = Agents::Upgrader::Ledger
 
   def record_verdicts
-    [Record::PASSED, Record::FAILED, Record::REFUSED, Record::UNVERIFIED]
+    [Record::PASSED, Record::FAILED, Record::REFUSED, Record::UNVERIFIED, Record::NO_NEW_FAILURES]
   end
 
   def ledger_verdicts
-    [Ledger::PASSED, Ledger::FAILED, Ledger::REFUSED, Ledger::UNVERIFIED]
+    [Ledger::PASSED, Ledger::FAILED, Ledger::REFUSED, Ledger::UNVERIFIED, Ledger::NO_NEW_FAILURES]
   end
 
-  def test_the_client_writes_four_distinct_verdicts
+  def test_the_client_writes_five_distinct_verdicts
     # A guard on the guard: the set comparison below would pass vacuously against a list
     # that had silently lost a member.
-    assert_equal 4, record_verdicts.uniq.size
-    assert_equal 4, ledger_verdicts.uniq.size
+    assert_equal 5, record_verdicts.uniq.size
+    assert_equal 5, ledger_verdicts.uniq.size
   end
 
   def test_every_verdict_is_a_lowercase_word_a_database_can_store
@@ -38,7 +38,7 @@ class VocabularyTest < Minitest::Test
     end
   end
 
-  def test_the_ledger_speaks_the_same_four_words
+  def test_the_ledger_speaks_the_same_words
     assert_equal record_verdicts.to_set, ledger_verdicts.to_set,
       "the ledger and the record disagree about what a verdict is called"
     assert Ledger::SETTLED_VERDICTS.all? { |word| record_verdicts.include?(word) },

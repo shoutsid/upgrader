@@ -21,7 +21,7 @@ module Agents
       EXIT_OK = 0
       # The modes that read or write the corpus. `prune` and `preview` are local, and `help` is not
       # a mode.
-      NEEDS_API = %w[plan preflight step serve decisions].freeze
+      NEEDS_API = %w[plan preflight step serve decisions fixes].freeze
 
       EXIT_FAILED = 1
       EXIT_REFUSED = 2
@@ -50,16 +50,17 @@ module Agents
                                     [--record DIR]
           agents-upgrader step  --repo PATH|URL [--ref REF] [--to VERSION] [--api URL]
                                     [--record DIR] [--work DIR] [--force] [--publish]
-                                    [--suite-env FILE]
+                                    [--differential-baseline] [--suite-env FILE]
           agents-upgrader serve [--project SLUG] [--repos OWNER/NAME[@REF] ...]
                                     [--to VERSION] [--api URL]
                                     [--home DIR] [--heartbeat FILE] [--interval SECONDS]
                                     [--step-timeout SECONDS] [--cycles N] [--walk]
                                     [--rungs N] [--force] [--publish] [--suite-env FILE]
-                                    [--record DIR]
+                                    [--differential-baseline] [--record DIR]
           agents-upgrader republish [--home DIR]
           agents-upgrader preview --from FILE [--base-ref REF] [--report-base URL]
           agents-upgrader prune [--home DIR]
+          agents-upgrader fixes [--change-key KEY] [--language LANG] [--api URL]
           agents-upgrader decisions list|show|propose|withdraw|resolution
                                     [--api URL] [--project SLUG] [--id ID]
                                     [--state STATE] [--block-kind KIND]
@@ -96,6 +97,9 @@ module Agents
                   empty `--to` as the top of the service's ladder; with `--publish` it pushes
                   a branch per passed rung and opens a pull request chained to the rung
                   before it.
+          fixes   print the typed fixes a change carries, each with its authority, language
+                  and safety class (`mechanical`, `needs_review`, `forbidden`), and write
+                  nothing. `--change-key` narrows to one change.
           decisions
                   the questions the walk could not answer: `list`, `show`, `propose`,
                   `withdraw` and `resolution`. A proposal is not an acceptance — a person
@@ -158,10 +162,12 @@ module Agents
         when "preview" then preview(options)
         when "prune" then prune(options)
         when "decisions" then decisions(options)
+        when "fixes" then fixes(options)
         else
           usage_error(
             "unknown command `#{options[:command]}` — the modes that exist are `plan`, " \
-            "`preflight`, `step`, `serve`, `republish`, `preview`, `prune` and `decisions`"
+            "`preflight`, `step`, `serve`, `republish`, `preview`, `prune`, `fixes` and " \
+            "`decisions`"
           )
         end
       rescue Corpus::Refused => e
@@ -222,6 +228,32 @@ module Agents
             lockfile: lockfile
           ).to_s
         )
+        EXIT_OK
+      end
+
+      # **The registry, as a dry run.** The service serves the typed fixes and their safety class;
+      # this mode prints them and writes nothing. Applying an edit is the walk's job, where the
+      # change travels with the run that produced it — not a library call from a listing.
+      def fixes(options)
+        payload = corpus_for(options).fixes(change_key: options[:change_key],
+          language: options[:language])
+        rows = payload["fixes"]
+        unless rows.is_a?(Array)
+          raise Corpus::Unreachable,
+            "the fixes read carries no `fixes` list — the service may be running a version " \
+            "that does not serve this route"
+        end
+
+        @out.puts("#{payload['count'].to_i} fix(es) in the registry")
+        rows.each do |fix|
+          body = fix["payload"].is_a?(Hash) ? fix["payload"] : {}
+          detail = fix["kind"] == "rewrite" ?
+            "#{body['old']} -> #{body['new']}" : fix["kind"].to_s
+          marks = fix["applies"] == false ? " (not applicable)" : ""
+          @out.puts("- #{fix['change_key']} [#{fix['authority']}] " \
+                    "#{fix['safety']}#{marks}: #{detail}")
+        end
+        @out.puts("nothing was written; apply a fix only after reading its safety class")
         EXIT_OK
       end
 
@@ -393,6 +425,7 @@ module Agents
             home: options[:home], out: @out, work: options[:work], record: options[:record],
             ledger: Ledger.load(File.join(options[:home], "ledger.json")),
             suite_timeout: options[:step_timeout], force: options[:force],
+            differential: options[:differential],
             suite_env: options[:suite_env], services: services, env: @env, project: @project
           ).run
           return step_status(record) unless options[:publish]
@@ -464,6 +497,7 @@ module Agents
             step_timeout: options[:step_timeout], out: @out, cycles: options[:cycles],
             walk: options[:walk], publish: options[:publish], rungs: options[:rungs],
             force: options[:force], record: options[:record],
+            differential: options[:differential],
             suite_env: options[:suite_env], services: services, env: @env, project: @project
           ).run
         ensure
@@ -553,6 +587,11 @@ module Agents
                                         "(default #{Serve::DEFAULT_RUNGS_PER_CYCLE})") { |v| options[:rungs] = v }
           opts.on("--force", "walk a move even though the ledger has settled it — the " \
                              "ledger is a memory, not a lock") { |v| options[:force] = v }
+          opts.on("--differential-baseline", "walk past a red baseline and compare the suite's " \
+                  "failures against it, so a move that introduces none is `no_new_failures` " \
+                  "rather than `unverified` (default: off, because it changes what a step does)") do |v|
+            options[:differential] = v
+          end
           opts.on("--repos OWNER/NAME[@REF]", "a repository for `serve` to walk") do |v|
             (options[:repos] ||= []).concat(v.split(","))
           end
@@ -562,7 +601,8 @@ module Agents
           opts.on("--id ID", "the decision (or project) a `decisions` subcommand names") { |v| options[:id] = v }
           opts.on("--state STATE", "`decisions list` filter: open, answered, superseded or dismissed") { |v| options[:state] = v }
           opts.on("--block-kind KIND", "`decisions list` filter: route, pin, suite, boot, check, …") { |v| options[:block_kind] = v }
-          opts.on("--change-key KEY", "`decisions list` filter by change key") { |v| options[:change_key] = v }
+          opts.on("--change-key KEY", "`decisions list` / `fixes` filter by change key") { |v| options[:change_key] = v }
+          opts.on("--language LANG", "`fixes` language (default: the service's, `ruby`)") { |v| options[:language] = v }
           opts.on("--limit N", Integer, "`decisions list` page size") { |v| options[:limit] = v }
           opts.on("--effects FILE", "`decisions propose`: a JSON list of typed effects") { |v| options[:effects] = v }
           opts.on("--choice TEXT", "`decisions propose`: the answer's label") { |v| options[:choice] = v }

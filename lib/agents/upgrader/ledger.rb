@@ -51,7 +51,7 @@ module Agents
       # person who fixes the environment requeues the target deliberately.
       MAX_UNVERIFIED_ATTEMPTS = 3
 
-      # The four words a step can end in, spelled once. `Verdict` in the coordinator's
+      # The five words a step can end in, spelled once. `Verdict` in the coordinator's
       # `record.rb` is the one place they are *chosen*; they are repeated here because
       # the ledger has to recognise a word it wrote in a previous process — a second
       # list of names for one set of facts is how two readers start disagreeing.
@@ -59,14 +59,19 @@ module Agents
       UNVERIFIED = "unverified"
       FAILED = "failed"
       REFUSED = "refused"
+      # **The differential verdict.** The baseline was red and the move introduced no new failures.
+      # A measured result about the move, like `passed`, and settled for the same reason: the same
+      # commit and crossing re-derived reaches the same comparison.
+      NO_NEW_FAILURES = "no_new_failures"
 
       # Which verdicts are final on arrival. `failed` is deliberately absent: it is settled by the
       # attempt ceiling instead, which `settled?` folds in. **`unverified` has its own ceiling**: it
       # means *nothing was established*, so it does not spend one of the move's `MAX_ATTEMPTS`, but
-      # `MAX_UNVERIFIED_ATTEMPTS` bounds how many times the environment is asked. A word this version
-      # does not know is treated as not settled, which is the safe direction — the work is redone
-      # rather than assumed done.
-      SETTLED_VERDICTS = [PASSED, REFUSED].freeze
+      # `MAX_UNVERIFIED_ATTEMPTS` bounds how many times the environment is asked. `no_new_failures`
+      # is settled because it *is* a measurement of the move — the failures were compared and none
+      # was new. A word this version does not know is treated as not settled, which is the safe
+      # direction — the work is redone rather than assumed done.
+      SETTLED_VERDICTS = [PASSED, REFUSED, NO_NEW_FAILURES].freeze
 
       # **Delivery is a fact about a passed rung, and it is not the verdict.** A rung can pass and
       # its branch never reach the remote; the next cycle must retry the *delivery* from the commit

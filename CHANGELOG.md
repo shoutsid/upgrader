@@ -6,6 +6,29 @@ versioning for its command-line surface and record format.
 
 ## [Unreleased]
 
+### Added
+
+- **`fixes`, a dry run over the typed fix registry.** The command reads `/api/fixes`, prints each
+  fix with its authority and safety class (`mechanical`, `needs_review`, `forbidden`) and writes
+  nothing. It is the client-side half of the codemod registry; the service still never edits source.
+- **The corpus fixes a rung ran with, and where to record whether they worked.** A decision that came
+  from a corpus report now carries the report's id (`Project::DECISION_FIELDS` accepts `report_id`),
+  and the pull request body gains a **Corpus fixes this rung ran with** section: each report linked to
+  `{report_base}/app/reports/{id}` — the member portal page that records an outcome — or named when
+  no public base is configured. It is the one loop the corpus cannot close by itself, and the rung
+  that applied a fix is the moment it can be closed.
+- **`--differential-baseline`, and the `no_new_failures` verdict it produces.** A walk on an
+  application whose suite was never green used to stop at a red baseline: nothing about the move
+  could be attributed to a tree that was already red. With the flag, the failures before the move
+  are captured, the move is made, and the failures after it are compared against them by a stable
+  key (`file:line`, or the example's name when no application frame names one). No new failure is
+  the verdict `no_new_failures` — deliberately not `passed`, because `passed` means green before and
+  green after — and a new failure is `failed`, naming the examples. The record carries the
+  comparison (`baseline`) and the machine's reading (`readiness`, with `state`, `suite`, `bundle`,
+  `services`, `declared checks` and `blockers`), and both travel to the service. The flag is off by
+  default because it changes what a step *does*; the service stores a claimed `no_new_failures` as
+  `unverified` unless the comparison really is present with a zero new-failure count.
+
 ### Changed
 
 - **The auxiliary model is pinned to the attempt's model.** opencode generates a session title

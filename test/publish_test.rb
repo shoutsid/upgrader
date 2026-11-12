@@ -66,7 +66,7 @@ class PublishTest < Minitest::Test
   def passed_record(repository:, from: "4.0.0.rc1", to: "4.1.0", verdict: "passed",
                     decisions: [], refused: [], applied: [], brief: nil, checks: [],
                     commits: [], app_update: nil, accepted_decisions: [], toolchain: nil,
-                    repairs: [], project: nil)
+                    repairs: [], project: nil, differential: nil, readiness: {})
     Record.new(
       repository: repository, commit: "abc12345", from_version: from, to_version: to,
       name: "Rails 4.1", verdict: verdict,
@@ -77,7 +77,7 @@ class PublishTest < Minitest::Test
       era: "2.1", decisions: decisions, refused: refused, applied: applied, brief: brief,
       checks: checks, commits: commits, app_update: app_update,
       accepted_decisions: accepted_decisions, toolchain: toolchain, repairs: repairs,
-      project: project,
+      project: project, differential: differential, readiness: readiness,
       stages: [
         Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 0,
           seconds: 42.0, output_tail: "12 examples, 0 failures"),
@@ -688,6 +688,74 @@ class PublishTest < Minitest::Test
     assert_includes body, "attr_accessible"
     assert_includes body, "move the list to the controller"
     assert_includes body, "is not the line the scan read"
+  end
+
+  # **A differential verdict reads as a measurement of the move, not as an unverified one.** A
+  # red baseline with a captured comparison is `no_new_failures`; the body says which one it is
+  # rather than calling it `unverified — the baseline was not green`. A differential run is not
+  # published as a branch (`Publish#call` refuses a non-`passed` verdict), so the body is read
+  # through `preview_body`, which is the same renderer.
+  def test_a_differential_verdict_names_the_comparison_in_the_body
+    _bare, clone = origin_and_clone
+    red = Command.new(stage: "baseline", command: "bundle exec rspec", ran: true, exit_code: 1,
+      seconds: 42.0, output_tail: "12 examples, 2 failures")
+    red_suite = Command.new(stage: "suite", command: "bundle exec rspec", ran: true, exit_code: 1,
+      seconds: 45.0, output_tail: "12 examples, 2 failures")
+    record = Record.new(
+      repository: "https://github.com/acme/storefront", commit: "abc12345",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", name: "Rails 4.1",
+      verdict: "no_new_failures",
+      why: "the suite was not green before this step (exit 1), and the move introduced no new failures",
+      baseline: red, suite: red_suite,
+      differential: { "captured" => true, "new" => 0, "failures" => 14, "fixed" => 2,
+                      "reporter" => "parsed_output" }
+    )
+
+    body = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: FakeApi.new).preview_body
+
+    assert_includes body, "no new failures — the baseline was red"
+  end
+
+  # **The rung's corpus fixes, and where to record whether they worked.** A decision that came from
+  # a report carries the report's id; the body links the member portal page that records an outcome,
+  # which is the one loop the corpus cannot close by itself. Absent when no decision came from a
+  # report, which is most rungs and is not a gap.
+  def test_the_body_names_the_corpus_fixes_and_links_the_outcome_page
+    _bare, clone = origin_and_clone
+    record = passed_record(repository: "https://github.com/acme/storefront",
+      accepted_decisions: [
+        { "id" => "d1", "question" => "Rename before_filter?", "report_id" => "r-1" },
+        { "id" => "d2", "question" => "A walker stop with no report" }
+      ])
+
+    body = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      report_base: "https://agents.shoutsid.fyi", token: "ghp_secret",
+      git: FakeGit.new, api: FakeApi.new).preview_body
+
+    assert_includes body, "## Corpus fixes this rung ran with"
+    assert_includes body, "[Rename before_filter?](https://agents.shoutsid.fyi/app/reports/r-1)"
+    section = body[/## Corpus fixes this rung ran with.*?(?=\n## |\z)/m]
+    refute_includes section.to_s, "A walker stop with no report",
+      "a decision with no report is not a corpus fix"
+  end
+
+  # With no public base the report is named rather than linked — the walker's API base is often an
+  # internal hostname, and a link built from it is unopenable.
+  def test_a_corpus_fix_is_named_rather_than_linked_without_a_public_base
+    _bare, clone = origin_and_clone
+    record = passed_record(repository: "https://github.com/acme/storefront",
+      accepted_decisions: [{ "id" => "d1", "question" => "Rename before_filter?",
+                             "report_id" => "r-1" }])
+
+    body = Publish.new(root: clone, repository: "https://github.com/acme/storefront",
+      from_version: "4.0.0.rc1", to_version: "4.1.0", record: record,
+      token: "ghp_secret", git: FakeGit.new, api: FakeApi.new).preview_body
+
+    assert_includes body, "`r-1` — Rename before_filter?"
+    refute_includes body, "/app/reports/r-1)"
   end
 
   # **The body is a summary, not a diff pasted into prose.** A rung a gem's own upgrade touched a

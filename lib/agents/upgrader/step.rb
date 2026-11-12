@@ -3,6 +3,7 @@
 require "digest"
 require "fileutils"
 require "open3"
+require "set"
 require "shellwords"
 
 module Agents
@@ -127,7 +128,8 @@ module Agents
         runner: Shell, corpus: nil, source: Source, tests: Tests, applier: Applier,
         contribute: false, reuse: false, machine: nil, machine_factory: nil, runtime: nil,
         research: nil, env: ENV, repair: nil, force: false, suite_env: nil, services: nil,
-        progress: nil, pause: nil, stack: nil, project: nil, control: nil, model_access: nil
+        progress: nil, pause: nil, stack: nil, project: nil, control: nil, model_access: nil,
+        differential: nil
       )
         @repository = repository
         @to = to
@@ -223,6 +225,12 @@ module Agents
         # without this the only live signal is this container's stdout. See `Progress` for why it
         # is a file rather than an endpoint.
         @progress = progress || Progress.new(home: @home, out: @out) || Progress.new(home: home, out: out)
+        # **Whether a red baseline is compared rather than stopping the step.** Off unless the
+        # caller asks: the default behaviour — a red baseline means nothing about the move can be
+        # attributed — is the one every existing walk was measured under, and turning the
+        # differential on changes what a step *does* (it walks past a red baseline) rather than only
+        # what it records. `nil` is off; a truthy value is on.
+        @differential = differential
       end
 
       def run
@@ -425,16 +433,23 @@ module Agents
         # made it green; then the move", in that order.
         @baseline = attempt_baseline_repair(stages, step) || @baseline
 
-        # **A baseline that is still red ends the cycle here.** Everything below — the scan, the
-        # mechanical rules, the gem moves, the pin, `app:update`, the boot and the suite — measures
-        # *the move*, and the move cannot be attributed when the tree was already red before it.
-        # `Record.verdict` would reach the same `unverified` at the end; stopping now only avoids
-        # spending the stages on a verdict the re-run already decided. Measured: 19wu's 4.1.16
-        # baseline was green, then 16 suite failures after the move, and the required `pin` had run
-        # first — that is the case the early stop must not change. The early stop fires only when
-        # the baseline is red *after its repair* and there is no subject suite yet, which is the
-        # `suite.nil?` branch `Record.verdict` reads as the same sentence.
-        if baseline_red_after_repair?
+        # **A baseline that is still red ends the cycle here — unless the caller asked for a
+        # differential.** Everything below — the scan, the mechanical rules, the gem moves, the pin,
+        # `app:update`, the boot and the suite — measures *the move*, and the move cannot be
+        # attributed when the tree was already red before it. `Record.verdict` would reach the same
+        # `unverified` at the end; stopping now only avoids spending the stages on a verdict the
+        # re-run already decided. Measured: 19wu's 4.1.16 baseline was green, then 16 suite failures
+        # after the move, and the required `pin` had run first — that is the case the early stop must
+        # not change. The early stop fires only when the baseline is red *after its repair* and there
+        # is no subject suite yet, which is the `suite.nil?` branch `Record.verdict` reads as the
+        # same sentence.
+        #
+        # **With the differential on, the walk continues past a red baseline.** The failures before
+        # the move are captured, the move is made, and the suite's failures are compared against
+        # them: `no_new_failures` is then a measurement of the move rather than of the tree it
+        # started in. That is a weaker claim than `passed` and its own word; the flag is off by
+        # default because it changes what a step does.
+        if baseline_red_after_repair? && !@differential
           verdict, why = Record.verdict(baseline: @baseline, suite: nil, stages: stages,
             checks: [])
           return finish(build(step, stages, verdict, why))
@@ -534,9 +549,10 @@ module Agents
         # Anything a default toggle or a repair left uncommitted belongs to this rung too; the
         # delivered head must be the tree the suite measured, not the commit before its last edit.
         checkpoint(nil)
+        differential = capture_differential
         verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages,
-          checks: @checks)
-        finish(build(step, stages, verdict, why))
+          checks: @checks, differential: differential)
+        finish(build(step, stages, verdict, why, differential: differential))
       ensure
         # **The container is a step's, and the step's process is what ends it.** `--rm` only
         # removes a container whose own process exits, and this one is a keepalive that never
@@ -774,6 +790,143 @@ module Agents
       # Rails never ran a green suite on. `nil` (no suite found at all) is not this case: that is
       # a fact about the application the record states rather than a cycle to cut short.
       def baseline_red_after_repair? = !@baseline.nil? && !@baseline.ok?
+
+      # **The machine's reading, as a bounded object the service stores.** It is a fact about the
+      # environment rather than a verdict about the move: whether a suite was found and ran, whether
+      # the bundle installed, which declared services and database started, which checks are
+      # declared, and what will block a walk. The four states are kept apart — `walkable`,
+      # `blocked`, `partial`, `not_recorded` — and a missing reading is `not_recorded` rather than a
+      # healthy empty state.
+      #
+      # Every value is read from the stages already recorded, so this invents nothing: the suite's
+      # command and exit code are the baseline stage's, the bundle's interpreter is the machine's,
+      # and the blockers are the sentences the stages already carry.
+      def readiness_reading(stages)
+        suite = @suite_plan
+        baseline = @baseline
+        blockers = readiness_blockers(stages)
+        {
+          "recorded_at" => Time.now.utc.iso8601,
+          "state" => readiness_state(blockers),
+          "suite" => {
+            "command" => suite&.command,
+            "found" => !suite.nil?,
+            "ran" => baseline ? !!baseline.ran : false,
+            "exit_code" => baseline&.exit_code
+          },
+          "bundle" => {
+            "installed" => bundle_installed?(stages),
+            "interpreter" => @machine.respond_to?(:interpreter) ? @machine.interpreter : nil,
+            "image" => @machine.respond_to?(:image) ? @machine.image : nil
+          },
+          "services" => readiness_services(stages),
+          "checks" => Array(@checks).map do |check|
+            { "name" => check.label, "kind" => check.kind, "status" => check.status }
+          end,
+          "blockers" => blockers
+        }.compact
+      end
+
+      # The four states, and the rule is the blockers rather than a score: a walk with no suite and
+      # no bundle is `blocked`, one with a suite that did not run is `partial`, and one whose
+      # environment answered every question is `walkable`.
+      def readiness_state(blockers)
+        return "blocked" if blockers.any? { |blocker| %w[bundle_install no_suite service_start].include?(blocker["kind"]) }
+        return "partial" if blockers.any?
+
+        "walkable"
+      end
+
+      # What will block a walk, each with a kind from the fixed list the service validates against
+      # and the sentence the stage already carries. Bounded: one entry per kind, first sentence.
+      def readiness_blockers(stages)
+        found = []
+        bundle = stages.reverse.find { |stage| stage.stage == Record::BUNDLE }
+        if bundle && !bundle.ok?
+          found << { "kind" => "bundle_install",
+                     "sentence" => "no interpreter installed the bundle — #{Record.first_line(bundle.output_tail)}" }
+        end
+        if @suite_plan.nil?
+          found << { "kind" => "no_suite",
+                     "sentence" => @tests.respond_to?(:no_suite_reason) ?
+                       @tests.no_suite_reason(@worktree.root, @stack) : "no suite this tool knows how to run" }
+        end
+        services = stages.reverse.find { |stage| stage.stage == Record::SERVICES }
+        if services && !services.ok?
+          found << { "kind" => "service_start",
+                     "sentence" => "the declared services did not start — #{Record.first_line(services.output_tail)}" }
+        end
+        database = stages.reverse.find { |stage| stage.stage == Record::DATABASE }
+        if database && !database.ok?
+          found << { "kind" => "database",
+                     "sentence" => "the database was not prepared — #{Record.first_line(database.output_tail)}" }
+        end
+        timeout = stages.reverse.find { |stage| stage.ran && stage.exit_code.nil? }
+        if timeout
+          found << { "kind" => "command_timeout",
+                     "sentence" => "`#{timeout.command}` was killed at its bound, so it established nothing" }
+        end
+        found
+      end
+
+      def bundle_installed?(stages)
+        bundle = stages.reverse.find { |stage| stage.stage == Record::BUNDLE }
+        !bundle.nil? && bundle.ok?
+      end
+
+      # The declared services, as the step's own record has them. A service the application declared
+      # and this walk did not start is named `declared_unserved` rather than omitted: the fact that
+      # matters is that the suite ran without it.
+      def readiness_services(stages)
+        declared = Array(@project&.services).map { |service| service.to_s }.reject(&:empty?)
+        return {} if declared.empty?
+
+        started = stages.any? { |stage| stage.stage == Record::SERVICES && stage.ok? }
+        declared.to_h { |service| [service, started ? "started" : "declared_unserved"] }
+      end
+
+      # **The per-test differential, when the caller asked for one.** Both suites are parsed with the
+      # same reader, and the comparison is over stable keys: a failure's file and line, or its name
+      # when no application frame names one. `new` is what the move introduced and `fixed` is what it
+      # resolved; the keys travel so a reader can see which examples, not only how many.
+      #
+      # Nil when the caller did not ask, when the baseline was green (there is nothing to compare
+      # against), or when either suite's text is missing — a differential nobody captured is not a
+      # differential of zero.
+      def capture_differential
+        return nil unless @differential
+        return nil if @baseline.nil? || @suite.nil?
+        return nil if @baseline.ok?
+
+        baseline_text = @baseline_output.to_s
+        suite_text = @suite_output.to_s
+        return nil if baseline_text.empty? || suite_text.empty?
+
+        before = failure_keys(baseline_text)
+        after = failure_keys(suite_text)
+        new_keys = (after - before).sort
+        fixed_keys = (before - after).sort
+        {
+          "captured" => true,
+          "total" => after.length,
+          "failures" => before.length,
+          "new" => new_keys.length,
+          "fixed" => fixed_keys.length,
+          "new_keys" => new_keys.first(200),
+          "fixed_keys" => fixed_keys.first(200),
+          "reporter" => "parsed_output",
+          "note" => "the baseline had #{before.length} failure(s); the move introduced " \
+                    "#{new_keys.length} new and resolved #{fixed_keys.length}"
+        }
+      end
+
+      def failure_keys(text)
+        SuiteFailures.parse(text).map do |failure|
+          file = failure.file
+          line = failure.line
+          file && line ? "#{file}:#{line}" : failure.name.to_s
+        end.reject(&:empty?).uniq.to_set
+      end
 
       # **Both pipelines repair a red baseline through this one method.** A rung reaches it after
       # its preflight and before its plan's edits; a patch checkpoint reaches it after its
@@ -1143,11 +1296,12 @@ module Agents
         # to a rung's; the difference is only that this pipeline has no plan behind it.
         @baseline = attempt_baseline_repair(stages, step) || @baseline
 
-        # **The same early stop as a rung's.** A patch checkpoint is maintenance, and a red
-        # baseline makes even the pin unmeasurable: the suite after it cannot be attributed to
-        # the patch. Stopping here is the difference between one cycle and two on an application
-        # whose bundle does not load at all.
-        if baseline_red_after_repair?
+        # **The same early stop as a rung's, and the same differential escape.** A patch checkpoint
+        # is maintenance, and a red baseline makes even the pin unmeasurable: the suite after it
+        # cannot be attributed to the patch. Stopping here is the difference between one cycle and
+        # two on an application whose bundle does not load at all. With the differential on, the
+        # checkpoint proceeds and its suite is compared against the baseline's.
+        if baseline_red_after_repair? && !@differential
           verdict, why = Record.verdict(baseline: @baseline, suite: nil, stages: stages,
             checks: [])
           return finish(build(step, stages, verdict, why))
@@ -1186,9 +1340,10 @@ module Agents
         @checks = Array(@prepare_checks) + checks_stage(stages)
         checkpoint(nil)
 
+        differential = capture_differential
         verdict, why = Record.verdict(baseline: @baseline, suite: @suite, stages: stages,
-          checks: @checks)
-        finish(build(step, stages, verdict, why))
+          checks: @checks, differential: differential)
+        finish(build(step, stages, verdict, why, differential: differential))
       end
 
       def same_minor?(left, right)
@@ -2577,6 +2732,11 @@ module Agents
         # list a repair can answer, and reading the record's tail instead lost every block before
         # the cut (see `Tests::SUITE_ANALYSIS_BYTES`).
         @suite_output = result.output
+        # **The baseline's own output, kept for the differential.** The suite's output is what a
+        # repair reads; the baseline's is what the comparison reads, and before this field the
+        # baseline's full text was discarded the moment the suite started — so a red baseline could
+        # be counted but never compared.
+        @baseline_output = result.output if stage == Record::BASELINE
         tail = result.output_tail.to_s
         if retried
           tail = "#{tail}\n(the first run's only failure was " \
@@ -4517,7 +4677,7 @@ module Agents
         output
       end
 
-      def build(step, stages, verdict, why)
+      def build(step, stages, verdict, why, differential: nil)
         settle_decisions_against_the_lock
         record = Record.new(
           repository: @repository, commit: record_commit, worktree: @worktree.root,
@@ -4529,6 +4689,8 @@ module Agents
           patch: capture_patch, baseline: @baseline, suite: @suite,
           verdict: verdict, why: why, brief: @brief, repairs: @repairs,
           checks: @checks, commits: @commits,
+          readiness: readiness_reading(stages),
+          differential: differential,
           # Filled below, after an `expect` rule that this run met is added to the fired list: a
           # decision that shaped the rung is in force whether its evidence is an edit or a rule.
           accepted_decisions: [],
@@ -5105,7 +5267,13 @@ module Agents
           "toolchain" => record.toolchain,
           # **The interpreter, not only the image.** The profile declares Ruby; the brief compares
           # that declaration with the one that ran, and an image tag is not the same fact.
-          "interpreter" => record.interpreter
+          "interpreter" => record.interpreter,
+          # **The machine's reading and the per-test differential.** `readiness` is a fact about the
+          # environment and moves no verdict; `baseline` is the comparison a `no_new_failures`
+          # verdict rests on. An empty object is `not recorded` rather than a healthy empty state,
+          # which is how the service reads an absent key.
+          "readiness" => record.readiness,
+          "baseline" => record.differential
         }
       end
 

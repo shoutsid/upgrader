@@ -10,6 +10,13 @@ the machine the step ran on. It does not say the move is correct for every calle
 independent verification. The service promotes a report to `resolved_verified` only through
 operators other than its author; a report filed by this walker is evidence, not that promotion.
 
+A **`no_new_failures`** verdict is a weaker claim still, and a different word on purpose. With
+`--differential-baseline` the walker compares the failures before the move against the failures
+after it by a stable key; no new failure means the move introduced none. It is silent about tests
+that did not run, about flaky tests, and about the baseline's own failures — and it is the walker's
+own measurement, so nothing reruns the suite from a second account. The flag is off by default;
+without it a baseline that cannot be made green stops the step as `unverified`.
+
 A **resolver** failure is the exception that does not need the application: the miner's two
 verifier accounts check the two versions from their own metadata — one executes a minimal
 `bundle lock`, the other reads the refused gem's gemspec — so a move that failed before anything

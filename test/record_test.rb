@@ -128,6 +128,45 @@ class RecordTest < Minitest::Test
     assert_includes why, "no test suite was found"
   end
 
+  # **A red baseline with a captured differential is a measurement of the move.** The failures
+  # after the step are compared against the failures before it and none is new, so the word is
+  # `no_new_failures` — deliberately not `passed`, which claims a green suite.
+  def test_a_red_baseline_with_no_new_failures_is_its_own_verdict
+    word, why = Agents::Upgrader::Record.verdict(
+      baseline: suite(exit_code: 1), suite: suite(exit_code: 1), stages: stages,
+      differential: { "captured" => true, "new" => 0, "failures" => 14, "fixed" => 2 }
+    )
+
+    assert_equal "no_new_failures", word
+    assert_includes why, "the move introduced no new failures"
+    assert_includes why, "weaker claim than a green"
+  end
+
+  # A new failure is a failure about the move, and the sentence names the examples rather than
+  # only the count — a reader acts on which test broke, not on how many.
+  def test_a_red_baseline_with_new_failures_is_failed_and_names_them
+    word, why = Agents::Upgrader::Record.verdict(
+      baseline: suite(exit_code: 1), suite: suite(exit_code: 1), stages: stages,
+      differential: { "captured" => true, "new" => 2, "failures" => 14,
+                      "new_keys" => ["test/models/user_test.rb:42", "spec/thing_spec.rb:7"] }
+    )
+
+    assert_equal "failed", word
+    assert_includes why, "introduced 2 new failure(s)"
+    assert_includes why, "test/models/user_test.rb:42"
+  end
+
+  # A red baseline with no differential captured is still `unverified`: nothing was compared, so
+  # nothing about the move was established.
+  def test_a_red_baseline_with_no_differential_is_still_unverified
+    word, why = Agents::Upgrader::Record.verdict(
+      baseline: suite(exit_code: 1), suite: suite(exit_code: 1), stages: stages
+    )
+
+    assert_equal "unverified", word
+    assert_includes why, "cannot be attributed to the move"
+  end
+
   # **`app:update` is a generator, and its refusal does not fail a rung the application's own
   # gate passed.** Rails 8's `active_storage:update` refused on an application with no Active
   # Storage tables while the same rung booted and its suite was green; the stage is recorded and

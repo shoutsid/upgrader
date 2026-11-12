@@ -582,6 +582,7 @@ module Agents
         sections << brief_section if @record&.brief
         sections << changed_section if @record
         sections << decisions_section if @record
+        sections << corpus_fixes_section if @record
         sections << app_update_section if @record
         sections << manual_section if @record
         sections << canary_section if @record
@@ -667,6 +668,8 @@ module Agents
             @record.project.nil? ? "not recorded" : "not declared"
           elsif !@record.suite.ran
             "did not run"
+          elsif differential_row?
+            differential_result
           elsif @record.suite.ok? && @record.baseline&.ok?
             "passed"
           elsif !@record.baseline&.ok?
@@ -701,6 +704,20 @@ module Agents
 
         result = stage.ok? ? "passed" : (stage.ran ? "failed" : "did not run")
         "| style | #{result} | #{escape_cell("`#{stage.readable}`")} |"
+      end
+
+      # **The differential, when the record carries one.** A red baseline with a captured
+      # comparison is a measured result about the move, and the row says which one it is rather
+      # than calling it `unverified`: the failures were compared and none was new.
+      def differential_row?
+        @record.differential.is_a?(Hash) && @record.differential["captured"] == true
+      end
+
+      def differential_result
+        introduced = @record.differential["new"].to_i
+        return "no new failures — the baseline was red" if introduced.zero?
+
+        "failed — #{introduced} new failure(s) against a red baseline"
       end
 
       def status_word(command)
@@ -841,6 +858,41 @@ module Agents
             edits.each { |edit| lines << "- #{edit_sentence(edit)}" }
           end
         end
+        lines.join("\n")
+      end
+
+      # **The corpus fixes this rung ran with, and where to record whether they worked.** A walk that
+      # took a fix from a report is the moment the corpus can learn whether the fix actually helped —
+      # so the body names each report and links the one page that records an outcome. Absent when the
+      # rung took no fix from the corpus, which is most rungs and is not a gap.
+      #
+      # The link targets the *member portal* page (`/app/reports/:id`), not the API: the API read is
+      # the evidence, and the portal page is where a person records a verdict. `report_base` is the
+      # deployment's public base — the walker's API base is often an internal hostname, and a link
+      # built from it is unopenable.
+      def corpus_fixes_section
+        fixes = Array(@record.accepted_decisions).filter_map do |decision|
+          id = decision["report_id"].to_s
+          next if id.empty?
+
+          { "id" => id, "title" => decision["question"].to_s, "status" => nil }
+        end.uniq { |row| row["id"] }
+        return "" if fixes.empty?
+
+        lines = ["## Corpus fixes this rung ran with", ""]
+        fixes.each do |row|
+          title = row["title"].to_s.strip
+          title = "report #{row['id']}" if title.empty?
+          label = if @report_base.empty?
+            "`#{row['id']}` — #{title}"
+          else
+            "[#{title}](#{@report_base}/app/reports/#{row['id']})"
+          end
+          lines << "- #{label}"
+        end
+        lines << ""
+        lines << "If you applied one of these fixes, record whether it worked on its page — that is " \
+                 "the one signal that moves the corpus's record for it."
         lines.join("\n")
       end
 

@@ -73,6 +73,7 @@ agents-upgrader preflight --repo . --record ./out
 |---|---|
 | `--force` | walk a move even though the ledger has settled it. The ledger is a memory, not a lock. |
 | `--publish` | push a branch and open (or update) a pull request for a passed step. Needs `UPGRADER_GITHUB_TOKEN`. |
+| `--differential-baseline` | walk past a red baseline and compare the suite's failures against it, so a move that introduces none is `no_new_failures` rather than `unverified`. Off by default: it changes what a step does. |
 | `--suite-env FILE` | as above. |
 
 ```bash
@@ -92,6 +93,7 @@ agents-upgrader step --repo . --to 7.1.0 --record ./out
 | `--rungs N` | how many rungs `--walk` chains in one cycle. Default: `3`. |
 | `--force` | ignore a settled ledger entry for this run. |
 | `--publish` | deliver each passed rung as a branch and a pull request. A chained rung also joins the one below it as a GitHub stack. |
+| `--differential-baseline` | walk past a red baseline and compare the two suites; a move that introduces no new failure is `no_new_failures`. Off by default. |
 | `--record DIR` | write one record per move (`<repository>-<from>-<to>.json`), plus its patch. The repository part is readable: a URL such as `https://github.com/owner/application.git` becomes `owner-application`, and a local path uses its basename. |
 | `--suite-env FILE` | as above. |
 

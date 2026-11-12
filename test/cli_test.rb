@@ -108,7 +108,16 @@ class CliTest < Minitest::Test
 
     # The decision surface, as a fake: the CLI test is about dispatch and exit status,
     # and `corpus_test.rb` owns the route and body of each call.
-    attr_reader :decision_queries
+    attr_reader :decision_queries, :fix_queries
+
+    def fixes(change_key: nil, language: nil)
+      @fix_queries = { change_key: change_key, language: language }
+      { "fixes" => [{
+          "change_key" => change_key || "ruby|rails|x", "kind" => "rewrite",
+          "authority" => "curated", "safety" => "mechanical", "applies" => true,
+          "payload" => { "old" => "before_filter", "new" => "before_action" }
+        }], "count" => 1 }
+    end
 
     def decisions(**params)
       @decision_queries = params
@@ -352,6 +361,21 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_the_fixes_mode_prints_the_registry_and_writes_nothing
+    corpus = StubCorpus.new
+    code, out, err = run_cli(
+      ["fixes", "--change-key", "ruby|rails|x", "--api", "https://example.test"],
+      corpus: corpus
+    )
+
+    assert_equal Agents::Upgrader::CLI::EXIT_OK, code, err
+    assert_includes out, "1 fix(es) in the registry"
+    assert_includes out, "before_filter -> before_action"
+    assert_includes out, "[curated] mechanical"
+    assert_includes out, "nothing was written"
+    assert_equal "ruby|rails|x", corpus.fix_queries[:change_key]
+  end
+
   # The first argument is shifted as the command before OptionParser can see it, so a
   # bare `--help` was refused as a mode named `--help` — while `plan --help` printed the
   # usage, which is why only the form CI invokes was the one that broke.
@@ -426,8 +450,8 @@ class CliTest < Minitest::Test
 
     valued = %w[--repo --ref --to --api --project --record --from --base-ref --report-base
                 --work --home --heartbeat --interval --step-timeout --cycles --rungs --repos
-                --suite-env --id --state --block-kind --change-key --limit --effects --choice
-                --proposed-by --answer-id]
+                --suite-env --id --state --block-kind --change-key --language --limit --effects
+                --choice --proposed-by --answer-id]
     flags.each do |flag|
       argv = ["serve", flag]
       argv << "1" if valued.include?(flag)
@@ -446,6 +470,19 @@ class CliTest < Minitest::Test
       out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
 
     assert_equal true, options[:force]
+  end
+
+  # **The differential is opt-in, because it changes what a step does.** A red baseline
+  # ordinarily stops the walk; the flag walks past it and compares the two suites, so the
+  # word `no_new_failures` is a measurement rather than a claim.
+  def test_the_differential_baseline_is_off_unless_the_operator_asks
+    off = Agents::Upgrader::CLI.new(["step", "--repo", "."],
+      out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
+    assert_nil off[:differential]
+
+    on = Agents::Upgrader::CLI.new(["step", "--repo", ".", "--differential-baseline"],
+      out: StringIO.new, err: StringIO.new, env: {}).send(:parse)
+    assert_equal true, on[:differential]
   end
 
   # **A decision read is a mode, not a second binary.** The subcommand and its id are taken

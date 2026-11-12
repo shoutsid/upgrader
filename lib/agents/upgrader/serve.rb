@@ -65,7 +65,7 @@ module Agents
                      contribute: true, walk: false, publish: false, rungs: nil,
                      publish_class: Publish, suite_env: nil, services: nil, env: ENV,
                      environment: Environment,
-                     force: false, record: nil, project: nil, control: nil)
+                     force: false, record: nil, project: nil, control: nil, differential: nil)
         @api = api
         @home = home
         @to = to
@@ -92,6 +92,10 @@ module Agents
         # had walked a rung it never touched — measured, `serve --walk --force` printed "already settled:
         # passed" and ran nothing, which reads as a walk that finished rather than one that was skipped.
         @force = force
+        # **Whether a red baseline is compared rather than stopping the step.** Off unless the
+        # caller asks, for the reason `Step` gives: it changes what a step *does*, so the default
+        # walk is the one every existing measurement was taken under.
+        @differential = differential
         # **Where each step writes its patch and its JSON record.** The option was advertised and thrown
         # away: `serve --record DIR` accepted the argument and passed nothing, so a walk's evidence
         # lived only in the corpus — and a record the corpus answers `duplicate` for (which is what
@@ -915,7 +919,8 @@ module Agents
           suite_env: @suite_env,
           ledger: @ledger, suite_timeout: @step_timeout, contribute: @contribute,
           corpus: @corpus, reuse: true, services: @services, env: @env, force: @force,
-          record: @record, project: project, control: @control, model_access: model_access
+          record: @record, project: project, control: @control, model_access: model_access,
+          differential: @differential
         ).run
         if record.nil?
           @out.puts("serve: #{repository} — already settled, so nothing was run")

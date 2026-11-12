@@ -17,12 +17,18 @@ and reviewers can read the client, not because it is open source.
 ## What it gives you
 
 - **`plan`** — what a move crosses, split into mechanical changes and decisions for a person.
+- **`fixes`** — the typed fix registry for a change, with each fix's authority, language and safety
+  class; a dry run that writes nothing.
 - **`preflight`** — makes an old Gemfile installable at all: dead git protocols, deleted
   forks, pins that cannot sit beside the framework.
 - **`step`** — executes the first release of a move on a working copy the tool owns: baseline,
   mechanical edits, the pin, `app:update`, a boot, and the suite again.
 - **`serve`** — a durable loop over the service's queue, with a ledger, a heartbeat and,
   optionally, rungs chained inside a cycle.
+- **rules, and a residue with reasons** — the mechanical edits this tool makes that the service
+  deliberately will not are in `lib/agents/upgrader/rewrites.rb`, each naming the change it belongs
+  to and the guide chapter that justifies it; everything it leaves is recorded as located, carried
+  or config, with the reason beside it.
 - **`preview`** — renders the review brief a stored step record would publish, without a
   checkout, a token or a push.
 - **`prune`** / **`republish`** — housekeeping for containers, per-run bundles and the bodies of
@@ -92,6 +98,7 @@ name rather than copied into something that could be confused with your own tree
 | Mode | What it does | Writes |
 |---|---|---|
 | `plan` | reads the lockfile, asks the service what the move crosses, prints the plan | nothing |
+| `fixes` | reads the typed fix registry, with each fix's safety class, and prints it | nothing |
 | `preflight` | repairs an old Gemfile so it can be installed | a working copy the tool owns, and `preflight.json` with `--record` |
 | `step` | runs the first release of the move end to end | a patch and a record with `--record`; nothing to the corpus |
 | `serve` | one step per repository per cycle, over a durable ledger | run records with `--record`, and reports for failures |

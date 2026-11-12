@@ -317,6 +317,15 @@ module Agents
         call(:get, "/api/upgrades/projects/#{project_id}/resolution", params: params)
       end
 
+      # **The typed fixes a change carries, for a dry run.** The registry is operator-authenticated
+      # because a promoted rule may be account-scoped; this client prints it and applies nothing.
+      def fixes(change_key: nil, language: nil)
+        params = {}
+        params[:change_key] = change_key unless change_key.to_s.empty?
+        params[:language] = language unless language.to_s.empty?
+        call(:get, "/api/fixes", params: params)
+      end
+
       # Whether this client carries a credential. A block written without one is a 401 that
       # looks like a quiet walk from the outside, so the caller asks before it tries.
       def authenticated? = !@key.empty?
